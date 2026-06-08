@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot バックエンド(uvicorn :8010)を macOS LaunchAgent で常駐させる。
+  ~/Library/LaunchAgents/com.tomato.xnewsbot.plist に配置する。
+  WorkingDirectory は必須(config の .env / xnewsbot.db が相対パスのため)。
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot
+    再起動: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot
+    状態  : launchctl list | grep xnewsbot
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tomato/Project/XNewsBot/.venv/bin/uvicorn</string>
+        <string>xnewsbot.api.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8010</string>
+        <string>--log-level</string>
+        <string>warning</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot.err.log</string>
+</dict>
+</plist>
