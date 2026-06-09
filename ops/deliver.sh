@@ -93,12 +93,18 @@ if ! "$PY" scripts/pipeline.py ingest --raw "$RAW" --curated "$CUR" >> "$LOG" 2>
 fi
 
 # 4) 送信
+# 収集〜送信が深夜0時を跨ぐと現在日にはダイジェストが無く空配信になるため、
+# raw に記録された収集日を --date で渡す(ingest と同じ日付で読み出す)。
+# (DATE_OPT は文字列展開。macOS の bash 3.2 は set -u 下で空配列の展開がエラーになる。
+#  日付は YYYY-MM-DD で空白を含まないためクォートなし展開で安全)
+DDATE=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['date'])" "$RAW" 2>/dev/null)
+DATE_OPT=""; [ -n "$DDATE" ] && DATE_OPT="--date $DDATE"
 if [ -n "$USER_ID" ]; then
   # 今すぐ配信: 待たずに即送信(その瞬間の最新を届ける)
-  "$PY" scripts/pipeline.py push --user "$USER_ID" --slot "$SLOT" >> "$LOG" 2>&1
+  "$PY" scripts/pipeline.py push --user "$USER_ID" --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
 else
   # 定刻配信: 5分前に収集を始めているので、定刻ちょうどまで待ってから送信
   if [ "$SLOT" = morning ]; then wait_until "$MORNING_HHMM"; else wait_until "$EVENING_HHMM"; fi
-  "$PY" scripts/pipeline.py push --due --slot "$SLOT" >> "$LOG" 2>&1
+  "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
 fi
 log "==== deliver done slot=$SLOT ===="

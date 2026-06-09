@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -83,10 +83,15 @@ def deliver_to_subscriber(
     now_local: datetime | None = None,
     greeting: bool = True,
     mark_delivered: bool = True,
+    digest_date: date | None = None,
 ) -> list[dict]:
-    """DB の既存ダイジェスト(当日・当スロット)から購読者へ push し、配信日を記録する。"""
+    """DB の既存ダイジェスト(当日・当スロット)から購読者へ push し、配信日を記録する。
+
+    digest_date: 配信するダイジェストの日付。収集が深夜0時を跨いで push 時に日付が
+    変わると、現在日では当該ダイジェストが見つからず空配信になるため、収集時の日付を
+    明示できるようにする(省略時は従来どおり現在日)。"""
     now_local = now_local or _now_in(sub.tz)
-    local_date = now_local.date()
+    local_date = digest_date or now_local.date()
     grouped = digest.assemble_for_genres(
         session, display_genres(sub.enabled_genres), local_date, slot
     )

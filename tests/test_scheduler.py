@@ -86,6 +86,28 @@ def test_deliver_to_subscriber_from_db(session, messenger):
     assert "flex" in [s["type"] for s in specs]
 
 
+def test_deliver_to_subscriber_explicit_digest_date(session, messenger):
+    """0時跨ぎ: 収集日(digest_date)を明示すれば、push 時に日付が変わっていても
+    当該日のダイジェストを配信する(現在日で探して空配信にならない)。"""
+    digest.ingest_curated(session, "AI", D, "evening",
+                          parse_curated(curated_items(1, 1)), make_tweets(3))
+    sub = _onboarded(line_user_id="U10")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+
+    after_midnight = datetime(2026, 6, 9, 0, 1, tzinfo=JST)  # D の翌日0:01
+    specs = scheduler.deliver_to_subscriber(
+        session, sub, "evening", messenger=messenger,
+        now_local=after_midnight, mark_delivered=False, digest_date=D)
+    assert "flex" in [s["type"] for s in specs]  # 空配信(textのみ)でなく中身が届く
+    # digest_date を渡さない従来動作では翌日分を探して空になる(回帰確認)
+    specs_old = scheduler.deliver_to_subscriber(
+        session, sub, "evening", messenger=messenger,
+        now_local=after_midnight, mark_delivered=False)
+    assert [s["type"] for s in specs_old] == ["text"]
+
+
 def test_due_subscribers_returns_slot_pairs(session):
     s1 = _onboarded(line_user_id="A", morning_hour=6)
     s2 = _onboarded(line_user_id="B", morning_hour=23, evening_hour=23)  # まだ来てない

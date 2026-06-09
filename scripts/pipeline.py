@@ -158,6 +158,9 @@ def cmd_push(args) -> None:
         sys.exit("LINE_CHANNEL_ACCESS_TOKEN が未設定です。")
     messenger = lc.LineMessenger(settings.line_channel_access_token)
     default_slot = args.slot or slot_for_now(datetime.now(ZoneInfo(settings.default_tz)))
+    # 収集〜送信が深夜0時を跨ぐと現在日にはダイジェストが無く空配信になるため、
+    # deliver.sh は raw の日付を --date で渡してくる(省略時は従来どおり現在日)。
+    digest_date = date.fromisoformat(args.date) if args.date else None
     init_db()
     with get_session() as session:
         if args.user:
@@ -168,7 +171,8 @@ def cmd_push(args) -> None:
             if not sub:
                 sys.exit(f"購読者が見つかりません: {args.user}")
             specs = deliver_to_subscriber(
-                session, sub, default_slot, messenger=messenger, mark_delivered=False
+                session, sub, default_slot, messenger=messenger, mark_delivered=False,
+                digest_date=digest_date,
             )
             print(f"push 完了 → {args.user} slot={default_slot} ({len(specs)} メッセージ)", file=sys.stderr)
         elif args.due:
@@ -186,7 +190,7 @@ def cmd_push(args) -> None:
                 try:
                     deliver_to_subscriber(
                         session, sub, default_slot, messenger=messenger,
-                        now_local=now_local, mark_delivered=True,
+                        now_local=now_local, mark_delivered=True, digest_date=digest_date,
                     )
                     sent += 1
                     print(f"  push → {sub.line_user_id} slot={default_slot}", file=sys.stderr)
@@ -218,6 +222,7 @@ def main() -> None:
     pp.add_argument("--user", help="指定ユーザーへ送る(今すぐ配信。配信済みにしない)")
     pp.add_argument("--due", action="store_true", help="当該スロットが有効で未配信の全購読者へ送る(定刻配信。配信済みにする)")
     pp.add_argument("--slot", choices=SLOTS, help="省略時は現在時刻から推定")
+    pp.add_argument("--date", help="配信するダイジェストの日付 YYYY-MM-DD(省略時は現在日。0時跨ぎ対策)")
 
     args = p.parse_args()
     {"collect": cmd_collect, "ingest": cmd_ingest, "push": cmd_push}[args.cmd](args)
