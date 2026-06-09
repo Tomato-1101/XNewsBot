@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     scheduler_interval_seconds: int = 60
 
     # --- 収集パラメータ ---
-    collect_max_tweets: int = 120   # 1ジャンルあたり取得上限(課金/レート対策)
+    # ページングが深いほど遅い(twitterapi.io は1ページ数秒)。キュレーションへ渡すのは
+    # 上位 CURATE_INPUT_LIMIT(=40) 件なので、取得上限は控えめにして配信を速く保つ。
+    collect_max_tweets: int = 60    # 1ジャンルあたり取得上限(課金/レート/速度対策)
     collect_hours: float = 24       # 収集対象の直近時間
     collect_min_faves: int = 200    # 最低いいね数(ノイズ除去)
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -99,11 +100,16 @@ def cmd_collect(args) -> None:
         sys.exit("対象ジャンルがありません(--due/--user なら購読者が未登録の可能性)。")
 
     out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
-           "slot": args.slot, "genres": {}}
-    for g in genres:
-        tweets = xclient.collect(g, settings=settings)[:CURATE_INPUT_LIMIT]
-        out["genres"][g] = [_trim(t) for t in tweets]
-        print(f"  {g}: {len(tweets)} 件 収集", file=sys.stderr)
+           "slot": args.slot, "genres": {g: [] for g in genres}}
+
+    # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと7ジャンルで数分かかるので並列化する。
+    def _one(g: str) -> tuple[str, list[dict]]:
+        return g, xclient.collect(g, settings=settings)[:CURATE_INPUT_LIMIT]
+
+    with ThreadPoolExecutor(max_workers=min(6, len(genres))) as pool:
+        for g, tweets in pool.map(_one, genres):  # 入力順を保つ
+            out["genres"][g] = [_trim(t) for t in tweets]
+            print(f"  {g}: {len(tweets)} 件 収集", file=sys.stderr)
 
     text = json.dumps(out, ensure_ascii=False, indent=2)
     if args.out:
