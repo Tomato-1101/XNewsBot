@@ -85,7 +85,7 @@ def deliver_to_subscriber(
         session, display_genres(sub.enabled_genres), local_date, slot
     )
     specs = lc.digest_specs(grouped, greeting=greeting, slot=slot)
-    messenger.push(sub.line_user_id, specs)
+    messenger.push(sub.push_target, specs)  # push_to(グループ等)があればそこへ、無ければ1:1
     if mark_delivered:
         sub.set_last_on(slot, local_date)
         session.add(sub)

@@ -75,13 +75,26 @@ def handle_event(
     deliver_now: DeliverNow | None = None,
 ) -> None:
     kind = ev.get("kind")
-    sub = get_or_create_subscriber(session, ev["line_user_id"], ev.get("display_name"))
     reply_token = ev.get("reply_token", "")
+    target_id = ev.get("target_id")  # グループ/ルームID(1:1なら None)
+
+    if kind == "join":  # ボットがグループ/ルームに追加された(送信者は不明)
+        messenger.reply(reply_token, [lc.text_spec(
+            "グループに追加ありがとうございます。\n"
+            "このトークに毎日のニュースを配信するには、受け取りたい方が"
+            "(まず XNewsBot と1:1で初期設定を済ませたうえで)ここで「このグループに配信」と送ってください。")])
+        return
+
+    uid = ev.get("line_user_id")
+    if not uid:  # 友だち未追加メンバーの発言などは user_id が来ない → 無視
+        return
+    sub = get_or_create_subscriber(session, uid, ev.get("display_name"))
 
     if kind == "follow":
         _start_onboarding(session, messenger, sub, reply_token)
     elif kind == "message":
-        _handle_message(session, messenger, sub, ev.get("text", ""), reply_token, deliver_now)
+        _handle_message(session, messenger, sub, ev.get("text", ""), reply_token,
+                        deliver_now, target_id)
     elif kind == "postback":
         _handle_postback(session, messenger, sub, ev.get("data", ""), reply_token, deliver_now)
 
@@ -99,9 +112,35 @@ def _start_onboarding(session, messenger, sub: Subscriber, reply_token: str) -> 
     messenger.reply(reply_token, [welcome, lc.genre_select_spec(sub.pending_genres)])
 
 
+_BIND_WORDS = ("このグループに配信", "ここに配信", "グループ配信", "ここに配信して")
+_UNBIND_WORDS = ("個別に配信", "個別配信", "1対1に配信", "個人に配信")
+
+
 def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token: str,
-                    deliver_now: DeliverNow | None) -> None:
+                    deliver_now: DeliverNow | None, target_id: str | None = None) -> None:
     text = (text or "").strip()
+
+    # 配信先の切り替え(グループ/ルームでも1:1でも受け付ける)
+    if text in _BIND_WORDS:
+        if target_id:
+            sub.push_to = target_id
+            _save(session, sub)
+            messenger.reply(reply_token, [lc.text_spec(
+                "これ以降、ニュースはこのトークに配信します。\n"
+                "(個別トークに戻すには「個別に配信」と送ってください)")])
+        else:
+            messenger.reply(reply_token, [lc.text_spec(
+                "ここは1:1トークです。配信先にしたいグループ/複数人トークで「このグループに配信」と送ってください。")])
+        return
+    if text in _UNBIND_WORDS:
+        sub.push_to = None
+        _save(session, sub)
+        messenger.reply(reply_token, [lc.text_spec("配信先を個別トークに戻しました。")])
+        return
+
+    # グループ/ルームでは合言葉以外に反応しない(他のメンバーの発言に逐一返信しない)
+    if target_id:
+        return
 
     # 時刻入力待ち(朝/夜。初回 or 編集)
     if sub.onboarding_step in ("morning", "evening"):

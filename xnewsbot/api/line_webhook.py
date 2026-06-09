@@ -19,9 +19,13 @@ router = APIRouter()
 
 
 def _normalize(ev) -> dict | None:
-    """line-bot-sdk(v3) のイベントを正規化 dict に変換(扱わない種別は None)。"""
+    """line-bot-sdk(v3) のイベントを正規化 dict に変換(扱わない種別は None)。
+
+    target_id: グループ/ルームに来たイベントならそのID(配信先候補)。1:1なら None。
+    join: ボットがグループ/ルームに追加された(user_id は無い)。"""
     from linebot.v3.webhooks import (
         FollowEvent,
+        JoinEvent,
         MessageEvent,
         PostbackEvent,
         TextMessageContent,
@@ -29,12 +33,18 @@ def _normalize(ev) -> dict | None:
 
     src = getattr(ev, "source", None)
     uid = getattr(src, "user_id", None)
-    if not uid:
-        return None
+    gid = getattr(src, "group_id", None)
+    rid = getattr(src, "room_id", None)
     token = getattr(ev, "reply_token", "") or ""
     base = {"line_user_id": uid, "display_name": None,
-            "text": "", "data": "", "reply_token": token}
+            "text": "", "data": "", "reply_token": token,
+            "target_id": gid or rid,
+            "source_type": "group" if gid else ("room" if rid else "user")}
 
+    if isinstance(ev, JoinEvent):  # ボットがグループ/ルームに参加(user_id 無し)
+        return {**base, "kind": "join"}
+    if not uid:
+        return None
     if isinstance(ev, FollowEvent):
         return {**base, "kind": "follow"}
     if isinstance(ev, MessageEvent) and isinstance(ev.message, TextMessageContent):

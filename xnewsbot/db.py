@@ -27,8 +27,20 @@ def get_engine():
 
 
 def init_db() -> None:
-    """テーブルを作成(なければ)する。"""
-    SQLModel.metadata.create_all(get_engine())
+    """テーブルを作成(なければ)し、後から増えた列を追補する。"""
+    engine = get_engine()
+    SQLModel.metadata.create_all(engine)
+    _migrate(engine)
+
+
+def _migrate(engine) -> None:
+    """SQLite は create_all で既存テーブルに列を追加しないため、不足列を ALTER で補う(冪等)。"""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        cols = {row[1] for row in conn.execute(text("PRAGMA table_info(subscriber)"))}
+        if cols and "push_to" not in cols:
+            conn.execute(text("ALTER TABLE subscriber ADD COLUMN push_to VARCHAR"))
 
 
 @contextmanager

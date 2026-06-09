@@ -45,7 +45,16 @@ class Subscriber(SQLModel, table=True):
     last_morning_on: date | None = None
     last_evening_on: date | None = None
 
+    # 配信先の上書き。LINEのグループID/ルームID。None なら本人との1:1トークへ送る。
+    # グループ内で合言葉を送ると、そのグループIDがここに入る(onboarding._handle_message)。
+    push_to: str | None = None
+
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def push_target(self) -> str:
+        """実際の push 送信先。push_to(グループ等)があればそれ、無ければ本人の1:1。"""
+        return self.push_to or self.line_user_id
 
     # --- スロット別アクセサ(scheduler/onboarding を簡潔にするため) ---
     def slot_time(self, slot: str) -> tuple[int, int]:
