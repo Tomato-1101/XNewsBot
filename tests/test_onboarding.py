@@ -192,13 +192,14 @@ def test_detail_postback_returns_news_detail(session, messenger):
 
     handle_event(session, messenger, ev("postback", data=f"detail:{item.id}"))
     specs = messenger.last_reply
-    # メニューではなく、その記事の詳細が返る。タイトル再掲で終わらず detail と元ポスト本文まで載る
+    # メニューではなく、その記事の詳細が返る。タイトル再掲で終わらず detail まで載る
     assert len(specs) == 1 and specs[0]["type"] == "text"
     body = specs[0]["text"]
     assert "小ニュースの見出し" in body
-    assert "これは長めの詳細解説です。" in body          # detail を表示
-    assert "元ツイートの本文がここに入ります。" in body    # 元ポストの本文も表示
-    assert "@alice" in body
+    assert "これは長めの詳細解説です。" in body              # detail を表示
+    assert "元ツイートの本文がここに入ります。" not in body    # 元ポストの本文は載せない
+    assert "@alice" in body                                  # 元ポストへのリンクは残す
+    assert "https://x.com/u/status/1" in body
 
 
 def test_detail_falls_back_to_summary_when_no_detail(session, messenger):

@@ -42,6 +42,28 @@ def test_digest_specs_empty():
     assert len(specs) == 1 and specs[0]["type"] == "text"
 
 
+def test_big_block_has_detail_tap():
+    # 大ニュースも一覧は見出し+要約までで、タップ(postback detail:)で長文詳細を開ける
+    item = _big()
+    item.id = 42
+    grouped = {"AI": [item]}
+    specs = lc.digest_specs(grouped, greeting=False)
+    blob = __import__("json").dumps(specs, ensure_ascii=False)
+    assert "detail:42" in blob
+
+
+def test_detail_spec_keeps_link_drops_body():
+    item = _big()
+    item.detail = "これは長い詳細解説の本文です。"
+    item.source_tweets = [{"text": "ツイート本文は載せない", "author": "u",
+                           "url": "https://x.com/u/status/1", "views": 9000}]
+    spec = lc.detail_spec(item)
+    assert "大きな出来事" in spec["text"]
+    assert "これは長い詳細解説の本文です。" in spec["text"]   # detail は出す
+    assert "ツイート本文は載せない" not in spec["text"]       # 元ポスト本文は出さない
+    assert "https://x.com/u/status/1" in spec["text"]        # リンクは残す
+
+
 def test_detail_spec_contains_title_and_source():
     spec = lc.detail_spec(_big())
     assert "大きな出来事" in spec["text"]

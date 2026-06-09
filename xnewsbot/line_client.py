@@ -111,12 +111,19 @@ def _big_item_block(item: NewsItem) -> dict:
             {"type": "text", "text": item.summary, "size": "sm",
              "color": "#555555", "wrap": True, "margin": "md"}
         )
+    # 大ニュースもタップで長文の詳細(detail)を開ける(小ニュースと同じ導線)。
+    # 一覧では見出し+要約までにとどめ、詳しく読みたい人だけ詳細を開く。
+    contents.append(
+        {"type": "text", "text": "▶ 詳細を見る", "size": "xs",
+         "color": accent, "weight": "bold", "margin": "md",
+         "action": {"type": "postback", "data": f"detail:{item.id}", "displayText": "詳細を見る"}}
+    )
     url = item.source_urls[0] if item.source_urls else ""
     if url:
-        # ボタンではなくリンクテキストにして縦に詰める(高さを抑える)
+        # 元ポストへのリンクは残す(リンクテキストにして縦に詰め、高さを抑える)
         contents.append(
             {"type": "text", "text": "▶ 元ポストを見る", "size": "xs",
-             "color": accent, "weight": "bold", "margin": "md",
+             "color": "#888888", "margin": "sm",
              "action": {"type": "uri", "label": "元ポストを見る", "uri": url}}
         )
     return {"type": "box", "layout": "vertical", "contents": contents}
@@ -216,13 +223,11 @@ def digest_specs(
 
 # LINE のテキストメッセージ上限は5000字。余裕を持たせて切る。
 DETAIL_MAX_CHARS = 4800
-# 詳細に載せる元ポスト本文1件あたりの上限(長すぎるツイートで詰まらないように)。
-DETAIL_TWEET_CHARS = 800
 
 
 def detail_spec(item: NewsItem) -> dict:
-    """「詳細を見る」タップで返す本文。見出しの再掲で終わらせず、
-    長め解説(detail。無ければ summary)＋元ポストの本文そのものを載せて厚くする。"""
+    """「詳細を見る」タップで返す本文。見出しの再掲で終わらせず長め解説(detail。
+    無ければ summary)を載せる。元ポストは本文を載せず、見たい人向けにリンクだけ残す。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
     lines = [f"【{label}】{item.title}"]
 
@@ -233,20 +238,10 @@ def detail_spec(item: NewsItem) -> dict:
 
     if item.source_tweets:
         lines.append("")
-        lines.append("──── 元ポスト ────")
+        lines.append("元ポスト:")
         for s in item.source_tweets[:3]:
-            author = s.get("author", "?")
-            txt = " ".join((s.get("text") or "").split())
-            if len(txt) > DETAIL_TWEET_CHARS:
-                txt = txt[:DETAIL_TWEET_CHARS] + "…"
             url = s.get("url", "")
-            block = f"@{author}"
-            if txt:
-                block += f"\n{txt}"
-            if url:
-                block += f"\n{url}"
-            lines.append("")
-            lines.append(block)
+            lines.append(f"・@{s.get('author', '?')} {url}".rstrip())
     elif item.source_urls:
         lines.append("")
         lines.append("元ポスト: " + " ".join(item.source_urls[:3]))
