@@ -104,7 +104,13 @@ def cmd_collect(args) -> None:
 
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと7ジャンルで数分かかるので並列化する。
     def _one(g: str) -> tuple[str, list[dict]]:
-        return g, xclient.collect(g, settings=settings)[:CURATE_INPUT_LIMIT]
+        # 1ジャンルの一時的失敗(twitterapi.io のタイムアウト/瞬断等)で収集全体を落とさない。
+        # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
+        try:
+            return g, xclient.collect(g, settings=settings)[:CURATE_INPUT_LIMIT]
+        except Exception as e:
+            print(f"  {g}: 収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
+            return g, []
 
     with ThreadPoolExecutor(max_workers=min(6, len(genres))) as pool:
         for g, tweets in pool.map(_one, genres):  # 入力順を保つ
