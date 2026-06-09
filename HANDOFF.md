@@ -8,7 +8,9 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ジャンルと朝/夜の時刻は Bot 対話で設定/変更。詳細は README.md。
 
 ## 決定事項
-- 稼働: **ローカル Mac 常駐(launchd) + トンネル(ngrok 推奨)**。
+- 稼働: **ローカル Mac 常駐(launchd 3点) + トンネル(ngrok 固定ドメイン)**。
+  - `com.tomato.xnewsbot`(uvicorn:8010 webhook専任) / `com.tomato.xnewsbot-ngrok`(固定ドメイン→:8010, `--log=stdout`必須) /
+    `com.tomato.xnewsbot-deliver`(朝8:00/夜21:00 リアルタイム配信)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
 - 加工: **Claude Code が定期実行でキュレーション(Anthropic API キーは使わない=従量課金なし)**。
 - 配信: **朝(既定 08:00)・夜(既定 21:00)の2スロット**。各スロットで最新を収集し直す(=朝夜で別内容)。
 - ジャンル: **AI / 株 / 経済 / 政治 / RPA / 世界**(`config/genres.toml` で編集)。
@@ -49,7 +51,11 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## データモデル
 - `Subscriber`: line_user_id / enabled_genres / pending_genres / **morning_hour,minute / evening_hour,minute /
   morning_enabled / evening_enabled** / tz / onboarding_step("genres"→"morning"→"evening"→"done") /
-  is_onboarded / **last_morning_on / last_evening_on**。スロット用アクセサ(slot_time/slot_enabled/last_on/set_*)あり。
+  is_onboarded / **last_morning_on / last_evening_on** / **push_to**。スロット用アクセサ(slot_time/slot_enabled/last_on/set_*)あり。
+  - **push_to**: 配信先の上書き(LINEグループ/ルームID)。`push_target = push_to or line_user_id`。配信は push_target へ。
+    設定=対象グループにbotを入れ、グループ内で「このグループに配信」と送る(解除=「個別に配信」)。
+    ※ LINE公式アカウント設定で「グループ・複数人トークへの参加を許可」をONにしておくこと。
+  - 既存DBへの列追加は `db._migrate` が冪等ALTERで対応(SQLiteはcreate_allで列を足さない)。
 - `GenreDigest`: digest_date × **slot("morning"|"evening")** × genre。
 - `NewsItem`: genre / importance("big"|"small") / title / summary / source_urls / source_tweets / top_view_count。
 
