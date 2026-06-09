@@ -114,6 +114,8 @@ def _start_onboarding(session, messenger, sub: Subscriber, reply_token: str) -> 
 
 _BIND_WORDS = ("このグループに配信", "ここに配信", "グループ配信", "ここに配信して")
 _UNBIND_WORDS = ("個別に配信", "個別配信", "1対1に配信", "個人に配信")
+# ボタンを押さずテキストでも「今すぐ最新を収集して送る」を起動できる合言葉
+_DELIVER_WORDS = ("今すぐ", "今すぐ配信", "最新", "最新ニュース", "配信", "ニュース配信")
 
 
 def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token: str,
@@ -169,6 +171,12 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
         messenger.reply(reply_token, [lc.menu_spec("メニューです。操作を選んでください。")])
     elif text in ("ヘルプ", "help", "使い方") or low == "help":
         messenger.reply(reply_token, [_help_spec()])
+    elif text in _DELIVER_WORDS:
+        # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
+        messenger.reply(reply_token, [lc.text_spec(
+            "最新のニュースを今すぐお送りします…(収集に1〜2分ほどかかります)")])
+        if deliver_now is not None:
+            deliver_now(sub)
     else:
         messenger.reply(reply_token, [
             lc.text_spec("メニューから操作できます。"),

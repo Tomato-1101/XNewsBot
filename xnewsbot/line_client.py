@@ -17,7 +17,8 @@ from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
-CAROUSEL_MAX = 12
+CAROUSEL_MAX = 12      # 小ニュース(横カルーセル)の最大バブル数
+BIG_MAX = 10           # 大ニュース(縦長1枚)に積む最大件数
 ACCENT = "#1565C0"
 
 
@@ -84,36 +85,48 @@ def settings_summary_text(sub: Subscriber) -> str:
 
 # ---- ニュース配信 ----
 
-def _big_bubble(item: NewsItem) -> dict:
+def _big_item_block(item: NewsItem) -> dict:
+    """大ニュース1件分の縦ブロック(見出し+タイトル+要約+元ポストリンク)。
+    複数件を1枚の縦長バブルに積み上げるための部品(スマホで横スクロール不要にする)。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
     # 常時ジャンル(特大)は専用見出し・赤系アクセントで目立たせる
     if item.genre in ALWAYS_KEYS:
         heading, accent = f"🚨 {label}ニュース", "#D32F2F"
     else:
         heading, accent = f"【{label}】大ニュース", ACCENT
-    body = {
-        "type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "text": heading, "size": "xs",
-             "color": accent, "weight": "bold"},
-            {"type": "text", "text": item.title, "weight": "bold", "size": "md",
-             "wrap": True, "margin": "sm"},
-        ],
-    }
+    contents = [
+        {"type": "text", "text": heading, "size": "sm",
+         "color": accent, "weight": "bold"},
+        {"type": "text", "text": item.title, "weight": "bold", "size": "lg",
+         "wrap": True, "margin": "sm"},
+    ]
     if item.summary:
-        body["contents"].append(
+        contents.append(
             {"type": "text", "text": item.summary, "size": "sm",
              "color": "#555555", "wrap": True, "margin": "md"}
         )
-    bubble = {"type": "bubble", "size": "mega", "body": body}
     url = item.source_urls[0] if item.source_urls else ""
     if url:
-        bubble["footer"] = {
-            "type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "link", "height": "sm",
-                 "action": {"type": "uri", "label": "元ポストを見る", "uri": url}}
-            ],
-        }
-    return bubble
+        # ボタンではなくリンクテキストにして縦に詰める(高さを抑える)
+        contents.append(
+            {"type": "text", "text": "▶ 元ポストを見る", "size": "xs",
+             "color": accent, "weight": "bold", "margin": "md",
+             "action": {"type": "uri", "label": "元ポストを見る", "uri": url}}
+        )
+    return {"type": "box", "layout": "vertical", "contents": contents}
+
+
+def _bigs_bubble(bigs: list[NewsItem]) -> dict:
+    """大ニュース複数件を縦に積んだ1枚のバブル(横スクロールなし=スマホで縦に読める)。"""
+    blocks: list[dict] = []
+    for i, it in enumerate(bigs):
+        if i > 0:
+            blocks.append({"type": "separator", "margin": "lg", "color": "#E0E0E0"})
+        blocks.append(_big_item_block(it))
+    return {
+        "type": "bubble", "size": "giga",
+        "body": {"type": "box", "layout": "vertical", "spacing": "lg", "contents": blocks},
+    }
 
 
 def _small_bubble(item: NewsItem) -> dict:
@@ -167,9 +180,9 @@ def digest_specs(
         specs.append(text_spec(f"{head}({genres})。"))
 
     if bigs:
-        bubbles = [_big_bubble(i) for i in bigs[:CAROUSEL_MAX]]
+        # 大ニュースは横カルーセルをやめ、縦長1枚に積む(スマホで縦スクロールで全部読める)
         specs.append({"type": "flex", "alt": "大ニュース",
-                      "contents": {"type": "carousel", "contents": bubbles}})
+                      "contents": _bigs_bubble(bigs[:BIG_MAX])})
 
     if smalls:
         shown = smalls[:CAROUSEL_MAX]
