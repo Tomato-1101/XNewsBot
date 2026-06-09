@@ -37,16 +37,23 @@ EVENING_HHMM="2100"
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 log "==== deliver start slot=$SLOT target=${USER_ID:-<due>} ===="
 
-# 当日 HHMM まで待つ(最大15分。既に過ぎていれば待たずに即送信=スリープ復帰時のcatch-up)。
+# 当日 HHMM(定刻)まで待ってから送る。
+# - 定刻まで時間がある(収集・キュレーションが定刻前に終わった)場合だけ、定刻ちょうどまで待つ。
+# - 既に定刻を過ぎている(処理が定刻に間に合わなかった/スリープ復帰)場合は待たず即送信する。
+#   = 「8時に終わってなくても、終わったらすぐ送る」。8時を過ぎたら諦める、はしない。
+# 上限(1200s=20分)は、異常に大きな待ち(手動で変な時刻に起動した等)を保険で弾くだけ。
+# 15分前起動でも定刻待ちが効くよう、15分より大きく取る。
 wait_until() {
   local hhmm="$1" today target_epoch now_epoch wait
   today=$(date +%Y-%m-%d)
   target_epoch=$(date -j -f "%Y-%m-%d %H%M%S" "${today} ${hhmm}00" +%s 2>/dev/null) || return 0
   now_epoch=$(date +%s)
   wait=$((target_epoch - now_epoch))
-  if [ "$wait" -gt 0 ] && [ "$wait" -le 900 ]; then
+  if [ "$wait" -gt 0 ] && [ "$wait" -le 1200 ]; then
     log "定刻 ${hhmm} まで ${wait}s 待機してから送信"
     sleep "$wait"
+  elif [ "$wait" -le 0 ]; then
+    log "定刻 ${hhmm} を過ぎているため待たずに即送信(超過 $((-wait))s)"
   fi
 }
 

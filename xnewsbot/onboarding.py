@@ -138,7 +138,8 @@ def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: st
     if text in _DELIVER_WORDS:
         # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
         messenger.reply(reply_token, [lc.text_spec(
-            "最新のニュースを今すぐお送りします…(収集に1〜2分ほどかかります)")])
+            "最新のニュースを今すぐお送りします。収集とキュレーションに10分ほどかかります。"
+            "できあがり次第このトークにお届けします。")])
         if deliver_now is not None:
             deliver_now(sub)
         return True
@@ -286,7 +287,8 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
 
     elif data == "deliver_now":
         messenger.reply(reply_token, [
-            lc.text_spec("今日のニュースをお送りします…(準備中の場合は少し時間をおいてください)")
+            lc.text_spec("今日のニュースをお送りします。収集とキュレーションに10分ほどかかります。"
+                         "できあがり次第お届けします。")
         ])
         if deliver_now is not None:
             deliver_now(sub)

@@ -122,8 +122,8 @@ def test_deliver_now_invokes_callback(session, messenger):
     handle_event(session, messenger, ev("postback", data="deliver_now"),
                  deliver_now=lambda sub: called.append(sub.line_user_id))
     assert called == ["U1"]
-    # 直近 reply は準備中の ack
-    assert "準備" in messenger.last_reply[0]["text"]
+    # 直近 reply は配信準備の ack(所要時間の目安を伝える)
+    assert "10分" in messenger.last_reply[0]["text"]
 
 
 def test_mock_trigger_replies_sample_layout(session, messenger):
