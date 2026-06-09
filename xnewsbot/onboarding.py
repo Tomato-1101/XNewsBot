@@ -19,7 +19,7 @@ from sqlmodel import Session, select
 
 from . import line_client as lc
 from .genres import GENRE_KEYS, GENRES, is_valid_genre
-from .models import Subscriber
+from .models import SLOT_LABEL, Subscriber
 
 # deliver_now(sub) : その購読者へ「今すぐ」配信する(非同期/別セッションで実行する想定)
 DeliverNow = Callable[[Subscriber], None]
@@ -103,16 +103,16 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
                     deliver_now: DeliverNow | None) -> None:
     text = (text or "").strip()
 
-    # 時刻入力待ち(初回 or 編集)
-    if sub.onboarding_step == "time":
+    # 時刻入力待ち(朝/夜。初回 or 編集)
+    if sub.onboarding_step in ("morning", "evening"):
+        slot = sub.onboarding_step
         t = parse_time(text)
         if t:
-            sub.deliver_hour, sub.deliver_minute = t
-            _finish_time(session, messenger, sub, reply_token)
+            _apply_slot_time(session, messenger, sub, slot, t[0], t[1], reply_token)
         else:
             messenger.reply(reply_token, [
                 lc.text_spec("時刻が読み取れません。「7:30」の形式で送ってください。"),
-                lc.time_select_spec(),
+                lc.time_select_spec(slot),
             ])
         return
 
@@ -169,23 +169,22 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
             sub.onboarding_step = "done"
             _save(session, sub)
             messenger.reply(reply_token, [
-                lc.text_spec("ジャンルを変更しました。\n" + lc.settings_summary_text(
-                    sub.enabled_genres, sub.deliver_hour, sub.deliver_minute)),
+                lc.text_spec("ジャンルを変更しました。\n" + lc.settings_summary_text(sub)),
                 lc.menu_spec("メニュー"),
             ])
         else:
-            sub.onboarding_step = "time"
+            sub.onboarding_step = "morning"
             _save(session, sub)
             messenger.reply(reply_token, [
                 lc.text_spec("ジャンルを設定しました: " + " / ".join(sub.enabled_genres)),
-                lc.time_select_spec(),
+                lc.time_select_spec("morning"),
             ])
 
     elif data.startswith("time:"):
         hhmm = data.split(":", 1)[1]
+        slot = sub.onboarding_step if sub.onboarding_step in ("morning", "evening") else "morning"
         if len(hhmm) == 4 and hhmm.isdigit():
-            sub.deliver_hour, sub.deliver_minute = int(hhmm[:2]), int(hhmm[2:])
-            _finish_time(session, messenger, sub, reply_token)
+            _apply_slot_time(session, messenger, sub, slot, int(hhmm[:2]), int(hhmm[2:]), reply_token)
 
     elif data == "genre_edit":
         sub.onboarding_step = "genres"
@@ -193,15 +192,15 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         _save(session, sub)
         messenger.reply(reply_token, [lc.genre_select_spec(sub.pending_genres)])
 
-    elif data == "time_edit":
-        sub.onboarding_step = "time"
+    elif data in ("morning_edit", "evening_edit"):
+        slot = "morning" if data == "morning_edit" else "evening"
+        sub.onboarding_step = slot
         _save(session, sub)
-        messenger.reply(reply_token, [lc.time_select_spec()])
+        messenger.reply(reply_token, [lc.time_select_spec(slot)])
 
     elif data == "show_settings":
         messenger.reply(reply_token, [
-            lc.text_spec(lc.settings_summary_text(
-                sub.enabled_genres, sub.deliver_hour, sub.deliver_minute)),
+            lc.text_spec(lc.settings_summary_text(sub)),
             lc.menu_spec("メニュー"),
         ])
 
@@ -210,7 +209,7 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
 
     elif data == "deliver_now":
         messenger.reply(reply_token, [
-            lc.text_spec("今日のニュースを準備しています。少しお待ちください…")
+            lc.text_spec("今日のニュースをお送りします…(準備中の場合は少し時間をおいてください)")
         ])
         if deliver_now is not None:
             deliver_now(sub)
@@ -219,21 +218,40 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         messenger.reply(reply_token, [lc.menu_spec("メニュー")])
 
 
-def _finish_time(session, messenger, sub: Subscriber, reply_token: str) -> None:
-    was_onboarded = sub.is_onboarded
-    sub.is_onboarded = True
-    sub.onboarding_step = "done"
-    _save(session, sub)
-    summary = lc.settings_summary_text(sub.enabled_genres, sub.deliver_hour, sub.deliver_minute)
-    if was_onboarded:
+def _apply_slot_time(session, messenger, sub: Subscriber, slot: str,
+                     hour: int, minute: int, reply_token: str) -> None:
+    """朝/夜の配信時刻を確定する。初回オンボーディングは朝→夜→完了の順に進む。
+    編集時(オンボーディング済み)は当該スロットだけ更新して done に戻す。"""
+    sub.set_slot_time(slot, hour, minute)
+    label = SLOT_LABEL[slot]
+
+    if sub.is_onboarded:
+        sub.onboarding_step = "done"
+        _save(session, sub)
         messenger.reply(reply_token, [
-            lc.text_spec(f"配信時刻を {sub.deliver_hour:02d}:{sub.deliver_minute:02d} に変更しました。\n" + summary),
+            lc.text_spec(f"{label}の配信時刻を {hour:02d}:{minute:02d} に変更しました。\n"
+                         + lc.settings_summary_text(sub)),
             lc.menu_spec("メニュー"),
         ])
-    else:
+        return
+
+    if slot == "morning":
+        # 初回: 朝を設定したら次は夜
+        sub.onboarding_step = "evening"
+        _save(session, sub)
         messenger.reply(reply_token, [
-            lc.text_spec("設定が完了しました！\n" + summary +
-                         "\n\n毎日この時刻にニュースをお届けします。「今すぐ配信」で今すぐ試せます。"),
+            lc.text_spec(f"朝の配信時刻を {hour:02d}:{minute:02d} にしました。\n"
+                         "次に夜の配信時刻を選んでください。"),
+            lc.time_select_spec("evening"),
+        ])
+    else:
+        # 初回: 夜を設定したら完了
+        sub.is_onboarded = True
+        sub.onboarding_step = "done"
+        _save(session, sub)
+        messenger.reply(reply_token, [
+            lc.text_spec("設定が完了しました！\n" + lc.settings_summary_text(sub) +
+                         "\n\n毎日 朝と夜の2回ニュースをお届けします。「今すぐ配信」で今すぐ試せます。"),
             lc.menu_spec("メニュー"),
         ])
 
@@ -241,9 +259,9 @@ def _finish_time(session, messenger, sub: Subscriber, reply_token: str) -> None:
 def _help_spec() -> dict:
     return lc.text_spec(
         "【XNewsBotの使い方】\n"
-        "毎日設定した時刻に、X(Twitter)から集めたニュースをお届けします。\n"
+        "毎日 朝と夜の2回、X(Twitter)から集めたニュースをお届けします。\n"
         "・大ニュースは要約付きで表示\n"
         "・そのほかは見出しのみ → タップで詳細\n\n"
-        "「メニュー」と送るといつでも設定を変更できます。",
+        "「メニュー」と送ると、ジャンルや朝/夜の時刻をいつでも変更できます。",
         lc.menu_quick_reply(),
     )

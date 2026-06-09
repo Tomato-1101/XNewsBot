@@ -58,18 +58,13 @@ def tweets() -> list[dict]:
     return make_tweets(5)
 
 
-def fake_complete_factory(big: int = 1, small: int = 2):
-    """source_idxs を含む JSON を返す complete を生成する。"""
-    import json
-
-    def _complete(system: str, user: str) -> str:
-        items = []
-        for i in range(big):
-            items.append({"title": f"大ニュース{i}", "summary": "要約big",
-                          "importance": "big", "score": 90 - i, "source_idxs": [i]})
-        for j in range(small):
-            items.append({"title": f"小ニュース{j}", "summary": "要約small",
-                          "importance": "small", "score": 50 - j, "source_idxs": [big + j]})
-        return json.dumps(items, ensure_ascii=False)
-
-    return _complete
+def curated_items(big: int = 1, small: int = 2) -> list[dict]:
+    """キュレーション済み(Claude Code 出力相当)のアイテム dict 列。source_idxs 付き。"""
+    items = []
+    for i in range(big):
+        items.append({"title": f"大ニュース{i}", "summary": "要約big",
+                      "importance": "big", "score": 90 - i, "source_idxs": [i]})
+    for j in range(small):
+        items.append({"title": f"小ニュース{j}", "summary": "要約small",
+                      "importance": "small", "score": 50 - j, "source_idxs": [big + j]})
+    return items

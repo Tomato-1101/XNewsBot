@@ -45,12 +45,19 @@ def test_full_onboarding_flow(session, messenger):
     handle_event(session, messenger, ev("postback", data="genre_done"))
     sub = _sub(session)
     assert sub.enabled_genres == ["AI", "株"]  # GENRE_KEYS 順
-    assert sub.onboarding_step == "time"
+    assert sub.onboarding_step == "morning"
 
-    # 自由入力で時刻設定 → 完了
+    # 朝の時刻を自由入力 → 夜の入力へ
     handle_event(session, messenger, ev("message", text="7:30"))
     sub = _sub(session)
-    assert (sub.deliver_hour, sub.deliver_minute) == (7, 30)
+    assert (sub.morning_hour, sub.morning_minute) == (7, 30)
+    assert sub.onboarding_step == "evening"
+    assert not sub.is_onboarded
+
+    # 夜の時刻を設定 → 完了
+    handle_event(session, messenger, ev("message", text="22:00"))
+    sub = _sub(session)
+    assert (sub.evening_hour, sub.evening_minute) == (22, 0)
     assert sub.is_onboarded
     assert sub.onboarding_step == "done"
 
@@ -65,11 +72,15 @@ def test_genre_toggle_off(session, messenger):
 def test_genre_all_then_time_postback(session, messenger):
     handle_event(session, messenger, ev("follow"))
     handle_event(session, messenger, ev("postback", data="genre_all"))
-    assert len(_sub(session).pending_genres) == 4
+    assert len(_sub(session).pending_genres) == 6  # AI/株/経済/政治/RPA/世界
     handle_event(session, messenger, ev("postback", data="genre_done"))
-    handle_event(session, messenger, ev("postback", data="time:0800"))
+    handle_event(session, messenger, ev("postback", data="time:0800"))  # 朝
     sub = _sub(session)
-    assert (sub.deliver_hour, sub.deliver_minute) == (8, 0)
+    assert (sub.morning_hour, sub.morning_minute) == (8, 0)
+    assert sub.onboarding_step == "evening"
+    handle_event(session, messenger, ev("postback", data="time:2100"))  # 夜
+    sub = _sub(session)
+    assert (sub.evening_hour, sub.evening_minute) == (21, 0)
     assert sub.is_onboarded
 
 
@@ -77,16 +88,29 @@ def _onboard(session, messenger):
     handle_event(session, messenger, ev("follow"))
     handle_event(session, messenger, ev("postback", data="genre:AI"))
     handle_event(session, messenger, ev("postback", data="genre_done"))
-    handle_event(session, messenger, ev("postback", data="time:0700"))
+    handle_event(session, messenger, ev("postback", data="time:0700"))  # 朝
+    handle_event(session, messenger, ev("postback", data="time:2100"))  # 夜
 
 
-def test_edit_time_keeps_onboarded(session, messenger):
+def test_edit_morning_time_keeps_onboarded(session, messenger):
     _onboard(session, messenger)
-    handle_event(session, messenger, ev("postback", data="time_edit"))
-    assert _sub(session).onboarding_step == "time"
+    handle_event(session, messenger, ev("postback", data="morning_edit"))
+    assert _sub(session).onboarding_step == "morning"
     handle_event(session, messenger, ev("postback", data="time:0900"))
     sub = _sub(session)
-    assert (sub.deliver_hour, sub.deliver_minute) == (9, 0)
+    assert (sub.morning_hour, sub.morning_minute) == (9, 0)
+    assert sub.onboarding_step == "done"  # 編集は他スロットへ進まず完了
+    assert sub.is_onboarded
+
+
+def test_edit_evening_time_keeps_onboarded(session, messenger):
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("postback", data="evening_edit"))
+    assert _sub(session).onboarding_step == "evening"
+    handle_event(session, messenger, ev("postback", data="time:2230"))
+    sub = _sub(session)
+    assert (sub.evening_hour, sub.evening_minute) == (22, 30)
+    assert sub.morning_hour == 7  # 朝は変わらない
     assert sub.is_onboarded
 
 

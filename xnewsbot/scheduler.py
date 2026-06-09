@@ -1,9 +1,11 @@
-"""配信スケジューラ。
+"""配信スケジューラ(LLMは呼ばない)。
 
-- tick(): 配信時刻を過ぎ & 当日未配信の購読者を検出し配信(catch-up方式)。
-  Macスリープで定刻を逃しても、復帰後の次tickで当日分を配信する。
-- run_now(): 「今すぐ配信」用。自前セッションで1人に即配信。
-- make_deliver_now(): onboarding に渡す deliver_now コールバック(別スレッドで run_now)。
+キュレーションは Claude Code の定期実行が DB に取り込み済み。ここは DB の既存ダイジェストを
+購読者の時刻に合わせて push するだけ。
+
+- tick(): 配信時刻を過ぎ & 当日未配信 & 当日ダイジェストが揃っている購読者へ配信(catch-up方式)。
+- run_now(): 「今すぐ配信」。当日ダイジェストがあれば即 push、無ければ準備中を返す。
+- make_deliver_now(): onboarding に渡す deliver_now(別スレッドで run_now)。
 """
 
 from __future__ import annotations
@@ -18,56 +20,68 @@ from sqlmodel import Session, select
 from . import digest
 from . import line_client as lc
 from .config import Settings, get_settings
-from .curator import Curator
 from .db import get_session
-from .models import Subscriber
+from .models import SLOTS, Subscriber
 
 log = logging.getLogger("xnewsbot.scheduler")
+
+# 「今すぐ配信」やスロット未指定時に、現在時刻からスロットを推定する境界(この時刻以降は夜扱い)
+EVENING_BOUNDARY_HOUR = 15
 
 
 def _now_in(tz: str) -> datetime:
     return datetime.now(ZoneInfo(tz))
 
 
-def is_due(sub: Subscriber, now_local: datetime) -> bool:
-    """now_local(購読者tzの現在時刻)時点で配信すべきか。"""
+def slot_for_now(now_local: datetime) -> str:
+    """現在時刻から朝/夜スロットを推定(今すぐ配信のフォールバック用)。"""
+    return "evening" if now_local.hour >= EVENING_BOUNDARY_HOUR else "morning"
+
+
+def is_due(sub: Subscriber, now_local: datetime, slot: str) -> bool:
+    """now_local(購読者tz)時点で当該スロットを配信すべきか(有効・時刻到来・当日未配信)。"""
     if not sub.is_onboarded or not sub.enabled_genres:
         return False
-    if sub.last_delivered_on == now_local.date():
+    if not sub.slot_enabled(slot):
         return False
-    sched = sub.deliver_hour * 60 + sub.deliver_minute
-    cur = now_local.hour * 60 + now_local.minute
-    return cur >= sched
+    if sub.last_on(slot) == now_local.date():
+        return False
+    h, m = sub.slot_time(slot)
+    return (now_local.hour * 60 + now_local.minute) >= (h * 60 + m)
 
 
-def due_subscribers(session: Session, now_provider=_now_in) -> list[Subscriber]:
+def due_subscribers(session: Session, now_provider=_now_in) -> list[tuple[Subscriber, str]]:
+    """配信すべき (購読者, スロット) の組を返す。"""
     subs = session.exec(select(Subscriber).where(Subscriber.is_onboarded == True)).all()  # noqa: E712
-    return [s for s in subs if is_due(s, now_provider(s.tz))]
+    out: list[tuple[Subscriber, str]] = []
+    for s in subs:
+        now_local = now_provider(s.tz)
+        for slot in SLOTS:
+            if is_due(s, now_local, slot):
+                out.append((s, slot))
+    return out
 
 
 def deliver_to_subscriber(
     session: Session,
     sub: Subscriber,
+    slot: str,
     *,
-    curator: Curator,
     messenger,
-    settings: Settings | None = None,
     now_local: datetime | None = None,
     greeting: bool = True,
-    key: str | None = None,
+    mark_delivered: bool = True,
 ) -> list[dict]:
-    """購読者の有効ジャンルから当日ダイジェストを組み立てて push し、配信日を記録する。"""
-    settings = settings or get_settings()
+    """DB の既存ダイジェスト(当日・当スロット)から購読者へ push し、配信日を記録する。"""
     now_local = now_local or _now_in(sub.tz)
     local_date = now_local.date()
-    grouped = digest.assemble_for_genres(
-        session, sub.enabled_genres, local_date, curator=curator, settings=settings, key=key
-    )
-    specs = lc.digest_specs(grouped, greeting=greeting)
+    grouped = digest.assemble_for_genres(session, sub.enabled_genres, local_date, slot)
+    specs = lc.digest_specs(grouped, greeting=greeting, slot=slot)
     messenger.push(sub.line_user_id, specs)
-    sub.last_delivered_on = local_date
-    session.add(sub)
-    session.commit()
+    if mark_delivered:
+        sub.set_last_on(slot, local_date)
+        session.add(sub)
+        session.commit()
     return specs
 
 
@@ -79,7 +93,8 @@ def _build_messenger(settings: Settings):
 
 
 def tick() -> None:
-    """常駐スケジューラから定期実行される。例外は握り潰してデーモンを止めない。"""
+    """常駐スケジューラから定期実行される。例外は握り潰してデーモンを止めない。
+    当日・当スロットのダイジェストが揃っている購読者にだけ配信する(未完なら次tickへ持ち越し)。"""
     settings = get_settings()
     try:
         with get_session() as session:
@@ -89,26 +104,27 @@ def tick() -> None:
             messenger = _build_messenger(settings)
             if messenger is None:
                 return
-            curator = Curator(settings)
-            for sub in due:
+            for sub, slot in due:
+                now_local = _now_in(sub.tz)
+                if digest.missing_genres(session, sub.enabled_genres, now_local.date(), slot):
+                    continue  # キュレーション未完。次の点検まで待つ。
                 try:
-                    deliver_to_subscriber(
-                        session, sub, curator=curator, messenger=messenger, settings=settings
-                    )
-                    log.info("配信完了 user=%s genres=%s", sub.line_user_id, sub.enabled_genres)
+                    deliver_to_subscriber(session, sub, slot, messenger=messenger, now_local=now_local)
+                    log.info("配信完了 user=%s slot=%s genres=%s",
+                             sub.line_user_id, slot, sub.enabled_genres)
                 except Exception:
-                    log.exception("配信に失敗 user=%s", sub.line_user_id)
+                    log.exception("配信に失敗 user=%s slot=%s", sub.line_user_id, slot)
     except Exception:
         log.exception("tick で例外")
 
 
 def run_now(line_user_id: str, settings: Settings | None = None) -> None:
-    """「今すぐ配信」。自前セッションで1人に配信する(別スレッドから呼ばれる想定)。"""
+    """「今すぐ配信」。現在時刻のスロット → 無ければ他スロットの当日ダイジェストを push。
+    どちらも無ければ準備中を返す(別スレッドから呼ばれる)。配信日は記録しない。"""
     settings = settings or get_settings()
     messenger = _build_messenger(settings)
     if messenger is None:
         return
-    curator = Curator(settings)
     try:
         with get_session() as session:
             sub = session.exec(
@@ -117,19 +133,24 @@ def run_now(line_user_id: str, settings: Settings | None = None) -> None:
             if not sub or not sub.enabled_genres:
                 messenger.push(line_user_id, [lc.text_spec("先にジャンルを設定してください。")])
                 return
-            deliver_to_subscriber(
-                session, sub, curator=curator, messenger=messenger, settings=settings
-            )
+            now_local = _now_in(sub.tz)
+            primary = slot_for_now(now_local)
+            order = [primary, "evening" if primary == "morning" else "morning"]
+            for slot in order:
+                if not digest.missing_genres(session, sub.enabled_genres, now_local.date(), slot):
+                    deliver_to_subscriber(session, sub, slot, messenger=messenger,
+                                          now_local=now_local, mark_delivered=False)
+                    return
+            messenger.push(line_user_id, [lc.text_spec(
+                "本日のニュースはまだ準備中です。"
+                f"朝 {sub.morning_hour:02d}:{sub.morning_minute:02d} / "
+                f"夜 {sub.evening_hour:02d}:{sub.evening_minute:02d} 頃にお届けします。")])
     except Exception:
         log.exception("run_now で例外 user=%s", line_user_id)
-        try:
-            messenger.push(line_user_id, [lc.text_spec("ニュースの取得中にエラーが発生しました。")])
-        except Exception:
-            pass
 
 
 def make_deliver_now(settings: Settings | None = None):
-    """onboarding に渡す deliver_now。重い配信を別スレッドで実行し webhook をブロックしない。"""
+    """onboarding に渡す deliver_now。push を別スレッドで実行し webhook をブロックしない。"""
     def _deliver(sub: Subscriber) -> None:
         uid = sub.line_user_id
         threading.Thread(target=run_now, args=(uid,), daemon=True).start()

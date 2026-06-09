@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from .genres import GENRES
-from .models import NewsItem
+from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
@@ -47,23 +47,24 @@ def genre_select_spec(selected: list[str]) -> dict:
     return text_spec(head, items[:QUICK_REPLY_MAX])
 
 
-def time_select_spec() -> dict:
-    head = "毎日の配信時刻を選んでください。\n他の時刻は「7:30」のように送ってください。"
-    items = [
-        _qr("6:00", "time:0600"),
-        _qr("7:00", "time:0700"),
-        _qr("8:00", "time:0800"),
-        _qr("9:00", "time:0900"),
-        _qr("12:00", "time:1200"),
-        _qr("19:00", "time:1900"),
-    ]
+_TIME_CHOICES = {
+    "morning": [("6:00", "0600"), ("7:00", "0700"), ("8:00", "0800"), ("9:00", "0900")],
+    "evening": [("19:00", "1900"), ("20:00", "2000"), ("21:00", "2100"), ("22:00", "2200")],
+}
+
+
+def time_select_spec(slot: str = "morning") -> dict:
+    label = SLOT_LABEL.get(slot, "")
+    head = (f"{label}の配信時刻を選んでください。\n他の時刻は「7:30」のように送ってください。")
+    items = [_qr(disp, f"time:{hhmm}") for disp, hhmm in _TIME_CHOICES.get(slot, _TIME_CHOICES["morning"])]
     return text_spec(head, items)
 
 
 def menu_quick_reply() -> list[dict]:
     return [
         _qr("ジャンル変更", "genre_edit"),
-        _qr("時間変更", "time_edit"),
+        _qr("朝の時刻", "morning_edit"),
+        _qr("夜の時刻", "evening_edit"),
         _qr("今すぐ配信", "deliver_now"),
         _qr("設定確認", "show_settings"),
         _qr("ヘルプ", "help"),
@@ -74,9 +75,11 @@ def menu_spec(text: str = "メニュー") -> dict:
     return text_spec(text, menu_quick_reply())
 
 
-def settings_summary_text(genres: list[str], hour: int, minute: int) -> str:
-    g = " / ".join(genres) if genres else "(未設定)"
-    return f"現在の設定\n・ジャンル: {g}\n・配信時刻: {hour:02d}:{minute:02d}"
+def settings_summary_text(sub: Subscriber) -> str:
+    g = " / ".join(sub.enabled_genres) if sub.enabled_genres else "(未設定)"
+    m = f"{sub.morning_hour:02d}:{sub.morning_minute:02d}" if sub.morning_enabled else "オフ"
+    e = f"{sub.evening_hour:02d}:{sub.evening_minute:02d}" if sub.evening_enabled else "オフ"
+    return f"現在の設定\n・ジャンル: {g}\n・朝の配信: {m}\n・夜の配信: {e}"
 
 
 # ---- ニュース配信 ----
@@ -129,9 +132,14 @@ def _small_bubble(item: NewsItem) -> dict:
     }
 
 
-def digest_specs(grouped: dict[str, list[NewsItem]], greeting: bool = True) -> list[dict]:
+_GREETING = {"morning": "おはようございます。今朝のニュースです", "evening": "こんばんは。今夜のニュースです"}
+
+
+def digest_specs(
+    grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None
+) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列)に変換する。
-    構成: 挨拶+大ニュースFlex+小ニュースFlex(タップで詳細)。"""
+    構成: 挨拶+大ニュースFlex+小ニュースFlex(タップで詳細)。slot で朝/夜の挨拶を切替。"""
     bigs: list[NewsItem] = []
     smalls: list[NewsItem] = []
     for items in grouped.values():
@@ -147,7 +155,8 @@ def digest_specs(grouped: dict[str, list[NewsItem]], greeting: bool = True) -> l
 
     if greeting:
         genres = " / ".join(grouped.keys())
-        specs.append(text_spec(f"今日のニュースです({genres})。"))
+        head = _GREETING.get(slot or "", "今日のニュースです")
+        specs.append(text_spec(f"{head}({genres})。"))
 
     if bigs:
         bubbles = [_big_bubble(i) for i in bigs[:CAROUSEL_MAX]]

@@ -17,9 +17,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    # --- Claude (キュレーションエンジン) ---
-    anthropic_api_key: str | None = None
-    claude_model: str = "claude-sonnet-4-6"
+    # キュレーションは Claude Code(サブスク)の定期実行で行う(Anthropic API キーは使わない)。
 
     # --- LINE Messaging API ---
     line_channel_access_token: str | None = None

@@ -1,6 +1,10 @@
-"""ダイジェスト構築: 収集 → キュレーション → GenreDigest/NewsItem 永続化。
+"""ダイジェストの永続化(ingest)と組み立て(assemble)。
 
-「日×ジャンル」で1回だけキュレーションし、複数購読者で再利用する(無駄な再生成を防ぐ)。
+新方式: 収集は scripts/pipeline.py、キュレーションは Claude Code が行う。
+本モジュールは「キュレーション済みアイテム + 元ツイート」を DB に取り込み(ingest)、
+配信時には DB の既存ダイジェストから組み立てる(assemble)だけ。LLM は呼ばない。
+
+「日×ジャンル」で1ダイジェスト。複数購読者で再利用する。
 """
 
 from __future__ import annotations
@@ -10,8 +14,7 @@ from datetime import date
 from sqlmodel import Session, select
 
 from . import xclient
-from .config import Settings, get_settings
-from .curator import CuratedItem, Curator
+from .curator import CuratedItem
 from .models import GenreDigest, NewsItem
 
 
@@ -48,21 +51,36 @@ def _build_news_items(
     return items
 
 
-def build_genre_digest(
+def get_genre_digest(
+    session: Session, genre: str, local_date: date, slot: str
+) -> GenreDigest | None:
+    return session.exec(
+        select(GenreDigest).where(
+            GenreDigest.digest_date == local_date,
+            GenreDigest.slot == slot,
+            GenreDigest.genre == genre,
+        )
+    ).first()
+
+
+def ingest_curated(
     session: Session,
     genre: str,
     local_date: date,
-    *,
-    curator: Curator,
-    settings: Settings | None = None,
-    key: str | None = None,
+    slot: str,
+    curated: list[CuratedItem],
+    tweets: list[dict],
 ) -> GenreDigest:
-    """ジャンルの当日ダイジェストを収集+キュレーションして保存する(常に新規作成)。"""
-    settings = settings or get_settings()
-    tweets = xclient.collect(genre, settings=settings, key=key)
-    curated = curator.curate(genre, tweets)
+    """キュレーション済みアイテムを DB に取り込む。
+    当日・当スロット・当ジャンルの既存ダイジェストがあれば置き換える(再実行で冪等)。"""
+    existing = get_genre_digest(session, genre, local_date, slot)
+    if existing:
+        for it in items_of_digest(session, existing.id):
+            session.delete(it)
+        session.delete(existing)
+        session.commit()
 
-    digest = GenreDigest(digest_date=local_date, genre=genre)
+    digest = GenreDigest(digest_date=local_date, slot=slot, genre=genre)
     session.add(digest)
     session.commit()
     session.refresh(digest)
@@ -73,28 +91,6 @@ def build_genre_digest(
     return digest
 
 
-def get_or_build_genre_digest(
-    session: Session,
-    genre: str,
-    local_date: date,
-    *,
-    curator: Curator,
-    settings: Settings | None = None,
-    key: str | None = None,
-) -> GenreDigest:
-    """当日・当ジャンルの GenreDigest があれば再利用、無ければ構築する。"""
-    existing = session.exec(
-        select(GenreDigest).where(
-            GenreDigest.digest_date == local_date, GenreDigest.genre == genre
-        )
-    ).first()
-    if existing:
-        return existing
-    return build_genre_digest(
-        session, genre, local_date, curator=curator, settings=settings, key=key
-    )
-
-
 def items_of_digest(session: Session, digest_id: int) -> list[NewsItem]:
     return list(
         session.exec(
@@ -103,20 +99,19 @@ def items_of_digest(session: Session, digest_id: int) -> list[NewsItem]:
     )
 
 
+def missing_genres(
+    session: Session, genres: list[str], local_date: date, slot: str
+) -> list[str]:
+    """当日・当スロットのダイジェストがまだ無いジャンル(=キュレーション未実施)。"""
+    return [g for g in genres if get_genre_digest(session, g, local_date, slot) is None]
+
+
 def assemble_for_genres(
-    session: Session,
-    genres: list[str],
-    local_date: date,
-    *,
-    curator: Curator,
-    settings: Settings | None = None,
-    key: str | None = None,
+    session: Session, genres: list[str], local_date: date, slot: str
 ) -> dict[str, list[NewsItem]]:
-    """購読ジャンルごとに当日の NewsItem を返す(無ければ構築)。"""
+    """購読ジャンルごとに当日・当スロットの NewsItem を返す(DB の既存ダイジェストのみ。無ければ空)。"""
     out: dict[str, list[NewsItem]] = {}
     for genre in genres:
-        digest = get_or_build_genre_digest(
-            session, genre, local_date, curator=curator, settings=settings, key=key
-        )
-        out[genre] = items_of_digest(session, digest.id)
+        digest = get_genre_digest(session, genre, local_date, slot)
+        out[genre] = items_of_digest(session, digest.id) if digest else []
     return out

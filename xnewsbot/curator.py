@@ -1,23 +1,20 @@
-"""ニュースキュレーション(Claude)。
+"""ニュースキュレーションの「契約」(指示文 + 入出力スキーマ + パース)。
 
-生ツイート群を Claude が束ねて重複排除し、トピック化・重要度判定・見出し/要約を生成する。
-流用元: XAgent/xagent/formatter.py の `_anthropic_complete` / complete 注入パターン。
-LLM呼び出しは complete(system, user)->str に抽象化し、テストはフェイクを注入する。
+方針変更: キュレーション(束ね・重複排除・重要度判定・見出し/要約)は **Claude Code(サブスク)
+の定期実行** が行う。本モジュールは Anthropic API を呼ばない。代わりに:
+- curation_instructions(): Claude Code が従う指示文(プロンプト)
+- format_tweets_for_curation(): 収集ツイートを読みやすい入力に整形
+- parse_curated(): Claude Code が出力した JSON/リストを CuratedItem に変換(重要度の上限・並び替え込み)
+を提供する。これらは scripts/pipeline.py から使う。
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Callable
 
-from .config import Settings, get_settings
-
-CompleteFn = Callable[[str, str], str]
-
-_MAX_TOKENS = 2500
-# Claude に渡すツイート数の上限(トークン/コスト対策。collect は viewCount 降順済み)
-_CURATE_INPUT_LIMIT = 40
+# Claude に渡す(=ソースとして採番する)ツイート数の上限。source_idxs はこの範囲。
+CURATE_INPUT_LIMIT = 40
 # 1ジャンルあたり「大ニュース」の最大件数
 MAX_BIG_PER_GENRE = 3
 
@@ -31,27 +28,11 @@ class CuratedItem:
     source_idxs: list[int] = field(default_factory=list)
 
 
-def _anthropic_complete(settings: Settings, system: str, user: str) -> str:
-    import anthropic
-
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY が未設定です。.env を設定してください。")
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-    msg = client.messages.create(
-        model=settings.claude_model,
-        max_tokens=_MAX_TOKENS,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return "".join(
-        getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text"
-    ).strip()
-
-
-def _system_prompt(genre: str) -> str:
+def curation_instructions(genre: str) -> str:
+    """Claude Code がキュレーション時に従う指示文。"""
     return (
         f"あなたは日本語のニュース編集者です。X(旧Twitter)の「{genre}」ジャンルの投稿群から、"
-        "その日のニュースを抽出して整理します。\n"
+        "その日のニュースを抽出して整理してください。\n"
         "ルール:\n"
         "- 同じ話題(近い内容)は1件にまとめ、重複を排除する。\n"
         "- 各ニュースに importance を付ける。'big'=広く影響が大きい/速報級でインプレッションも高いもの。"
@@ -60,14 +41,15 @@ def _system_prompt(genre: str) -> str:
         "- 投稿に書かれていない事実を創作しない。誇張しない。広告/個人の宣伝は除外する。\n"
         "- score は重要度の目安(0-100の整数)。\n"
         "- source_idxs は、そのニュースの根拠となった入力ツイートの番号(複数可)。\n"
-        "出力は**JSON配列のみ**。前後に説明文やコードフェンスを付けない。\n"
+        "出力は**JSON配列のみ**。\n"
         '形式: [{"title":"...","summary":"...","importance":"big|small","score":0,"source_idxs":[0,2]}]'
     )
 
 
-def _format_tweets(tweets: list[dict]) -> str:
+def format_tweets_for_curation(tweets: list[dict]) -> str:
+    """収集ツイートを採番付きの読みやすいテキストに整形する(source_idxs と対応)。"""
     lines = []
-    for i, t in enumerate(tweets[:_CURATE_INPUT_LIMIT]):
+    for i, t in enumerate(tweets[:CURATE_INPUT_LIMIT]):
         a = (t.get("author") or {}).get("userName", "?")
         text = " ".join((t.get("text") or "").split())
         if len(text) > 220:
@@ -79,12 +61,11 @@ def _format_tweets(tweets: list[dict]) -> str:
 
 
 def _extract_json_array(raw: str) -> list:
-    """モデル出力から JSON 配列を取り出す。コードフェンスや前後ノイズを許容。"""
+    """文字列から JSON 配列を取り出す。コードフェンスや前後ノイズを許容。"""
     s = raw.strip()
     if s.startswith("```"):
-        # ```json ... ``` を剥がす
-        s = s.split("```", 2)
-        s = s[1] if len(s) >= 2 else raw
+        parts = s.split("```", 2)
+        s = parts[1] if len(parts) >= 2 else raw
         if s.lstrip().lower().startswith("json"):
             s = s.lstrip()[4:]
     start = s.find("[")
@@ -128,47 +109,13 @@ def _enforce_big_cap(items: list[CuratedItem]) -> list[CuratedItem]:
     return items
 
 
-class Curator:
-    def __init__(self, settings: Settings | None = None, complete: CompleteFn | None = None) -> None:
-        self.settings = settings or get_settings()
-        self._complete = complete or (lambda s, u: _anthropic_complete(self.settings, s, u))
-
-    def curate(self, genre: str, tweets: list[dict]) -> list[CuratedItem]:
-        if not tweets:
-            return []
-        system = _system_prompt(genre)
-        user = "次の投稿群を整理してください:\n" + _format_tweets(tweets)
-
-        raw = self._complete(system, user)
-        try:
-            data = _extract_json_array(raw)
-        except (ValueError, json.JSONDecodeError):
-            # 1回だけ「JSONのみ」を強めて再試行
-            raw = self._complete(
-                system, user + "\n\n注意: JSON配列のみを出力。説明文やコードフェンスは禁止。"
-            )
-            try:
-                data = _extract_json_array(raw)
-            except (ValueError, json.JSONDecodeError):
-                # 最終フォールバック: 機械的に小ニュース化(配信を止めない)
-                return self._mechanical_fallback(tweets)
-
-        items = _enforce_big_cap(_coerce_items(data))
-        # 大ニュースを上に、同区分内は score 降順
-        items.sort(key=lambda i: (i.importance != "big", -i.score))
-        return items
-
-    def _mechanical_fallback(self, tweets: list[dict]) -> list[CuratedItem]:
-        out: list[CuratedItem] = []
-        for i, t in enumerate(tweets[:10]):
-            text = " ".join((t.get("text") or "").split())
-            out.append(
-                CuratedItem(
-                    title=(text[:40] or "(本文なし)"),
-                    summary=text[:160],
-                    importance="big" if i == 0 else "small",
-                    score=max(0, 100 - i * 5),
-                    source_idxs=[i],
-                )
-            )
-        return out
+def parse_curated(data) -> list[CuratedItem]:
+    """Claude Code の出力(JSON文字列 or 既にパースされたlist)を CuratedItem に変換。
+    大ニュース上限を強制し、大→小・score降順で並べる。"""
+    if isinstance(data, str):
+        data = _extract_json_array(data)
+    if not isinstance(data, list):
+        raise ValueError("キュレーション結果は配列である必要があります")
+    items = _enforce_big_cap(_coerce_items(data))
+    items.sort(key=lambda i: (i.importance != "big", -i.score))
+    return items
