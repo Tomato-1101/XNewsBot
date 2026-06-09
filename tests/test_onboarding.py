@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlmodel import select
 
+from xnewsbot.genres import SELECTABLE_KEYS
 from xnewsbot.models import Subscriber
 from xnewsbot.onboarding import handle_event, parse_time
 
@@ -72,7 +73,8 @@ def test_genre_toggle_off(session, messenger):
 def test_genre_all_then_time_postback(session, messenger):
     handle_event(session, messenger, ev("follow"))
     handle_event(session, messenger, ev("postback", data="genre_all"))
-    assert len(_sub(session).pending_genres) == 6  # AI/株/経済/政治/RPA/世界
+    # 「すべて」は選択可能ジャンル全件(genres.toml で増減しても追従)
+    assert len(_sub(session).pending_genres) == len(SELECTABLE_KEYS)
     handle_event(session, messenger, ev("postback", data="genre_done"))
     handle_event(session, messenger, ev("postback", data="time:0800"))  # 朝
     sub = _sub(session)
