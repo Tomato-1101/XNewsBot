@@ -18,6 +18,7 @@ from typing import Callable
 from sqlmodel import Session, select
 
 from . import line_client as lc
+from . import mockdata
 from .genres import GENRE_KEYS, SELECTABLE_KEYS
 from .models import SLOT_LABEL, Subscriber
 
@@ -116,6 +117,8 @@ _BIND_WORDS = ("このグループに配信", "ここに配信", "グループ�
 _UNBIND_WORDS = ("個別に配信", "個別配信", "1対1に配信", "個人に配信")
 # ボタンを押さずテキストでも「今すぐ最新を収集して送る」を起動できる合言葉
 _DELIVER_WORDS = ("今すぐ", "今すぐ配信", "最新", "最新ニュース", "配信", "ニュース配信")
+# レイアウト確認用。収集せず DB のモック(架空)を現行レイアウトで返す合言葉
+_MOCK_WORDS = ("テスト", "test", "てすと", "モック", "mock", "サンプル", "レイアウト")
 
 
 def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token: str,
@@ -171,6 +174,11 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
         messenger.reply(reply_token, [lc.menu_spec("メニューです。操作を選んでください。")])
     elif text in ("ヘルプ", "help", "使い方") or low == "help":
         messenger.reply(reply_token, [_help_spec()])
+    elif text.lower() in _MOCK_WORDS:
+        # レイアウト確認用。収集せず、DB のモック(架空)を現行レイアウトで即返す(API/時間を使わない)。
+        grouped = mockdata.get_or_seed(session)
+        messenger.reply(reply_token,
+                        [lc.text_spec(mockdata.WARNING)] + lc.digest_specs(grouped, greeting=False))
     elif text in _DELIVER_WORDS:
         # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
         messenger.reply(reply_token, [lc.text_spec(

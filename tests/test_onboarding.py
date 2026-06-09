@@ -126,6 +126,16 @@ def test_deliver_now_invokes_callback(session, messenger):
     assert "準備" in messenger.last_reply[0]["text"]
 
 
+def test_mock_trigger_replies_sample_layout(session, messenger):
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("message", text="テスト"))
+    specs = messenger.last_reply
+    # 先頭は「架空」警告、続いて現行レイアウト(大=縦長1枚 / 小=横カルーセル)
+    assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
+    assert any(s["type"] == "flex" and s["alt"] == "大ニュース" for s in specs)
+    assert len(specs) <= 5  # reply 上限内
+
+
 def test_genre_done_empty_nudges(session, messenger):
     handle_event(session, messenger, ev("follow"))
     handle_event(session, messenger, ev("postback", data="genre_done"))
