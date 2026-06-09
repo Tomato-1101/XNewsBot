@@ -43,6 +43,7 @@ def _build_news_items(
                 rank=rank,
                 title=ci.title,
                 summary=ci.summary,
+                detail=ci.detail,
                 source_urls=source_urls,
                 source_tweets=source_tweets,
                 top_view_count=top_views,

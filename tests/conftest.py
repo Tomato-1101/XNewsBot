@@ -62,9 +62,9 @@ def curated_items(big: int = 1, small: int = 2) -> list[dict]:
     """キュレーション済み(Claude Code 出力相当)のアイテム dict 列。source_idxs 付き。"""
     items = []
     for i in range(big):
-        items.append({"title": f"大ニュース{i}", "summary": "要約big",
+        items.append({"title": f"大ニュース{i}", "summary": "要約big", "detail": "詳細big",
                       "importance": "big", "score": 90 - i, "source_idxs": [i]})
     for j in range(small):
-        items.append({"title": f"小ニュース{j}", "summary": "要約small",
+        items.append({"title": f"小ニュース{j}", "summary": "要約small", "detail": "詳細small",
                       "importance": "small", "score": 50 - j, "source_idxs": [big + j]})
     return items

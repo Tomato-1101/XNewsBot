@@ -25,6 +25,7 @@ class CuratedItem:
     summary: str
     importance: str          # "big" | "small"
     score: int               # 0-100 (重要度の目安)
+    detail: str = ""         # 「詳細を見る」用の長め解説(背景・経緯。空なら表示時 summary で代替)
     source_idxs: list[int] = field(default_factory=list)
 
 
@@ -37,12 +38,15 @@ def curation_instructions(genre: str) -> str:
         "- 同じ話題(近い内容)は1件にまとめ、重複を排除する。\n"
         "- 各ニュースに importance を付ける。'big'=広く影響が大きい/速報級でインプレッションも高いもの。"
         f"それ以外は 'small'。**'big' は最大 {MAX_BIG_PER_GENRE} 件まで**。\n"
-        "- title は日本語の短い見出し(40字以内)。summary は2〜3文の要約。\n"
+        "- title は日本語の短い見出し(40字以内)。summary は2〜3文の簡潔な要約(一覧表示用)。\n"
+        "- detail は「詳細を見る」で表示する長めの解説(4〜8文)。"
+        "背景・経緯・なぜ重要か・関連する数字や反応など、投稿群から読み取れる内容を厚く書く。"
+        "summary の言い換えで終わらせず、必ず一段詳しくする。\n"
         "- 投稿に書かれていない事実を創作しない。誇張しない。広告/個人の宣伝は除外する。\n"
         "- score は重要度の目安(0-100の整数)。\n"
         "- source_idxs は、そのニュースの根拠となった入力ツイートの番号(複数可)。\n"
         "出力は**JSON配列のみ**。\n"
-        '形式: [{"title":"...","summary":"...","importance":"big|small","score":0,"source_idxs":[0,2]}]'
+        '形式: [{"title":"...","summary":"...","detail":"...","importance":"big|small","score":0,"source_idxs":[0,2]}]'
     )
 
 
@@ -93,6 +97,7 @@ def _coerce_items(data: list) -> list[CuratedItem]:
             CuratedItem(
                 title=title[:80],
                 summary=str(d.get("summary") or "").strip(),
+                detail=str(d.get("detail") or "").strip(),
                 importance=importance,
                 score=score,
                 source_idxs=idxs,

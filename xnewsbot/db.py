@@ -42,6 +42,10 @@ def _migrate(engine) -> None:
         if cols and "push_to" not in cols:
             conn.execute(text("ALTER TABLE subscriber ADD COLUMN push_to VARCHAR"))
 
+        ncols = {row[1] for row in conn.execute(text("PRAGMA table_info(newsitem)"))}
+        if ncols and "detail" not in ncols:
+            conn.execute(text("ALTER TABLE newsitem ADD COLUMN detail VARCHAR DEFAULT ''"))
+
 
 @contextmanager
 def get_session() -> Iterator[Session]:

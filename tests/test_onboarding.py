@@ -179,8 +179,12 @@ def test_detail_postback_returns_news_detail(session, messenger):
     _onboard(session, messenger)
     item = NewsItem(
         genre_digest_id=1, genre="AI", importance="small", rank=0,
-        title="小ニュースの見出し", summary="これは詳細の要約です。",
-        source_urls=["https://x.com/u/status/1"], source_tweets=[], top_view_count=0,
+        title="小ニュースの見出し", summary="短い要約。",
+        detail="これは長めの詳細解説です。背景や経緯まで含めて厚く書かれています。",
+        source_urls=["https://x.com/u/status/1"],
+        source_tweets=[{"text": "元ツイートの本文がここに入ります。", "author": "alice",
+                        "url": "https://x.com/u/status/1", "views": 100}],
+        top_view_count=100,
     )
     session.add(item)
     session.commit()
@@ -188,10 +192,27 @@ def test_detail_postback_returns_news_detail(session, messenger):
 
     handle_event(session, messenger, ev("postback", data=f"detail:{item.id}"))
     specs = messenger.last_reply
-    # メニューではなく、その記事の詳細(タイトル+要約)が返る
+    # メニューではなく、その記事の詳細が返る。タイトル再掲で終わらず detail と元ポスト本文まで載る
     assert len(specs) == 1 and specs[0]["type"] == "text"
-    assert "小ニュースの見出し" in specs[0]["text"]
-    assert "これは詳細の要約です。" in specs[0]["text"]
+    body = specs[0]["text"]
+    assert "小ニュースの見出し" in body
+    assert "これは長めの詳細解説です。" in body          # detail を表示
+    assert "元ツイートの本文がここに入ります。" in body    # 元ポストの本文も表示
+    assert "@alice" in body
+
+
+def test_detail_falls_back_to_summary_when_no_detail(session, messenger):
+    _onboard(session, messenger)
+    item = NewsItem(
+        genre_digest_id=1, genre="AI", importance="small", rank=0,
+        title="見出し", summary="detail が無いときの要約。", detail="",
+        source_urls=[], source_tweets=[], top_view_count=0,
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+    handle_event(session, messenger, ev("postback", data=f"detail:{item.id}"))
+    assert "detail が無いときの要約。" in messenger.last_reply[0]["text"]
 
 
 def test_detail_postback_missing_item_is_graceful(session, messenger):

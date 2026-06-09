@@ -96,7 +96,8 @@ class NewsItem(SQLModel, table=True):
     importance: str = "small"   # "big" | "small"
     rank: int = 0
     title: str = ""
-    summary: str = ""
+    summary: str = ""          # 見出し一覧/大ニュース inline 用の簡潔な要約(2〜3文)
+    detail: str = ""           # 「詳細を見る」タップ時に出す長め解説(背景・経緯。空なら summary で代替)
     source_urls: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     # [{"text":..., "author":..., "url":..., "views":int}, ...]
     source_tweets: list[dict] = Field(default_factory=list, sa_column=Column(JSON))

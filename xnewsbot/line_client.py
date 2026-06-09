@@ -214,22 +214,47 @@ def digest_specs(
     return _pack_bubbles(components, alt_first=alt, alt_rest="ニュースのつづき")
 
 
+# LINE のテキストメッセージ上限は5000字。余裕を持たせて切る。
+DETAIL_MAX_CHARS = 4800
+# 詳細に載せる元ポスト本文1件あたりの上限(長すぎるツイートで詰まらないように)。
+DETAIL_TWEET_CHARS = 800
+
+
 def detail_spec(item: NewsItem) -> dict:
+    """「詳細を見る」タップで返す本文。見出しの再掲で終わらせず、
+    長め解説(detail。無ければ summary)＋元ポストの本文そのものを載せて厚くする。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
     lines = [f"【{label}】{item.title}"]
-    if item.summary:
+
+    body = item.detail or item.summary
+    if body:
         lines.append("")
-        lines.append(item.summary)
+        lines.append(body)
+
     if item.source_tweets:
         lines.append("")
-        lines.append("元ポスト:")
+        lines.append("──── 元ポスト ────")
         for s in item.source_tweets[:3]:
+            author = s.get("author", "?")
+            txt = " ".join((s.get("text") or "").split())
+            if len(txt) > DETAIL_TWEET_CHARS:
+                txt = txt[:DETAIL_TWEET_CHARS] + "…"
             url = s.get("url", "")
-            lines.append(f"・@{s.get('author','?')} {url}".rstrip())
+            block = f"@{author}"
+            if txt:
+                block += f"\n{txt}"
+            if url:
+                block += f"\n{url}"
+            lines.append("")
+            lines.append(block)
     elif item.source_urls:
         lines.append("")
         lines.append("元ポスト: " + " ".join(item.source_urls[:3]))
-    return text_spec("\n".join(lines))
+
+    text = "\n".join(lines)
+    if len(text) > DETAIL_MAX_CHARS:
+        text = text[:DETAIL_MAX_CHARS] + "…"
+    return text_spec(text)
 
 
 # ---------------------------------------------------------------- SDK 送信

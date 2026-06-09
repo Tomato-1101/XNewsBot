@@ -39,7 +39,14 @@ def test_parse_curated_skips_invalid_entries():
     assert len(items) == 1 and items[0].title == "ok"
 
 
+def test_parse_curated_keeps_detail():
+    items = parse_curated([{"title": "x", "summary": "短い", "detail": "長い詳細解説",
+                            "importance": "small", "score": 5, "source_idxs": [0]}])
+    assert items[0].detail == "長い詳細解説"
+
+
 def test_curation_helpers_smoke():
-    assert "JSON" in curation_instructions("AI")
+    instr = curation_instructions("AI")
+    assert "JSON" in instr and "detail" in instr  # detail 指示を含む
     s = format_tweets_for_curation(make_tweets(3))
     assert "[0]" in s and "[2]" in s
