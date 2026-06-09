@@ -10,10 +10,10 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 決定事項
 - 稼働: **ローカル Mac 常駐(launchd 3点) + トンネル(ngrok 固定ドメイン)**。
   - `com.tomato.xnewsbot`(uvicorn:8010 webhook専任) / `com.tomato.xnewsbot-ngrok`(固定ドメイン→:8010, `--log=stdout`必須) /
-    `com.tomato.xnewsbot-deliver`(配信時刻の5分前=07:55/20:55 起動 → 定刻08:00/21:00 着)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
+    `com.tomato.xnewsbot-deliver`(配信時刻の15分前=07:45/20:45 起動 → 定刻08:00/21:00 着)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
 - 加工: **Claude Code が定期実行でキュレーション(Anthropic API キーは使わない=従量課金なし)**。
 - 配信: **朝(既定 08:00)・夜(既定 21:00 着)の2スロット**。各スロットで最新を収集し直す(=朝夜で別内容)。
-  収集に約2分かかるため**5分前(07:55/20:55)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。
+  収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため**15分前(07:45/20:45)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
 - ジャンル: **特大(常時) / AI / 株 / 経済 / 政治 / RPA / 世界情勢 / テクノロジー / ビジネス / 健康 / 暗号資産**(`config/genres.toml` で編集)。
   各ジャンルは海外・国際キーワードも併記し日本だけでなく世界の話題も拾う(lang:jaは維持)。
 - 表示(見やすさ優先): **大ニュースはジャンル順(特大→各ジャンル)に全件表示**(1ジャンルが多くても他を押し出さない/各ジャンル最低1件/無いジャンルは出さない)、**小ニュースは見出し行を全件表示**(タップで詳細。旧「ほかN件」隠れバグ解消)。1バブル~7KB超で次メッセージへ自動分割(`digest_specs`/`_pack_bubbles`、件数は削らない)。選択肢に**「キャンセル」**追加。
@@ -26,10 +26,10 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 2部構成（READMEの「アーキテクチャ」も参照）
 1. **常駐サーバ**(`com.tomato.xnewsbot`, FastAPI:8010): **LINE Webhook 受信専任**(オンボーディング/設定変更/
    詳細タップ/今すぐ配信)。定刻配信の tick は既定で無効(`scheduler_enabled=False`)。
-2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の5分前=07:55/20:55 に起動):
+2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の15分前=07:45/20:45 に起動):
    先に `pipeline.py collect`(--due) → **Claude Code がキュレーション** → `pipeline.py ingest` を済ませ、
    `deliver.sh` の `wait_until` で**定刻(08:00/21:00)まで待ってから** `pipeline.py push --due`(=その時刻までの最新を、届く時刻を揃えて配信/古いDBを送らない)。
-   配信時刻を変えたら **plist の StartCalendarInterval(5分前) と deliver.sh の MORNING_HHMM/EVENING_HHMM(定刻) の両方**を更新する。
+   配信時刻を変えたら **plist の StartCalendarInterval(15分前) と deliver.sh の MORNING_HHMM/EVENING_HHMM(定刻) の両方**を更新する。
    「今すぐ配信」は常駐サーバが `deliver.sh --user` を別プロセス起動して同様にリアルタイム配信する。
    **役割分担(分業)**: 収集と送信はプログラム、記事選別・見出し・要約の生成だけヘッドレス Claude(Read/Writeのみ)。
 
@@ -80,7 +80,7 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 次にやること（本人/PC操作エージェント。詳細手順は `ops/AGENT_TASKS.md`）
 1. **LINE Webhook URL に `/line/callback` を付ける**(現状これが抜けていて 404＝無反応)。`<ngrok公開URL>/line/callback`。
 2. 友だち追加 → オンボーディング(ジャンル→朝→夜)。※「特大」は選択肢に出ない常時枠。
-3. `com.tomato.xnewsbot-deliver` を launchd インストール(07:55/20:55 起動→定刻着)。`launchctl kickstart -k` で手動配信テスト(定刻を過ぎた時間に実行すれば待ちは入らず即送信)。
+3. `com.tomato.xnewsbot-deliver` を launchd インストール(07:45/20:45 起動→定刻着)。`launchctl kickstart -k` で手動配信テスト(定刻を過ぎた時間に実行すれば待ちは入らず即送信)。
 4. 小ニュースのタップ→詳細、Botの「今すぐ配信」(その時の最新を収集して送る)を実機確認。
 5. ジャンル/キーワード/exclude/min_faves/selectable は `config/genres.toml`(再インストール不要)、
    収集パラメータ(collect_hours 等)は `.env` で運用しながら調整。配信時刻を変えたら deliver plist の Hour/Minute も更新。
