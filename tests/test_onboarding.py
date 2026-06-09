@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlmodel import select
 
 from xnewsbot.genres import SELECTABLE_KEYS
-from xnewsbot.models import Subscriber
+from xnewsbot.models import NewsItem, Subscriber
 from xnewsbot.onboarding import handle_event, parse_time
 
 
@@ -173,6 +173,32 @@ def test_cancel_via_text_word(session, messenger):
     assert _sub(session).onboarding_step == "morning"
     handle_event(session, messenger, ev("message", text="キャンセル"))
     assert _sub(session).onboarding_step == "done"
+
+
+def test_detail_postback_returns_news_detail(session, messenger):
+    _onboard(session, messenger)
+    item = NewsItem(
+        genre_digest_id=1, genre="AI", importance="small", rank=0,
+        title="小ニュースの見出し", summary="これは詳細の要約です。",
+        source_urls=["https://x.com/u/status/1"], source_tweets=[], top_view_count=0,
+    )
+    session.add(item)
+    session.commit()
+    session.refresh(item)
+
+    handle_event(session, messenger, ev("postback", data=f"detail:{item.id}"))
+    specs = messenger.last_reply
+    # メニューではなく、その記事の詳細(タイトル+要約)が返る
+    assert len(specs) == 1 and specs[0]["type"] == "text"
+    assert "小ニュースの見出し" in specs[0]["text"]
+    assert "これは詳細の要約です。" in specs[0]["text"]
+
+
+def test_detail_postback_missing_item_is_graceful(session, messenger):
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("postback", data="detail:99999"))
+    specs = messenger.last_reply
+    assert specs[0]["type"] == "text" and "見つかりません" in specs[0]["text"]
 
 
 def test_genre_done_empty_nudges(session, messenger):

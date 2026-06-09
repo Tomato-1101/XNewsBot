@@ -20,7 +20,7 @@ from sqlmodel import Session, select
 from . import line_client as lc
 from . import mockdata
 from .genres import GENRE_KEYS, SELECTABLE_KEYS
-from .models import SLOT_LABEL, Subscriber
+from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # deliver_now(sub) : その購読者へ「今すぐ」配信する(非同期/別セッションで実行する想定)
 DeliverNow = Callable[[Subscriber], None]
@@ -294,8 +294,27 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
     elif data == "cancel":
         _do_cancel(session, messenger, sub, reply_token)
 
+    elif data.startswith("detail:"):
+        # 「そのほかの見出し」の行タップ。当該ニュースの詳細(要約+元ポスト)を返す。
+        _handle_detail(session, messenger, data.split(":", 1)[1], reply_token)
+
     else:
         messenger.reply(reply_token, [lc.menu_spec("メニュー")])
+
+
+def _handle_detail(session, messenger, item_id_str: str, reply_token: str) -> None:
+    """小ニュースの見出しタップ(postback detail:<id>)に、その記事の詳細を reply する。"""
+    try:
+        item_id = int(item_id_str)
+    except ValueError:
+        messenger.reply(reply_token, [lc.menu_spec("メニュー")])
+        return
+    item = session.get(NewsItem, item_id)
+    if item is None:
+        messenger.reply(reply_token, [lc.text_spec(
+            "この記事は見つかりませんでした(配信が更新された可能性があります)。")])
+        return
+    messenger.reply(reply_token, [lc.detail_spec(item)])
 
 
 def _do_cancel(session, messenger, sub: Subscriber, reply_token: str) -> None:
