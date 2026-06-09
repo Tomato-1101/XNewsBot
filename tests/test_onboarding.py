@@ -136,6 +136,25 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     assert len(specs) <= 5  # reply 上限内
 
 
+def test_group_command_responds_but_chatter_ignored(session, messenger):
+    _onboard(session, messenger)
+    # グループでの明示コマンド(テスト)は応答する
+    handle_event(session, messenger, ev("message", text="テスト", target_id="Cgroup1"))
+    assert any(s["type"] == "flex" and s["alt"] == "大ニュース" for s in messenger.last_reply)
+    # グループでの雑談には無反応(返信が増えない=荒らさない)
+    before = len(messenger.replies)
+    handle_event(session, messenger, ev("message", text="おはよう", target_id="Cgroup1"))
+    assert len(messenger.replies) == before
+
+
+def test_group_deliver_now_triggers_callback(session, messenger):
+    _onboard(session, messenger)
+    called = []
+    handle_event(session, messenger, ev("message", text="今すぐ", target_id="Cgroup1"),
+                 deliver_now=lambda sub: called.append(sub.line_user_id))
+    assert called == ["U1"]
+
+
 def test_genre_done_empty_nudges(session, messenger):
     handle_event(session, messenger, ev("follow"))
     handle_event(session, messenger, ev("postback", data="genre_done"))

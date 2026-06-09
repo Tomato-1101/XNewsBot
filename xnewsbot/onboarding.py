@@ -121,6 +121,34 @@ _DELIVER_WORDS = ("今すぐ", "今すぐ配信", "最新", "最新ニュース"
 _MOCK_WORDS = ("テスト", "test", "てすと", "モック", "mock", "サンプル", "レイアウト")
 
 
+def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: str,
+                 deliver_now: DeliverNow | None) -> bool:
+    """1:1でもグループ/ルームでも効く明示コマンドを処理する。処理したら True。
+
+    グループでは雑談に逐一反応させたくないので、ここで True になったものだけ応答する。"""
+    low = text.lower()
+    if low in _MOCK_WORDS:
+        # レイアウト確認用。収集せず DB のモック(架空)を現行レイアウトで即返す(API/時間を使わない)。
+        grouped = mockdata.get_or_seed(session)
+        messenger.reply(reply_token,
+                        [lc.text_spec(mockdata.WARNING)] + lc.digest_specs(grouped, greeting=False))
+        return True
+    if text in _DELIVER_WORDS:
+        # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
+        messenger.reply(reply_token, [lc.text_spec(
+            "最新のニュースを今すぐお送りします…(収集に1〜2分ほどかかります)")])
+        if deliver_now is not None:
+            deliver_now(sub)
+        return True
+    if text in ("メニュー", "menu") or low == "menu":
+        messenger.reply(reply_token, [lc.menu_spec("メニューです。操作を選んでください。")])
+        return True
+    if text in ("ヘルプ", "help", "使い方") or low == "help":
+        messenger.reply(reply_token, [_help_spec()])
+        return True
+    return False
+
+
 def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token: str,
                     deliver_now: DeliverNow | None, target_id: str | None = None) -> None:
     text = (text or "").strip()
@@ -143,8 +171,10 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
         messenger.reply(reply_token, [lc.text_spec("配信先を個別トークに戻しました。")])
         return
 
-    # グループ/ルームでは合言葉以外に反応しない(他のメンバーの発言に逐一返信しない)
+    # グループ/ルーム: 明示コマンド(今すぐ/テスト/メニュー/ヘルプ)のみ応答する。
+    # オンボーディング(ジャンル/時刻設定)は1:1専用。雑談には無反応(荒らさない)。
     if target_id:
+        _try_command(session, messenger, sub, text, reply_token, deliver_now)
         return
 
     # 時刻入力待ち(朝/夜。初回 or 編集)
@@ -168,28 +198,13 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
         ])
         return
 
-    # オンボーディング済み: コマンド処理
-    low = text.lower()
-    if text in ("メニュー", "menu") or low == "menu":
-        messenger.reply(reply_token, [lc.menu_spec("メニューです。操作を選んでください。")])
-    elif text in ("ヘルプ", "help", "使い方") or low == "help":
-        messenger.reply(reply_token, [_help_spec()])
-    elif text.lower() in _MOCK_WORDS:
-        # レイアウト確認用。収集せず、DB のモック(架空)を現行レイアウトで即返す(API/時間を使わない)。
-        grouped = mockdata.get_or_seed(session)
-        messenger.reply(reply_token,
-                        [lc.text_spec(mockdata.WARNING)] + lc.digest_specs(grouped, greeting=False))
-    elif text in _DELIVER_WORDS:
-        # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
-        messenger.reply(reply_token, [lc.text_spec(
-            "最新のニュースを今すぐお送りします…(収集に1〜2分ほどかかります)")])
-        if deliver_now is not None:
-            deliver_now(sub)
-    else:
-        messenger.reply(reply_token, [
-            lc.text_spec("メニューから操作できます。"),
-            lc.menu_spec("メニュー"),
-        ])
+    # オンボーディング済み: 明示コマンド → 該当なければメニューへ誘導
+    if _try_command(session, messenger, sub, text, reply_token, deliver_now):
+        return
+    messenger.reply(reply_token, [
+        lc.text_spec("メニューから操作できます。"),
+        lc.menu_spec("メニュー"),
+    ])
 
 
 def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token: str,
