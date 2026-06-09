@@ -15,9 +15,13 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 - 対応は **LINE のみ**、ニュース源は **X のみ**。XAgent / x-research のコードは触らない。
 
 ## 2部構成（READMEの「アーキテクチャ」も参照）
-1. **常駐サーバ**: LINE Webhook + 60秒 tick(時刻到来&未配信スロットを DB から push)。APIキー不要。
-2. **キュレーション定期実行(Claude Code)**: `pipeline.py collect`(朝/夜) → Claude Code がキュレーション
-   → `pipeline.py ingest`。これが DB にダイジェストを入れ、tick がそれを配信する。
+1. **常駐サーバ**(`com.tomato.xnewsbot`, FastAPI:8010): **LINE Webhook 受信専任**(オンボーディング/設定変更/
+   詳細タップ/今すぐ配信)。定刻配信の tick は既定で無効(`scheduler_enabled=False`)。
+2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 朝8:00/夜21:00 に起動):
+   配信時刻ちょうどに `pipeline.py collect`(--due) → **Claude Code がキュレーション** → `pipeline.py ingest`
+   → `pipeline.py push --due` を一気通貫(=その時刻までの最新を届ける/古いDBを送らない)。
+   「今すぐ配信」は常駐サーバが `deliver.sh --user` を別プロセス起動して同様にリアルタイム配信する。
+   **役割分担(分業)**: 収集と送信はプログラム、記事選別・見出し・要約の生成だけヘッドレス Claude(Read/Writeのみ)。
 
 ## 実装状況（2026-06-09）
 - コア実装・ユニットテスト完了。**29 tests passing**（`.venv/bin/python -m pytest -q`）。
@@ -50,17 +54,26 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 - `NewsItem`: genre / importance("big"|"small") / title / summary / source_urls / source_tweets / top_view_count。
 
 ## パイプライン(scripts/pipeline.py)
-- `collect --due|--genres A,B --slot morning|evening --out raw.json` … Xから収集して raw を書く(slotはタグ)。
+- `collect --due|--user U××××|--genres A,B --slot morning|evening --out raw.json` … Xから収集して raw を書く。
+  `--due`/`--user` は **常時ジャンル(特大)を必ず含める**。`--genres` は指定のみ。
 - `ingest --raw raw.json --curated curated.json [--slot ...]` … curated を DB に取り込む(slotは raw から自動)。
-- `push --user U×××× [--slot ...]` … 当日ダイジェストを手動 push(slot省略時は現在時刻から推定)。
+- `push --due [--slot ...]` … 当該スロットが有効で当日未配信の **全購読者** へ送信し、配信済みに記録(定刻配信)。
+- `push --user U×××× [--slot ...]` … 指定ユーザーへ送信(今すぐ配信。配信済みにしない)。
 - curated JSON の形: `{"genres": {genre: [{"title","summary","importance","score","source_idxs":[..]}]}}`。
-  `source_idxs` は raw の当該ジャンル配列のインデックス。大ニュースはジャンルあたり最大3件(curator.MAX_BIG_PER_GENRE)。
+  `source_idxs` は raw の当該ジャンル配列のインデックス。大ニュースはジャンルあたり最大3件。
+  **特大ジャンルは必ず1件**(importance=big)を出すよう curate_prompt.md で指示。
 
-## 次にやること
-1. キュレーションの定期実行を朝・夜の2本セットする(各配信時刻の少し前)。collect→(Claude Codeがキュレーション)→ingest。
-2. ngrok 起動 → LINE の Webhook URL を `https://<domain>/line/callback` に設定 → 友だち追加。
-3. オンボーディング(ジャンル→朝→夜) → 「今すぐ配信」で大/小ニュース push、小ニュースのタップ→詳細 を実機確認。
-4. 問題なければ launchd 常駐化(ops/com.tomato.xnewsbot.plist)。
-5. ジャンル/キーワード/exclude/min_faves は `config/genres.toml`、大ニュース上限は curator.MAX_BIG_PER_GENRE、
-   収集パラメータは `.env` で運用しながら調整。
+## 次にやること（本人/PC操作エージェント。詳細手順は `ops/AGENT_TASKS.md`）
+1. **LINE Webhook URL に `/line/callback` を付ける**(現状これが抜けていて 404＝無反応)。`<ngrok公開URL>/line/callback`。
+2. 友だち追加 → オンボーディング(ジャンル→朝→夜)。※「特大」は選択肢に出ない常時枠。
+3. `com.tomato.xnewsbot-deliver` を launchd インストール(朝8:00/夜21:00)。`launchctl kickstart -k` で手動配信テスト。
+4. 小ニュースのタップ→詳細、Botの「今すぐ配信」(その時の最新を収集して送る)を実機確認。
+5. ジャンル/キーワード/exclude/min_faves/selectable は `config/genres.toml`(再インストール不要)、
+   収集パラメータ(collect_hours 等)は `.env` で運用しながら調整。配信時刻を変えたら deliver plist の Hour/Minute も更新。
+
+## 既知の注意（launchd 実行時）
+- ヘッドレス Claude のログインが必要(`claude -p "ok" --allowedTools Read` で確認)。
+- collect が twitterapi の認証で落ちる場合は Keychain が launchd 文脈で読めていない →
+  `.env` に `TWITTERAPI_IO_KEY=...` を追記し、常駐サーバを `launchctl kickstart -k` で再起動。
+- Mac がスリープで配信時刻を逃しても、launchd は起床時に1回だけ遅れて実行(=起床時点の最新を届ける)。
 </content>
