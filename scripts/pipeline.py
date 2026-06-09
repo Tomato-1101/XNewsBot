@@ -8,8 +8,12 @@
      [{"title","summary","importance","score","source_idxs"}] にして curated JSON を書く
   3) ingest  : キュレーション結果を DB に取り込む(slot は raw から自動・--slot で上書き可)
        python scripts/pipeline.py ingest --raw /tmp/xnews_raw.json --curated /tmp/xnews_curated.json
-  配信(push)は常駐サーバの tick が各購読者の朝/夜時刻に行う。手動テストは push を使う:
-       python scripts/pipeline.py push --user Uxxxx [--slot morning|evening]
+  4) push    : LINE へ送信。定刻配信(全購読者)は --due、今すぐ配信(個人)は --user。
+       python scripts/pipeline.py push --due  --slot morning   # 定刻(配信済みにする)
+       python scripts/pipeline.py push --user Uxxxx            # 今すぐ(配信済みにしない)
+
+これら1〜4を配信時刻ちょうどに通しで実行するのが ops/deliver.sh(launchd / 今すぐ配信)。
+収集と送信はこのプログラム、記事の選別・見出し・要約の生成はヘッドレス Claude Code が担う。
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import CURATE_INPUT_LIMIT, parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
-from xnewsbot.genres import GENRE_KEYS, is_valid_genre  # noqa: E402
+from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 
@@ -63,14 +67,36 @@ def _due_genres(settings) -> list[str]:
     return [g for g in GENRE_KEYS if g in seen]
 
 
+def _user_genres(settings, line_user_id: str) -> list[str]:
+    """指定ユーザーの有効ジャンル(表示順)。"""
+    init_db()
+    with get_session() as session:
+        sub = session.exec(
+            select(Subscriber).where(Subscriber.line_user_id == line_user_id)
+        ).first()
+        seen = set(sub.enabled_genres) if sub else set()
+    return [g for g in GENRE_KEYS if g in seen]
+
+
+def _with_always(genres: list[str]) -> list[str]:
+    """常時ジャンル(特大など)を必ず含めた表示順のリストにする。"""
+    chosen = set(genres) | set(ALWAYS_KEYS)
+    return [g for g in GENRE_KEYS if g in chosen]
+
+
 def cmd_collect(args) -> None:
     settings = get_settings()
-    genres = _due_genres(settings) if args.due else [g.strip() for g in args.genres.split(",") if g.strip()]
+    if args.user:
+        genres = _with_always(_user_genres(settings, args.user))
+    elif args.due:
+        genres = _with_always(_due_genres(settings))
+    else:
+        genres = [g.strip() for g in args.genres.split(",") if g.strip()]
     bad = [g for g in genres if not is_valid_genre(g)]
     if bad:
         sys.exit(f"未知のジャンル: {bad}  有効: {GENRE_KEYS}")
     if not genres:
-        sys.exit("対象ジャンルがありません(--due なら購読者が未登録の可能性)。")
+        sys.exit("対象ジャンルがありません(--due/--user なら購読者が未登録の可能性)。")
 
     out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
            "slot": args.slot, "genres": {}}
@@ -113,19 +139,44 @@ def cmd_push(args) -> None:
     if not settings.line_channel_access_token:
         sys.exit("LINE_CHANNEL_ACCESS_TOKEN が未設定です。")
     messenger = lc.LineMessenger(settings.line_channel_access_token)
+    default_slot = args.slot or slot_for_now(datetime.now(ZoneInfo(settings.default_tz)))
     init_db()
     with get_session() as session:
         if args.user:
+            # 今すぐ配信: 指定ユーザーへ。配信済みフラグは立てない(定刻枠を消費しない)。
             sub = session.exec(
                 select(Subscriber).where(Subscriber.line_user_id == args.user)
             ).first()
             if not sub:
                 sys.exit(f"購読者が見つかりません: {args.user}")
-            slot = args.slot or slot_for_now(datetime.now(ZoneInfo(settings.default_tz)))
-            specs = deliver_to_subscriber(session, sub, slot, messenger=messenger, mark_delivered=False)
-            print(f"push 完了 → {args.user} slot={slot} ({len(specs)} メッセージ)", file=sys.stderr)
+            specs = deliver_to_subscriber(
+                session, sub, default_slot, messenger=messenger, mark_delivered=False
+            )
+            print(f"push 完了 → {args.user} slot={default_slot} ({len(specs)} メッセージ)", file=sys.stderr)
+        elif args.due:
+            # 定刻配信(deliver.sh から): 当該スロットが有効で当日未配信の全購読者へ。送信後に配信済み記録。
+            subs = session.exec(
+                select(Subscriber).where(Subscriber.is_onboarded == True)  # noqa: E712
+            ).all()
+            sent = 0
+            for sub in subs:
+                now_local = datetime.now(ZoneInfo(sub.tz))
+                if not sub.enabled_genres or not sub.slot_enabled(default_slot):
+                    continue
+                if sub.last_on(default_slot) == now_local.date():
+                    continue
+                try:
+                    deliver_to_subscriber(
+                        session, sub, default_slot, messenger=messenger,
+                        now_local=now_local, mark_delivered=True,
+                    )
+                    sent += 1
+                    print(f"  push → {sub.line_user_id} slot={default_slot}", file=sys.stderr)
+                except Exception as e:  # 1人の失敗で全体を止めない
+                    print(f"  push 失敗 {sub.line_user_id}: {e}", file=sys.stderr)
+            print(f"push(due) 完了 slot={default_slot} ({sent} 名)", file=sys.stderr)
         else:
-            sys.exit("--user を指定してください(定刻配信は常駐サーバが行います)。")
+            sys.exit("--user または --due を指定してください。")
 
 
 def main() -> None:
@@ -134,7 +185,8 @@ def main() -> None:
 
     pc = sub.add_parser("collect", help="Xから収集して raw JSON を出力")
     pc.add_argument("--genres", default="", help="カンマ区切り(例 AI,株)")
-    pc.add_argument("--due", action="store_true", help="購読者の有効ジャンルの和集合を対象に")
+    pc.add_argument("--due", action="store_true", help="購読者の有効ジャンルの和集合+常時ジャンルを対象に")
+    pc.add_argument("--user", help="指定ユーザーの有効ジャンル+常時ジャンルを対象に(今すぐ配信)")
     pc.add_argument("--slot", choices=SLOTS, default="morning", help="朝=morning / 夜=evening")
     pc.add_argument("--out", help="出力先ファイル(省略時は標準出力)")
 
@@ -144,8 +196,9 @@ def main() -> None:
     pi.add_argument("--date", help="YYYY-MM-DD(省略時は raw の date)")
     pi.add_argument("--slot", choices=SLOTS, help="省略時は raw の slot")
 
-    pp = sub.add_parser("push", help="指定ユーザーへ当日ダイジェストを push(手動テスト用)")
-    pp.add_argument("--user", help="LINE userId")
+    pp = sub.add_parser("push", help="当日ダイジェストを LINE へ push")
+    pp.add_argument("--user", help="指定ユーザーへ送る(今すぐ配信。配信済みにしない)")
+    pp.add_argument("--due", action="store_true", help="当該スロットが有効で未配信の全購読者へ送る(定刻配信。配信済みにする)")
     pp.add_argument("--slot", choices=SLOTS, help="省略時は現在時刻から推定")
 
     args = p.parse_args()

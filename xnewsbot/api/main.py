@@ -1,4 +1,8 @@
-"""FastAPI バックエンド。LINE Webhook 受信 + 配信スケジューラ常駐。
+"""FastAPI バックエンド。LINE Webhook 受信を担う常駐サーバ。
+
+定刻配信(収集→Claudeキュレーション→送信)は launchd の ops/deliver.sh がその時刻に行うため、
+本サーバ内のスケジューラ(tick)は既定で無効(settings.scheduler_enabled=False)。
+「今すぐ配信」は webhook 受信時に deliver.sh を個人向けに別プロセス起動する(scheduler.make_deliver_now)。
 
 流用元: XAgent/xagent/api/main.py の lifespan + BackgroundScheduler パターン。
 """

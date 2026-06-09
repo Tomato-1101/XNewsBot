@@ -32,8 +32,11 @@ class Settings(BaseSettings):
     port: int = 8010
     default_tz: str = "Asia/Tokyo"
 
-    # --- スケジューラ(配信の常駐発火) ---
-    scheduler_enabled: bool = True
+    # --- スケジューラ ---
+    # 定刻配信は launchd の配信ジョブ(ops/deliver.sh)が、その時刻ちょうどに
+    # 「最新収集 → Claudeキュレーション → LINE送信」を一気通貫で行う(=リアルタイム)。
+    # 常駐サーバ内の tick による DB 読み出し配信は既定で無効(二重送信・古いデータ送信を防ぐ)。
+    scheduler_enabled: bool = False
     scheduler_interval_seconds: int = 60
 
     # --- 収集パラメータ ---

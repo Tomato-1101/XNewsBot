@@ -18,7 +18,7 @@ from typing import Callable
 from sqlmodel import Session, select
 
 from . import line_client as lc
-from .genres import GENRE_KEYS, GENRES, is_valid_genre
+from .genres import GENRE_KEYS, SELECTABLE_KEYS
 from .models import SLOT_LABEL, Subscriber
 
 # deliver_now(sub) : その購読者へ「今すぐ」配信する(非同期/別セッションで実行する想定)
@@ -141,7 +141,7 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
                      deliver_now: DeliverNow | None) -> None:
     if data.startswith("genre:"):
         key = data.split(":", 1)[1]
-        if is_valid_genre(key):
+        if key in SELECTABLE_KEYS:
             pending = list(sub.pending_genres)
             if key in pending:
                 pending.remove(key)
@@ -152,7 +152,7 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         messenger.reply(reply_token, [lc.genre_select_spec(sub.pending_genres)])
 
     elif data == "genre_all":
-        sub.pending_genres = list(GENRE_KEYS)
+        sub.pending_genres = list(SELECTABLE_KEYS)
         _save(session, sub)
         messenger.reply(reply_token, [lc.genre_select_spec(sub.pending_genres)])
 

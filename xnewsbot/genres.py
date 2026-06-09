@@ -28,6 +28,7 @@ def _load() -> dict[str, dict]:
             "keywords": list(g.get("keywords", [])),
             "exclude": list(g.get("exclude", [])),
             "min_faves": g.get("min_faves"),  # None なら設定の既定値を使う
+            "selectable": bool(g.get("selectable", True)),  # false=常時ジャンル(全員に常時配信)
             "note": g.get("note", ""),
         }
     if not out:
@@ -38,10 +39,24 @@ def _load() -> dict[str, dict]:
 # 表示順は genres.toml の記載順(dict は挿入順を保持)
 GENRES: dict[str, dict] = _load()
 GENRE_KEYS: list[str] = list(GENRES.keys())
+# オンボーディングで選べるジャンル(selectable=true)
+SELECTABLE_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["selectable"]]
+# 全員に常時配信する常時ジャンル(selectable=false。例: 特大ニュース)
+ALWAYS_KEYS: list[str] = [k for k in GENRE_KEYS if not GENRES[k]["selectable"]]
 
 
 def is_valid_genre(name: str) -> bool:
     return name in GENRES
+
+
+def is_always(genre: str) -> bool:
+    return genre in ALWAYS_KEYS
+
+
+def display_genres(enabled: list[str]) -> list[str]:
+    """配信に出すジャンルを表示順で返す: 常時ジャンル + 購読ジャンル(重複排除)。"""
+    chosen = set(enabled) | set(ALWAYS_KEYS)
+    return [g for g in GENRE_KEYS if g in chosen]
 
 
 def keywords(genre: str) -> list[str]:

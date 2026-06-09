@@ -11,8 +11,10 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 import threading
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
@@ -21,7 +23,11 @@ from . import digest
 from . import line_client as lc
 from .config import Settings, get_settings
 from .db import get_session
+from .genres import display_genres
 from .models import SLOTS, Subscriber
+
+# 「今すぐ配信」で起動するリアルタイム配信スクリプト(収集→Claudeキュレーション→送信)
+DELIVER_SH = Path(__file__).resolve().parent.parent / "ops" / "deliver.sh"
 
 log = logging.getLogger("xnewsbot.scheduler")
 
@@ -75,7 +81,9 @@ def deliver_to_subscriber(
     """DB の既存ダイジェスト(当日・当スロット)から購読者へ push し、配信日を記録する。"""
     now_local = now_local or _now_in(sub.tz)
     local_date = now_local.date()
-    grouped = digest.assemble_for_genres(session, sub.enabled_genres, local_date, slot)
+    grouped = digest.assemble_for_genres(
+        session, display_genres(sub.enabled_genres), local_date, slot
+    )
     specs = lc.digest_specs(grouped, greeting=greeting, slot=slot)
     messenger.push(sub.line_user_id, specs)
     if mark_delivered:
@@ -150,8 +158,23 @@ def run_now(line_user_id: str, settings: Settings | None = None) -> None:
 
 
 def make_deliver_now(settings: Settings | None = None):
-    """onboarding に渡す deliver_now。push を別スレッドで実行し webhook をブロックしない。"""
+    """onboarding に渡す deliver_now。
+
+    「今すぐ配信」は定刻配信と同じく **その場の最新** を届けたいので、収集→Claude
+    キュレーション→送信を行う deliver.sh を、対象ユーザー指定で別プロセス起動する
+    (webhook をブロックしない)。スクリプトが見つからない/起動に失敗した場合は、
+    DB の当日分を即 push するフォールバック(run_now)に切り替える。"""
     def _deliver(sub: Subscriber) -> None:
         uid = sub.line_user_id
+        if DELIVER_SH.exists():
+            try:
+                subprocess.Popen(
+                    ["/bin/bash", str(DELIVER_SH), "--user", uid],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return
+            except Exception:
+                log.exception("deliver.sh の起動に失敗。DBフォールバックへ user=%s", uid)
         threading.Thread(target=run_now, args=(uid,), daemon=True).start()
     return _deliver

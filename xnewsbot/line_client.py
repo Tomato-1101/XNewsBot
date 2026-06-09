@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from .genres import GENRES
+from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
@@ -39,7 +39,7 @@ def genre_select_spec(selected: list[str]) -> dict:
     else:
         head = "受け取るジャンルを選んでください(複数可)。タップで追加できます。"
     items = []
-    for key in GENRES:
+    for key in SELECTABLE_KEYS:
         mark = "✓" if key in sel else "＋"
         items.append(_qr(f"{mark}{GENRES[key]['label']}", f"genre:{key}"))
     items.append(_qr("すべて", "genre_all"))
@@ -86,10 +86,15 @@ def settings_summary_text(sub: Subscriber) -> str:
 
 def _big_bubble(item: NewsItem) -> dict:
     label = GENRES.get(item.genre, {}).get("label", item.genre)
+    # 常時ジャンル(特大)は専用見出し・赤系アクセントで目立たせる
+    if item.genre in ALWAYS_KEYS:
+        heading, accent = f"🚨 {label}ニュース", "#D32F2F"
+    else:
+        heading, accent = f"【{label}】大ニュース", ACCENT
     body = {
         "type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "text": f"【{label}】大ニュース", "size": "xs",
-             "color": ACCENT, "weight": "bold"},
+            {"type": "text", "text": heading, "size": "xs",
+             "color": accent, "weight": "bold"},
             {"type": "text", "text": item.title, "weight": "bold", "size": "md",
              "wrap": True, "margin": "sm"},
         ],
@@ -145,8 +150,11 @@ def digest_specs(
     for items in grouped.values():
         for it in items:
             (bigs if it.importance == "big" else smalls).append(it)
-    bigs.sort(key=lambda i: i.top_view_count, reverse=True)
-    smalls.sort(key=lambda i: i.top_view_count, reverse=True)
+    # 常時ジャンル(特大)を先頭に、その後はインプレッション降順
+    def _rank(i: NewsItem) -> tuple[int, int]:
+        return (0 if i.genre in ALWAYS_KEYS else 1, -i.top_view_count)
+    bigs.sort(key=_rank)
+    smalls.sort(key=_rank)
 
     specs: list[dict] = []
     if not bigs and not smalls:

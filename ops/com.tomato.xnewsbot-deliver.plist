@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot リアルタイム配信(朝08:00 / 夜21:00)を macOS LaunchAgent で起動する。
+  ~/Library/LaunchAgents/com.tomato.xnewsbot-deliver.plist に配置する。
+  ops/deliver.sh が「最新収集 → ヘッドレスClaudeでキュレーション → LINE送信」を
+  その時刻ちょうどに一気通貫で実行する(=配信時刻までの最新を届ける)。
+  常駐サーバ(com.tomato.xnewsbot)は LINE Webhook の受信(オンボーディング/設定/今すぐ配信)専任。
+
+  ※ 朝8時/夜21時は既定値。ボットで配信時刻を変えたら、この plist の Hour/Minute も合わせて更新する。
+  ※ Mac がスリープ等でこの時刻に起動を逃しても、launchd は次回の起床時に1回だけ遅れて実行する
+     (=起床時点の最新を届ける)。
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-deliver.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-deliver
+    手動実行: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-deliver
+    状態  : launchctl list | grep xnewsbot-deliver
+    ログ  : ~/Library/Logs/xnewsbot-deliver.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot-deliver</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/tomato/Project/XNewsBot/ops/deliver.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>8</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-deliver.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-deliver.err.log</string>
+</dict>
+</plist>
