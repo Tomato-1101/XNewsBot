@@ -40,6 +40,11 @@ from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 
 
+# collect の「対象ジャンルなし(購読者未登録)」を本物の失敗と区別するための exit code。
+# ops/deliver.sh がこの値のときだけ正常スキップ扱いにする(契約。変えたら deliver.sh も合わせる)。
+EXIT_NO_TARGET = 64
+
+
 def _today(settings) -> date:
     return datetime.now(ZoneInfo(settings.default_tz)).date()
 
@@ -97,7 +102,8 @@ def cmd_collect(args) -> None:
     if bad:
         sys.exit(f"未知のジャンル: {bad}  有効: {GENRE_KEYS}")
     if not genres:
-        sys.exit("対象ジャンルがありません(--due/--user なら購読者が未登録の可能性)。")
+        print("対象ジャンルがありません(--due/--user なら購読者が未登録の可能性)。", file=sys.stderr)
+        sys.exit(EXIT_NO_TARGET)
 
     out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
            "slot": args.slot, "genres": {g: [] for g in genres}}

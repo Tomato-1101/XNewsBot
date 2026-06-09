@@ -25,8 +25,16 @@ if [ "${1:-}" = "--user" ]; then USER_ID="${2:-}"; fi
 
 HOUR=$(date +%H)
 if [ "$HOUR" -lt 15 ]; then SLOT=morning; else SLOT=evening; fi
-RAW="/tmp/xnews_${SLOT}_raw.json"
-CUR="/tmp/xnews_${SLOT}_curated.json"
+# 中間ファイル: 定刻(--due)の収集中(配信5分前〜定刻)に「今すぐ配信」(--user)が走ると、
+# 同一パスでは raw/curated を互いに上書きして定刻配信の内容が壊れる。
+# --user はユーザー+プロセス(PID)ごとに別ファイルにして衝突させない(連打の同士討ちも防ぐ)。
+if [ -n "$USER_ID" ]; then
+  RAW="/tmp/xnews_${SLOT}_${USER_ID}_$$_raw.json"
+  CUR="/tmp/xnews_${SLOT}_${USER_ID}_$$_curated.json"
+else
+  RAW="/tmp/xnews_${SLOT}_raw.json"
+  CUR="/tmp/xnews_${SLOT}_curated.json"
+fi
 
 # 定刻(配信時刻)。launchd はこの5分前に起動して先に収集を始め、結果を定刻ちょうどに送る
 # (=リアルタイムを保ちつつ届く時刻は8:00/21:00で揃える)。
@@ -63,8 +71,14 @@ if [ -n "$USER_ID" ]; then
 else
   COLLECT=("$PY" scripts/pipeline.py collect --due --slot "$SLOT" --out "$RAW")
 fi
-if ! "${COLLECT[@]}" >> "$LOG" 2>&1; then
+# exit 64 = 対象ジャンルなし(正常スキップ)。それ以外の非0は本物の失敗として区別する
+# (以前は全失敗を「対象ジャンルなし」扱いで exit 0 にしており、障害が黙殺されていた)。
+"${COLLECT[@]}" >> "$LOG" 2>&1
+COLLECT_RC=$?
+if [ "$COLLECT_RC" -eq 64 ]; then
   log "collect をスキップ(対象ジャンルなし)"; exit 0
+elif [ "$COLLECT_RC" -ne 0 ]; then
+  log "collect に失敗 (exit=$COLLECT_RC)"; exit 1
 fi
 
 # 2) キュレーション(ヘッドレス Claude Code, Read/Write のみ)
