@@ -70,6 +70,18 @@ def test_detail_spec_contains_title_and_source():
     assert "https://x.com/u/status/1" in spec["text"]
 
 
+def test_pack_bubbles_measures_utf8_bytes():
+    """バブル分割はUTF-8バイト数で判定する(日本語は1文字3バイト)。件数は削らない。"""
+    import json
+    comp = {"type": "text", "text": "日本語のニュース本文。" * 45, "wrap": True}
+    specs = lc._pack_bubbles([dict(comp) for _ in range(12)], alt_first="a", alt_rest="b")
+    assert len(specs) > 1  # 1バブルに収まらない量であること(判定が効いている前提の確認)
+    for s in specs:
+        body = s["contents"]["body"]["contents"]
+        assert len(json.dumps(body, ensure_ascii=False).encode("utf-8")) <= lc.BUBBLE_MAX_BYTES
+    assert sum(len(s["contents"]["body"]["contents"]) for s in specs) == 12
+
+
 def test_spec_to_sdk_message_text_and_flex():
     """line-bot-sdk v3 への変換が壊れていないか(API名の検証)。"""
     text = lc.text_spec("こんにちは", [{"label": "AI", "data": "genre:AI"}])

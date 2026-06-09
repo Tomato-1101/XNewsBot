@@ -20,8 +20,10 @@ from .models import SLOT_LABEL, NewsItem, Subscriber
 # LINE の上限
 QUICK_REPLY_MAX = 13
 # 1バブルあたりの目安サイズ(LINEのバブル上限~10KBに対し余裕を持たせる)。
+# 日本語はUTF-8で1文字3バイトのため、文字数でなくバイト数で測る(文字数だと実サイズを
+# 約1/3に過小評価し、7000「文字」のバブルが実際は~21KBになり上限を超えていた)。
 # これを超えそうなら次のバブル(=次メッセージ)に送り、件数は削らず全部出す。
-BUBBLE_MAX_CHARS = 7000
+BUBBLE_MAX_BYTES = 7000
 MAX_MESSAGES = 5       # LINE は1回の push/reply で最大5メッセージ
 ACCENT = "#1565C0"
 
@@ -153,7 +155,7 @@ def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list
     bubbles: list[list[dict]] = []
     cur: list[dict] = []
     for comp in components:
-        if cur and len(json.dumps(cur + [comp], ensure_ascii=False)) > BUBBLE_MAX_CHARS:
+        if cur and len(json.dumps(cur + [comp], ensure_ascii=False).encode("utf-8")) > BUBBLE_MAX_BYTES:
             bubbles.append(cur)
             cur = [comp]
         else:
