@@ -17,8 +17,7 @@ from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
-CAROUSEL_MAX = 12      # 小ニュース(横カルーセル)の最大バブル数
-BIG_MAX = 10           # 大ニュース(縦長1枚)に積む最大件数
+BIG_MAX = 8            # 縦長1枚に積む大ニュースの最大件数
 ACCENT = "#1565C0"
 
 
@@ -39,13 +38,14 @@ def genre_select_spec(selected: list[str]) -> dict:
         head = "受け取るジャンルを選んでください(複数可)。\n現在の選択: " + " / ".join(sel)
     else:
         head = "受け取るジャンルを選んでください(複数可)。タップで追加できます。"
-    items = []
-    for key in SELECTABLE_KEYS:
-        mark = "✓" if key in sel else "＋"
-        items.append(_qr(f"{mark}{GENRES[key]['label']}", f"genre:{key}"))
-    items.append(_qr("すべて", "genre_all"))
-    items.append(_qr("これで決定", "genre_done"))
-    return text_spec(head, items[:QUICK_REPLY_MAX])
+    toggles = [
+        _qr(f"{'✓' if key in sel else '＋'}{GENRES[key]['label']}", f"genre:{key}")
+        for key in SELECTABLE_KEYS
+    ]
+    # 操作ボタン(すべて/決定/キャンセル)は必ず残す。ジャンルが増えても末尾で切れないよう先に枠を確保。
+    actions = [_qr("すべて", "genre_all"), _qr("これで決定", "genre_done"), _qr("キャンセル", "cancel")]
+    items = toggles[:QUICK_REPLY_MAX - len(actions)] + actions
+    return text_spec(head, items)
 
 
 _TIME_CHOICES = {
@@ -58,6 +58,7 @@ def time_select_spec(slot: str = "morning") -> dict:
     label = SLOT_LABEL.get(slot, "")
     head = (f"{label}の配信時刻を選んでください。\n他の時刻は「7:30」のように送ってください。")
     items = [_qr(disp, f"time:{hhmm}") for disp, hhmm in _TIME_CHOICES.get(slot, _TIME_CHOICES["morning"])]
+    items.append(_qr("キャンセル", "cancel"))
     return text_spec(head, items)
 
 
@@ -116,48 +117,36 @@ def _big_item_block(item: NewsItem) -> dict:
     return {"type": "box", "layout": "vertical", "contents": contents}
 
 
-def _bigs_bubble(bigs: list[NewsItem]) -> dict:
-    """大ニュース複数件を縦に積んだ1枚のバブル(横スクロールなし=スマホで縦に読める)。"""
-    blocks: list[dict] = []
-    for i, it in enumerate(bigs):
-        if i > 0:
-            blocks.append({"type": "separator", "margin": "lg", "color": "#E0E0E0"})
-        blocks.append(_big_item_block(it))
-    return {
-        "type": "bubble", "size": "giga",
-        "body": {"type": "box", "layout": "vertical", "spacing": "lg", "contents": blocks},
-    }
-
-
-def _small_bubble(item: NewsItem) -> dict:
+def _small_row(item: NewsItem) -> dict:
+    """小ニュース1件分のコンパクトな縦行(タップで詳細 postback)。
+    横カルーセルをやめ縦1枚に同居させることで、配信を1メッセージに収めて通数を節約する。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
     return {
-        "type": "bubble", "size": "micro",
-        "body": {
-            "type": "box", "layout": "vertical", "contents": [
-                {"type": "text", "text": f"【{label}】", "size": "xxs",
-                 "color": ACCENT, "weight": "bold"},
-                {"type": "text", "text": item.title, "size": "sm", "wrap": True, "margin": "sm"},
-            ],
-        },
-        "footer": {
-            "type": "box", "layout": "vertical", "contents": [
-                {"type": "button", "style": "primary", "height": "sm",
-                 "action": {"type": "postback", "label": "詳細を見る",
-                            "data": f"detail:{item.id}", "displayText": "詳細を見る"}}
-            ],
-        },
+        "type": "text", "text": f"▷ 【{label}】{item.title}",
+        "size": "sm", "color": "#333333", "wrap": True, "margin": "md",
+        "action": {"type": "postback", "data": f"detail:{item.id}", "displayText": "詳細を見る"},
     }
+
+
+def _sep(margin: str = "md", color: str = "#E5E5E5") -> dict:
+    return {"type": "separator", "margin": margin, "color": color}
 
 
 _GREETING = {"morning": "おはようございます。今朝のニュースです", "evening": "こんばんは。今夜のニュースです"}
+
+
+SMALL_MAX = 15  # 縦長1枚に載せる小ニュースの最大行数
 
 
 def digest_specs(
     grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列)に変換する。
-    構成: 挨拶+大ニュースFlex+小ニュースFlex(タップで詳細)。slot で朝/夜の挨拶を切替。"""
+
+    通数節約のため、挨拶・大ニュース・小ニュースを **1枚の縦長 Flex バブル** にまとめる
+    (LINE無料枠は push 1メッセージ=1通。以前は3通だったのを1通に圧縮)。
+    大ニュースは要約付きで積み上げ、小ニュースは見出し行(タップで詳細 postback)。
+    """
     bigs: list[NewsItem] = []
     smalls: list[NewsItem] = []
     for items in grouped.values():
@@ -169,29 +158,39 @@ def digest_specs(
     bigs.sort(key=_rank)
     smalls.sort(key=_rank)
 
-    specs: list[dict] = []
     if not bigs and not smalls:
-        specs.append(text_spec("本日は対象ジャンルのニュースが見つかりませんでした。"))
-        return specs
+        return [text_spec("本日は対象ジャンルのニュースが見つかりませんでした。")]
 
+    body: list[dict] = []
     if greeting:
-        genres = " / ".join(grouped.keys())
         head = _GREETING.get(slot or "", "今日のニュースです")
-        specs.append(text_spec(f"{head}({genres})。"))
+        body.append({"type": "text", "text": head, "weight": "bold", "size": "md",
+                     "wrap": True, "color": "#222222"})
+        body.append({"type": "text", "text": " / ".join(grouped.keys()),
+                     "size": "xxs", "color": "#999999", "wrap": True})
 
     if bigs:
-        # 大ニュースは横カルーセルをやめ、縦長1枚に積む(スマホで縦スクロールで全部読める)
-        specs.append({"type": "flex", "alt": "大ニュース",
-                      "contents": _bigs_bubble(bigs[:BIG_MAX])})
+        if body:
+            body.append(_sep("lg"))
+        for i, it in enumerate(bigs[:BIG_MAX]):
+            if i > 0:
+                body.append(_sep("lg"))
+            body.append(_big_item_block(it))
 
     if smalls:
-        shown = smalls[:CAROUSEL_MAX]
-        bubbles = [_small_bubble(i) for i in shown]
-        specs.append({"type": "flex", "alt": "そのほかのニュース(タップで詳細)",
-                      "contents": {"type": "carousel", "contents": bubbles}})
-        if len(smalls) > CAROUSEL_MAX:
-            specs.append(text_spec(f"※ ほか {len(smalls) - CAROUSEL_MAX} 件は省略しました。"))
-    return specs
+        body.append(_sep("xl", "#CCCCCC"))
+        body.append({"type": "text", "text": "そのほかの見出し(タップで詳細)",
+                     "size": "xs", "color": "#888888", "weight": "bold"})
+        for it in smalls[:SMALL_MAX]:
+            body.append(_small_row(it))
+        if len(smalls) > SMALL_MAX:
+            body.append({"type": "text", "text": f"ほか {len(smalls) - SMALL_MAX} 件",
+                         "size": "xxs", "color": "#AAAAAA", "margin": "sm"})
+
+    bubble = {"type": "bubble", "size": "giga",
+              "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body}}
+    alt = _GREETING.get(slot or "", "今日のニュース")
+    return [{"type": "flex", "alt": alt, "contents": bubble}]
 
 
 def detail_spec(item: NewsItem) -> dict:

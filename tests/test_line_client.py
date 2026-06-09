@@ -25,17 +25,16 @@ def test_genre_select_marks_selected():
     assert any(l.startswith("＋") for l in labels)
 
 
-def test_digest_specs_structure():
+def test_digest_specs_single_bubble_with_detail():
+    # 通数節約のため挨拶+大+小は1枚の縦長バブル(1メッセージ)にまとまる
     grouped = {"AI": [_big()], "株": [_small(0), _small(1)]}
-    specs = lc.digest_specs(grouped, greeting=True)
-    types = [s["type"] for s in specs]
-    assert types[0] == "text"   # 挨拶
-    assert "flex" in types       # 大/小
-    # 小ニュースのバブルに詳細 postback がある
-    flex = [s for s in specs if s["type"] == "flex"]
-    small_flex = flex[-1]["contents"]["contents"][0]
-    btn = small_flex["footer"]["contents"][0]["action"]
-    assert btn["type"] == "postback" and btn["data"].startswith("detail:")
+    specs = lc.digest_specs(grouped, greeting=True, slot="morning")
+    assert len(specs) == 1 and specs[0]["type"] == "flex"
+    body = specs[0]["contents"]["body"]["contents"]
+    # 小ニュース行にタップ詳細 postback がある
+    details = [c["action"]["data"] for c in body
+               if c.get("action", {}).get("data", "").startswith("detail:")]
+    assert details
 
 
 def test_digest_specs_empty():
@@ -59,4 +58,4 @@ def test_spec_to_sdk_message_text_and_flex():
     flex_spec = lc.digest_specs({"AI": [_big()]}, greeting=False)[0]
     assert flex_spec["type"] == "flex"
     fmsg = lc._spec_to_message(flex_spec)
-    assert fmsg.alt_text == "大ニュース"
+    assert fmsg.alt_text == "今日のニュース"

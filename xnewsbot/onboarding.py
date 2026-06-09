@@ -119,6 +119,8 @@ _UNBIND_WORDS = ("個別に配信", "個別配信", "1対1に配信", "個人に
 _DELIVER_WORDS = ("今すぐ", "今すぐ配信", "最新", "最新ニュース", "配信", "ニュース配信")
 # レイアウト確認用。収集せず DB のモック(架空)を現行レイアウトで返す合言葉
 _MOCK_WORDS = ("テスト", "test", "てすと", "モック", "mock", "サンプル", "レイアウト")
+# 選択/編集の途中で中断する合言葉(対話は無料なのでいつでも中断できる)
+_CANCEL_WORDS = ("キャンセル", "やめる", "中止", "cancel", "やめ")
 
 
 def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: str,
@@ -175,6 +177,11 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
     # オンボーディング(ジャンル/時刻設定)は1:1専用。雑談には無反応(荒らさない)。
     if target_id:
         _try_command(session, messenger, sub, text, reply_token, deliver_now)
+        return
+
+    # 選択/編集の途中で「キャンセル」(対話は無料なので中断は自由)
+    if text in _CANCEL_WORDS:
+        _do_cancel(session, messenger, sub, reply_token)
         return
 
     # 時刻入力待ち(朝/夜。初回 or 編集)
@@ -284,8 +291,27 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         if deliver_now is not None:
             deliver_now(sub)
 
+    elif data == "cancel":
+        _do_cancel(session, messenger, sub, reply_token)
+
     else:
         messenger.reply(reply_token, [lc.menu_spec("メニュー")])
+
+
+def _do_cancel(session, messenger, sub: Subscriber, reply_token: str) -> None:
+    """選択/編集を中断する。設定済みなら変更を破棄して done に戻しメニューへ。
+    初回設定の途中なら中断を伝える(やり直しは次の操作で再開)。応答は reply=無料。"""
+    if sub.is_onboarded:
+        sub.pending_genres = list(sub.enabled_genres)  # 編集中の選択を破棄
+        sub.onboarding_step = "done"
+        _save(session, sub)
+        messenger.reply(reply_token, [
+            lc.text_spec("操作をキャンセルしました。設定は変更していません。"),
+            lc.menu_spec("メニュー"),
+        ])
+    else:
+        messenger.reply(reply_token, [lc.text_spec(
+            "設定を中断しました。続けるときは何かメッセージを送ってください。")])
 
 
 def _apply_slot_time(session, messenger, sub: Subscriber, slot: str,

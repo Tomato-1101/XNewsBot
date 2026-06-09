@@ -130,9 +130,9 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
-    # 先頭は「架空」警告、続いて現行レイアウト(大=縦長1枚 / 小=横カルーセル)
+    # 先頭は「架空」警告、続いて現行レイアウト(縦長1枚の Flex)
     assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
-    assert any(s["type"] == "flex" and s["alt"] == "大ニュース" for s in specs)
+    assert any(s["type"] == "flex" for s in specs)
     assert len(specs) <= 5  # reply 上限内
 
 
@@ -140,7 +140,7 @@ def test_group_command_responds_but_chatter_ignored(session, messenger):
     _onboard(session, messenger)
     # グループでの明示コマンド(テスト)は応答する
     handle_event(session, messenger, ev("message", text="テスト", target_id="Cgroup1"))
-    assert any(s["type"] == "flex" and s["alt"] == "大ニュース" for s in messenger.last_reply)
+    assert any(s["type"] == "flex" for s in messenger.last_reply)
     # グループでの雑談には無反応(返信が増えない=荒らさない)
     before = len(messenger.replies)
     handle_event(session, messenger, ev("message", text="おはよう", target_id="Cgroup1"))
@@ -153,6 +153,26 @@ def test_group_deliver_now_triggers_callback(session, messenger):
     handle_event(session, messenger, ev("message", text="今すぐ", target_id="Cgroup1"),
                  deliver_now=lambda sub: called.append(sub.line_user_id))
     assert called == ["U1"]
+
+
+def test_cancel_edit_reverts_and_returns_to_done(session, messenger):
+    _onboard(session, messenger)  # AI のみで設定完了
+    before = list(_sub(session).enabled_genres)
+    handle_event(session, messenger, ev("postback", data="genre_edit"))
+    handle_event(session, messenger, ev("postback", data="genre:株"))  # 編集中に追加
+    handle_event(session, messenger, ev("postback", data="cancel"))    # キャンセル
+    sub = _sub(session)
+    assert sub.onboarding_step == "done"
+    assert sub.enabled_genres == before          # 変更は破棄
+    assert sub.pending_genres == before          # 編集中の選択も破棄
+
+
+def test_cancel_via_text_word(session, messenger):
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("postback", data="morning_edit"))
+    assert _sub(session).onboarding_step == "morning"
+    handle_event(session, messenger, ev("message", text="キャンセル"))
+    assert _sub(session).onboarding_step == "done"
 
 
 def test_genre_done_empty_nudges(session, messenger):
