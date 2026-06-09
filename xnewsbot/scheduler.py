@@ -44,6 +44,12 @@ def slot_for_now(now_local: datetime) -> str:
     return "evening" if now_local.hour >= EVENING_BOUNDARY_HOUR else "morning"
 
 
+def missing_for_delivery(session: Session, sub: Subscriber, local_date, slot: str) -> list[str]:
+    """配信前の揃い判定。実際に配信するのは購読ジャンル+常時ジャンル(特大)なので、
+    判定も同じ集合で行う(購読分だけ見ると特大が欠けたまま配信されてしまう)。"""
+    return digest.missing_genres(session, display_genres(sub.enabled_genres), local_date, slot)
+
+
 def is_due(sub: Subscriber, now_local: datetime, slot: str) -> bool:
     """now_local(購読者tz)時点で当該スロットを配信すべきか(有効・時刻到来・当日未配信)。"""
     if not sub.is_onboarded or not sub.enabled_genres:
@@ -114,7 +120,7 @@ def tick() -> None:
                 return
             for sub, slot in due:
                 now_local = _now_in(sub.tz)
-                if digest.missing_genres(session, sub.enabled_genres, now_local.date(), slot):
+                if missing_for_delivery(session, sub, now_local.date(), slot):
                     continue  # キュレーション未完。次の点検まで待つ。
                 try:
                     deliver_to_subscriber(session, sub, slot, messenger=messenger, now_local=now_local)
@@ -145,7 +151,7 @@ def run_now(line_user_id: str, settings: Settings | None = None) -> None:
             primary = slot_for_now(now_local)
             order = [primary, "evening" if primary == "morning" else "morning"]
             for slot in order:
-                if not digest.missing_genres(session, sub.enabled_genres, now_local.date(), slot):
+                if not missing_for_delivery(session, sub, now_local.date(), slot):
                     deliver_to_subscriber(session, sub, slot, messenger=messenger,
                                           now_local=now_local, mark_delivered=False)
                     return

@@ -60,6 +60,16 @@ def test_missing_genres(session):
     assert digest.missing_genres(session, ["AI"], D, "evening") == ["AI"]
 
 
+def test_missing_for_delivery_includes_always_genres(session):
+    """揃い判定は購読ジャンル+常時ジャンル(特大)で行う(特大が欠けたまま配信しない)。"""
+    sub = _onboarded()
+    digest.ingest_curated(session, "AI", D, "morning", [], [])
+    # 購読分(AI)は揃っているが、常時ジャンル(特大)が未完成 → まだ配信しない
+    assert scheduler.missing_for_delivery(session, sub, D, "morning") == ["特大"]
+    digest.ingest_curated(session, "特大", D, "morning", [], [])
+    assert scheduler.missing_for_delivery(session, sub, D, "morning") == []
+
+
 def test_deliver_to_subscriber_from_db(session, messenger):
     digest.ingest_curated(session, "AI", D, "evening",
                           parse_curated(curated_items(1, 2)), make_tweets(5))
