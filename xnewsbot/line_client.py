@@ -12,12 +12,17 @@
 
 from __future__ import annotations
 
+import json
+
 from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
-BIG_MAX = 8            # 縦長1枚に積む大ニュースの最大件数
+# 1バブルあたりの目安サイズ(LINEのバブル上限~10KBに対し余裕を持たせる)。
+# これを超えそうなら次のバブル(=次メッセージ)に送り、件数は削らず全部出す。
+BUBBLE_MAX_CHARS = 7000
+MAX_MESSAGES = 5       # LINE は1回の push/reply で最大5メッセージ
 ACCENT = "#1565C0"
 
 
@@ -135,7 +140,27 @@ def _sep(margin: str = "md", color: str = "#E5E5E5") -> dict:
 _GREETING = {"morning": "おはようございます。今朝のニュースです", "evening": "こんばんは。今夜のニュースです"}
 
 
-SMALL_MAX = 15  # 縦長1枚に載せる小ニュースの最大行数
+def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list[dict]:
+    """縦に並ぶ components を、1バブルが大きくなり過ぎない範囲で複数バブルに詰める。
+    件数は削らず(=全部出す)、サイズ超過時のみ次のバブル(=次メッセージ)へ送る。"""
+    bubbles: list[list[dict]] = []
+    cur: list[dict] = []
+    for comp in components:
+        if cur and len(json.dumps(cur + [comp], ensure_ascii=False)) > BUBBLE_MAX_CHARS:
+            bubbles.append(cur)
+            cur = [comp]
+        else:
+            cur.append(comp)
+    if cur:
+        bubbles.append(cur)
+    specs: list[dict] = []
+    for idx, body in enumerate(bubbles[:MAX_MESSAGES]):
+        specs.append({
+            "type": "flex", "alt": alt_first if idx == 0 else alt_rest,
+            "contents": {"type": "bubble", "size": "giga",
+                         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body}},
+        })
+    return specs
 
 
 def digest_specs(
@@ -143,54 +168,50 @@ def digest_specs(
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列)に変換する。
 
-    通数節約のため、挨拶・大ニュース・小ニュースを **1枚の縦長 Flex バブル** にまとめる
-    (LINE無料枠は push 1メッセージ=1通。以前は3通だったのを1通に圧縮)。
-    大ニュースは要約付きで積み上げ、小ニュースは見出し行(タップで詳細 postback)。
+    - 大ニュースは **ジャンル順にすべて** 積み上げる(特大→各ジャンル。1ジャンルが多くても
+      他ジャンルが押し出されない=各ジャンル最低1件は必ず出る。無いジャンルは出さない)。
+    - 小ニュースは見出し行(タップで詳細 postback)を **すべて** 並べる(省略しない)。
+    - 見やすさ優先。1バブルが大きくなり過ぎる場合だけ複数メッセージに分割する
+      (LINE無料枠で数えるのは push 数だが、本数に余裕があるので件数は削らない)。
     """
+    # grouped は表示順(特大→各ジャンル)。その順序を保ったまま大/小に振り分ける
+    # (=ビューワー数の全体ソートをやめ、ジャンルごとの公平な掲載にする)。
     bigs: list[NewsItem] = []
     smalls: list[NewsItem] = []
     for items in grouped.values():
         for it in items:
             (bigs if it.importance == "big" else smalls).append(it)
-    # 常時ジャンル(特大)を先頭に、その後はインプレッション降順
-    def _rank(i: NewsItem) -> tuple[int, int]:
-        return (0 if i.genre in ALWAYS_KEYS else 1, -i.top_view_count)
-    bigs.sort(key=_rank)
-    smalls.sort(key=_rank)
 
     if not bigs and not smalls:
         return [text_spec("本日は対象ジャンルのニュースが見つかりませんでした。")]
 
-    body: list[dict] = []
+    components: list[dict] = []
     if greeting:
         head = _GREETING.get(slot or "", "今日のニュースです")
-        body.append({"type": "text", "text": head, "weight": "bold", "size": "md",
-                     "wrap": True, "color": "#222222"})
-        body.append({"type": "text", "text": " / ".join(grouped.keys()),
-                     "size": "xxs", "color": "#999999", "wrap": True})
+        active = [g for g, items in grouped.items() if items]
+        components.append({"type": "text", "text": head, "weight": "bold", "size": "md",
+                           "wrap": True, "color": "#222222"})
+        components.append({"type": "text", "text": " / ".join(active),
+                           "size": "xxs", "color": "#999999", "wrap": True})
 
     if bigs:
-        if body:
-            body.append(_sep("lg"))
-        for i, it in enumerate(bigs[:BIG_MAX]):
+        if components:
+            components.append(_sep("lg"))
+        for i, it in enumerate(bigs):
             if i > 0:
-                body.append(_sep("lg"))
-            body.append(_big_item_block(it))
+                components.append(_sep("lg"))
+            components.append(_big_item_block(it))
 
     if smalls:
-        body.append(_sep("xl", "#CCCCCC"))
-        body.append({"type": "text", "text": "そのほかの見出し(タップで詳細)",
-                     "size": "xs", "color": "#888888", "weight": "bold"})
-        for it in smalls[:SMALL_MAX]:
-            body.append(_small_row(it))
-        if len(smalls) > SMALL_MAX:
-            body.append({"type": "text", "text": f"ほか {len(smalls) - SMALL_MAX} 件",
-                         "size": "xxs", "color": "#AAAAAA", "margin": "sm"})
+        if components:
+            components.append(_sep("xl", "#CCCCCC"))
+        components.append({"type": "text", "text": "そのほかの見出し(タップで詳細)",
+                           "size": "xs", "color": "#888888", "weight": "bold"})
+        for it in smalls:
+            components.append(_small_row(it))
 
-    bubble = {"type": "bubble", "size": "giga",
-              "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body}}
     alt = _GREETING.get(slot or "", "今日のニュース")
-    return [{"type": "flex", "alt": alt, "contents": bubble}]
+    return _pack_bubbles(components, alt_first=alt, alt_rest="ニュースのつづき")
 
 
 def detail_spec(item: NewsItem) -> dict:
