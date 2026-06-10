@@ -73,8 +73,15 @@ def ingest_curated(
     tweets: list[dict],
 ) -> GenreDigest:
     """キュレーション済みアイテムを DB に取り込む。
-    当日・当スロット・当ジャンルの既存ダイジェストがあれば置き換える(再実行で冪等)。"""
+    当日・当スロット・当ジャンルの既存ダイジェストがあれば置き換える(再実行で冪等)。
+
+    取り込む内容が空(curated が空 = 収集失敗やノイズのみ)で、かつ既存ダイジェストがある場合は
+    置き換えない(既存をそのまま返す)。これは収集失敗の「今すぐ」配信が、定刻に作られた良い
+    ダイジェストを空で上書き破壊するのを防ぐため。既存が無い場合は従来どおり空ダイジェストを作る
+    (「キュレーション済み・該当ニュースなし」を表し、catch-up の揃い判定が完了とみなせる)。"""
     existing = get_genre_digest(session, genre, local_date, slot)
+    if not curated and existing:
+        return existing
     if existing:
         for it in items_of_digest(session, existing.id):
             session.delete(it)

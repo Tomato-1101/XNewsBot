@@ -43,6 +43,9 @@ from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 # collect の「対象ジャンルなし(購読者未登録)」を本物の失敗と区別するための exit code。
 # ops/deliver.sh がこの値のときだけ正常スキップ扱いにする(契約。変えたら deliver.sh も合わせる)。
 EXIT_NO_TARGET = 64
+# 対象ジャンルはあったが全ジャンルが収集0件(API全滅)。空ダイジェストを「成功」配信しないため、
+# deliver.sh はこの値を失敗(配信中止)として扱う(契約。変えたら deliver.sh も合わせる)。
+EXIT_ALL_FAILED = 65
 
 
 def _today(settings) -> date:
@@ -108,17 +111,22 @@ def cmd_collect(args) -> None:
     out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
            "slot": args.slot, "genres": {g: [] for g in genres}}
 
-    # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと7ジャンルで数分かかるので並列化する。
+    # 鍵は不変。ジャンルごとに load_key()→Keychain サブプロセスを叩くのは無駄かつ並列で多重に
+    # security を起動するので、ここで1度だけ取得して各収集に渡す。
+    key = xclient.load_key(settings)
+
+    # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
+    # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
     def _one(g: str) -> tuple[str, list[dict]]:
-        # 1ジャンルの一時的失敗(twitterapi.io のタイムアウト/瞬断等)で収集全体を落とさない。
+        # 1ジャンルの失敗(再試行しても回復しないタイムアウト/恒久エラー)で収集全体を落とさない。
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
         try:
-            return g, xclient.collect(g, settings=settings)[:CURATE_INPUT_LIMIT]
+            return g, xclient.collect(g, settings=settings, key=key)[:CURATE_INPUT_LIMIT]
         except Exception as e:
             print(f"  {g}: 収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
             return g, []
 
-    with ThreadPoolExecutor(max_workers=min(6, len(genres))) as pool:
+    with ThreadPoolExecutor(max_workers=min(3, len(genres))) as pool:
         for g, tweets in pool.map(_one, genres):  # 入力順を保つ
             out["genres"][g] = [_trim(t) for t in tweets]
             print(f"  {g}: {len(tweets)} 件 収集", file=sys.stderr)
@@ -129,6 +137,12 @@ def cmd_collect(args) -> None:
         print(f"raw を書き出し: {args.out}", file=sys.stderr)
     else:
         print(text)
+
+    # 対象ジャンルはあったのに全ジャンルが0件 = API全滅。空ダイジェストを配信しないよう、
+    # 「対象なし(64)」とは別の失敗コードで知らせる(deliver.sh が配信を中止する)。
+    if not any(out["genres"].values()):
+        print("全ジャンルの収集が0件でした(API一時障害の可能性)。配信を中止します。", file=sys.stderr)
+        sys.exit(EXIT_ALL_FAILED)
 
 
 def cmd_ingest(args) -> None:
@@ -147,8 +161,15 @@ def cmd_ingest(args) -> None:
         for genre, tweets in raw["genres"].items():
             items = parse_curated(cur_genres.get(genre, []))
             d = digest.ingest_curated(session, genre, local_date, slot, items, tweets)
-            n_big = sum(1 for it in digest.items_of_digest(session, d.id) if it.importance == "big")
-            print(f"  {genre}: {len(items)} 件取り込み (大{n_big})", file=sys.stderr)
+            stored = digest.items_of_digest(session, d.id)
+            n_big = sum(1 for it in stored if it.importance == "big")
+            if not items and stored:
+                note = " (収集/抽出0件 → 既存を保持・上書きしない)"  # 失敗の空で良い結果を壊さない
+            elif not items:
+                note = " (該当ニュースなし)"
+            else:
+                note = ""
+            print(f"  {genre}: {len(stored)} 件 (大{n_big}){note}", file=sys.stderr)
     print(f"ingest 完了 ({local_date} / {slot})", file=sys.stderr)
 
 
@@ -188,10 +209,14 @@ def cmd_push(args) -> None:
                 if sub.last_on(default_slot) == now_local.date():
                     continue
                 try:
-                    deliver_to_subscriber(
+                    specs = deliver_to_subscriber(
                         session, sub, default_slot, messenger=messenger,
                         now_local=now_local, mark_delivered=True, digest_date=digest_date,
+                        skip_if_empty=True,  # 空(全ジャンル0件)は送らず配信済みにもしない=次回に委ねる
                     )
+                    if not specs:
+                        print(f"  skip(空) {sub.line_user_id} slot={default_slot}", file=sys.stderr)
+                        continue
                     sent += 1
                     print(f"  push → {sub.line_user_id} slot={default_slot}", file=sys.stderr)
                 except Exception as e:  # 1人の失敗で全体を止めない

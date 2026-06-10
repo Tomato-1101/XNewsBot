@@ -71,20 +71,39 @@ if [ -n "$USER_ID" ]; then
 else
   COLLECT=("$PY" scripts/pipeline.py collect --due --slot "$SLOT" --out "$RAW")
 fi
-# exit 64 = 対象ジャンルなし(正常スキップ)。それ以外の非0は本物の失敗として区別する
+# exit 64 = 対象ジャンルなし(正常スキップ)。65 = 全ジャンル収集0件(API全滅)。
+# それ以外の非0は本物の失敗。空ダイジェストを「成功」配信しないよう区別する
 # (以前は全失敗を「対象ジャンルなし」扱いで exit 0 にしており、障害が黙殺されていた)。
 "${COLLECT[@]}" >> "$LOG" 2>&1
 COLLECT_RC=$?
 if [ "$COLLECT_RC" -eq 64 ]; then
   log "collect をスキップ(対象ジャンルなし)"; exit 0
+elif [ "$COLLECT_RC" -eq 65 ]; then
+  log "collect 全滅(全ジャンル0件・API一時障害の可能性)"
+  if [ -n "$USER_ID" ]; then
+    # 今すぐ配信: 収集できなかったので、空振りさせず DB にある当日分を送る(あれば最新の既存分)。
+    log "今すぐ: 収集失敗 → DBの当日分にフォールバックして送信"
+    "$PY" scripts/pipeline.py push --user "$USER_ID" --slot "$SLOT" >> "$LOG" 2>&1
+  fi
+  exit 1
 elif [ "$COLLECT_RC" -ne 0 ]; then
   log "collect に失敗 (exit=$COLLECT_RC)"; exit 1
 fi
 
 # 2) キュレーション(ヘッドレス Claude Code, Read/Write のみ)
+# claude -p が稀にハングすると定刻配信が無限ブロックするため、timeout が在れば被せる
+# (GNU coreutils。macOS は未導入なら gtimeout。どちらも無ければ従来どおり無制限実行)。
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 540"
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 540"; fi
 PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
-if ! "$CLAUDE" -p "$PROMPT" --allowedTools Read Write >> "$LOG" 2>&1; then
-  log "キュレーション(claude)に失敗"; exit 1
+if ! $TIMEOUT_BIN "$CLAUDE" -p "$PROMPT" --allowedTools Read Write >> "$LOG" 2>&1; then
+  log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
+fi
+# claude が exit 0 でも __CUR__ を書かない/空のことがある。空のまま ingest すると
+# 既存ダイジェストは保持されるが当該実行は無意味なので、ここで止めて原因を切り分けやすくする。
+if [ ! -s "$CUR" ]; then
+  log "キュレーション結果が空($CUR)。配信を中止"; exit 1
 fi
 
 # 3) 取り込み(slot は raw から自動)

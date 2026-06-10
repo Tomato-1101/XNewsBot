@@ -84,18 +84,25 @@ def deliver_to_subscriber(
     greeting: bool = True,
     mark_delivered: bool = True,
     digest_date: date | None = None,
+    skip_if_empty: bool = False,
 ) -> list[dict]:
     """DB の既存ダイジェスト(当日・当スロット)から購読者へ push し、配信日を記録する。
 
     digest_date: 配信するダイジェストの日付。収集が深夜0時を跨いで push 時に日付が
     変わると、現在日では当該ダイジェストが見つからず空配信になるため、収集時の日付を
-    明示できるようにする(省略時は従来どおり現在日)。"""
+    明示できるようにする(省略時は従来どおり現在日)。
+
+    skip_if_empty: 当日分の記事が1件も無いときは push せず配信日も記録しない(空のまま返す)。
+    定刻配信で「本日はニュースが見つかりませんでした」を“配信済み”にすると、後から記事が
+    揃っても二度と届かなくなるため、定刻(--due)経路ではこれを True にして次回に委ねる。"""
     now_local = now_local or _now_in(sub.tz)
     local_date = digest_date or now_local.date()
     grouped = digest.assemble_for_genres(
         session, display_genres(sub.enabled_genres), local_date, slot
     )
-    specs = lc.digest_specs(grouped, greeting=greeting, slot=slot)
+    if skip_if_empty and not any(grouped.values()):
+        return []
+    specs = lc.digest_specs(grouped, greeting=greeting, slot=slot, digest_date=local_date)
     messenger.push(sub.push_target, specs)  # push_to(グループ等)があればそこへ、無ければ1:1
     if mark_delivered:
         sub.set_last_on(slot, local_date)

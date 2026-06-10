@@ -27,9 +27,37 @@ from .genres import excludes, keywords, min_faves
 BASE_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 KEY_FILE = Path(__file__).resolve().parent.parent / ".key"
 
+# 1リクエストのタイムアウト(秒)。twitterapi.io は1ページ数秒だが、混雑時に伸びる。
+REQUEST_TIMEOUT = 30
+# 一時的エラー(タイムアウト/429/5xx/瞬断)の再試行バックオフ(秒)。指数で伸ばし上限で頭打ち。
+RETRY_BASE_DELAY = 1.0
+RETRY_MAX_DELAY = 8.0
+
 
 class XClientError(RuntimeError):
     pass
+
+
+class XClientRetryable(XClientError):
+    """一時的エラー(タイムアウト/429/5xx/接続瞬断/応答崩れ)。再試行で回復しうる。
+
+    以前はタイムアウト(socket.timeout=TimeoutError)を _request が捕捉せず、
+    fetch_with_retry も「空ページ時のみ」再試行だったため、1回のタイムアウトで
+    そのジャンルが0件確定し、混雑時に複数ジャンルが同時に空配信化していた。"""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    """HTTP 429 の Retry-After(秒)を float に。日付形式や不正値は None。"""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _keychain_get() -> str:
@@ -112,12 +140,24 @@ def _request(query: str, query_type: str, cursor: str, key: str) -> dict:
     qs = urllib.parse.urlencode({"query": query, "queryType": query_type, "cursor": cursor})
     req = urllib.request.Request(f"{BASE_URL}?{qs}", headers={"X-API-Key": key})
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        raise XClientError(f"twitterapi.io HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:300]}")
+        body = e.read().decode("utf-8", "replace")[:300]
+        # 429(レート超過)/5xx(サーバ側一時障害)は待てば回復しうる → 再試行対象。
+        if e.code == 429 or 500 <= e.code < 600:
+            retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
+            raise XClientRetryable(f"twitterapi.io HTTP {e.code}: {body}", retry_after=retry_after)
+        raise XClientError(f"twitterapi.io HTTP {e.code}: {body}")
+    except (TimeoutError, ConnectionError) as e:
+        # 読み取りタイムアウト(socket.timeout=TimeoutError)・接続断 → 再試行対象。
+        raise XClientRetryable(f"twitterapi.io タイムアウト/接続断: {type(e).__name__}: {e}")
     except urllib.error.URLError as e:
-        raise XClientError(f"twitterapi.io 接続エラー: {e.reason}")
+        # URLError は接続失敗(reason に socket.timeout を含むこともある) → 再試行対象。
+        raise XClientRetryable(f"twitterapi.io 接続エラー: {e.reason}")
+    except (json.JSONDecodeError, ValueError) as e:
+        # 途中で切れた/空ボディ等で JSON が壊れた → 再試行対象。
+        raise XClientRetryable(f"twitterapi.io 応答パース失敗: {e}")
 
 
 def fetch(query: str, query_type: str, max_tweets: int, key: str) -> list[dict]:
@@ -139,14 +179,27 @@ def fetch(query: str, query_type: str, max_tweets: int, key: str) -> list[dict]:
 
 def fetch_with_retry(query: str, query_type: str, max_tweets: int, key: str,
                      retries: int = 3) -> list[dict]:
-    """twitterapi.io は同一クエリでも空ページを返すことがある(プール由来の非決定性)。
-    結果が空なら数回まで再試行する。"""
+    """空ページ(プール由来の非決定性)と一時的エラー(タイムアウト/429/5xx)の両方を再試行する。
+
+    - XClientRetryable は指数バックオフ(429 は Retry-After 尊重)で再試行。
+    - 空結果も従来どおり再試行。
+    - 最終試行でも一時的エラーなら例外を投げ、呼び出し側(pipeline._one)が
+      そのジャンルだけ空として扱う(他ジャンルの収集は止めない)。
+    - 恒久エラー(XClientError かつ非 Retryable, 例: 4xx)は即時送出(再試行しても無駄)。
+    """
     for attempt in range(retries):
-        tweets = fetch(query, query_type, max_tweets, key)
+        try:
+            tweets = fetch(query, query_type, max_tweets, key)
+        except XClientRetryable as e:
+            if attempt >= retries - 1:
+                raise
+            delay = e.retry_after if e.retry_after is not None else RETRY_BASE_DELAY * (2 ** attempt)
+            time.sleep(min(delay, RETRY_MAX_DELAY))
+            continue
         if tweets:
             return tweets
         if attempt < retries - 1:
-            time.sleep(0.6)
+            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
     return []
 
 
