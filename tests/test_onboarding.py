@@ -228,3 +228,37 @@ def test_genre_done_empty_nudges(session, messenger):
     handle_event(session, messenger, ev("postback", data="genre_done"))
     sub = _sub(session)
     assert sub.onboarding_step == "genres"  # まだ進まない
+
+
+def test_time_postback_ignored_when_not_setting(session, messenger):
+    """時刻設定中(done)でないときに古い time ボタンを押しても朝時刻を書き換えない。"""
+    _onboard(session, messenger)  # morning=07:00, step=done
+    assert _sub(session).onboarding_step == "done"
+    handle_event(session, messenger, ev("postback", data="time:0600"))
+    sub = _sub(session)
+    assert (sub.morning_hour, sub.morning_minute) == (7, 0)  # 変わらない
+    assert "メニュー" in messenger.last_reply[0]["text"]
+
+
+def test_detail_postback_stable_key_survives_reingest(session, messenger):
+    """安定キー(日付:slot:genre:rank)の詳細タップは、再収集で id が変わっても引ける。"""
+    from datetime import date
+
+    from xnewsbot import digest
+    from xnewsbot.curator import parse_curated
+
+    from .conftest import curated_items, make_tweets
+
+    d1 = digest.ingest_curated(session, "AI", date(2026, 6, 8), "morning",
+                               parse_curated(curated_items(big=1, small=1)), make_tweets(3))
+    title0 = digest.items_of_digest(session, d1.id)[0].title
+
+    # 安定キー形式の postback を旧 _handle_detail(整数idのみ)は解けない。新実装で解けることを確認。
+    handle_event(session, messenger, ev("postback", data="detail:20260608:morning:AI:0"))
+    assert title0 in messenger.last_reply[0]["text"]
+
+    # 「今すぐ配信」等で取り込み直しても(本番では NewsItem.id が変わる)、同じ安定キーで引ける
+    digest.ingest_curated(session, "AI", date(2026, 6, 8), "morning",
+                          parse_curated(curated_items(big=1, small=1)), make_tweets(3))
+    handle_event(session, messenger, ev("postback", data="detail:20260608:morning:AI:0"))
+    assert title0 in messenger.last_reply[0]["text"]

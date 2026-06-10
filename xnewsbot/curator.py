@@ -87,12 +87,22 @@ def _coerce_items(data: list) -> list[CuratedItem]:
         title = str(d.get("title") or "").strip()
         if not title:
             continue
-        importance = "big" if str(d.get("importance")).lower() == "big" else "small"
+        importance = "big" if str(d.get("importance") or "").strip().lower() == "big" else "small"
         try:
             score = int(d.get("score") or 0)
         except (TypeError, ValueError):
             score = 0
-        idxs = [int(x) for x in (d.get("source_idxs") or []) if isinstance(x, (int, float))]
+        # source_idxs: bool は int だが添字として無効なので除外し、順序を保って重複も除く
+        # (同じ元ツイートが詳細の「元ポスト」に二重表示されるのを防ぐ)。
+        idxs: list[int] = []
+        seen: set[int] = set()
+        for x in (d.get("source_idxs") or []):
+            if isinstance(x, bool) or not isinstance(x, (int, float)):
+                continue
+            xi = int(x)
+            if xi not in seen:
+                seen.add(xi)
+                idxs.append(xi)
         items.append(
             CuratedItem(
                 title=title[:80],

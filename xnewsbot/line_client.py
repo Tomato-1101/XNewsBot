@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 
 from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
@@ -93,7 +94,19 @@ def settings_summary_text(sub: Subscriber) -> str:
 
 # ---- ニュース配信 ----
 
-def _big_item_block(item: NewsItem) -> dict:
+def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> str:
+    """「詳細を見る」postback の data。
+
+    再収集(今すぐ配信など)で同一記事でも NewsItem.id が変わるため、id を直に使うと
+    少し前に届いた見出しのタップが「見つかりません」になる。日付+スロット+ジャンル+rank の
+    安定キーにして、再取り込み後も同じ記事を引けるようにする(rank はダイジェスト内で一意)。
+    日付/スロットが無い文脈(モック表示)では従来どおり id を使う。"""
+    if digest_date is None or slot is None:
+        return f"detail:{item.id}"
+    return f"detail:{digest_date:%Y%m%d}:{slot}:{item.genre}:{item.rank}"
+
+
+def _big_item_block(item: NewsItem, detail_data: str) -> dict:
     """大ニュース1件分の縦ブロック(見出し+タイトル+要約+元ポストリンク)。
     複数件を1枚の縦長バブルに積み上げるための部品(スマホで横スクロール不要にする)。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
@@ -118,7 +131,7 @@ def _big_item_block(item: NewsItem) -> dict:
     contents.append(
         {"type": "text", "text": "▶ 詳細を見る", "size": "xs",
          "color": accent, "weight": "bold", "margin": "md",
-         "action": {"type": "postback", "data": f"detail:{item.id}", "displayText": "詳細を見る"}}
+         "action": {"type": "postback", "data": detail_data, "displayText": "詳細を見る"}}
     )
     url = item.source_urls[0] if item.source_urls else ""
     if url:
@@ -131,14 +144,14 @@ def _big_item_block(item: NewsItem) -> dict:
     return {"type": "box", "layout": "vertical", "contents": contents}
 
 
-def _small_row(item: NewsItem) -> dict:
+def _small_row(item: NewsItem, detail_data: str) -> dict:
     """小ニュース1件分のコンパクトな縦行(タップで詳細 postback)。
     横カルーセルをやめ縦1枚に同居させることで、配信を1メッセージに収めて通数を節約する。"""
     label = GENRES.get(item.genre, {}).get("label", item.genre)
     return {
         "type": "text", "text": f"▷ 【{label}】{item.title}",
         "size": "sm", "color": "#333333", "wrap": True, "margin": "md",
-        "action": {"type": "postback", "data": f"detail:{item.id}", "displayText": "詳細を見る"},
+        "action": {"type": "postback", "data": detail_data, "displayText": "詳細を見る"},
     }
 
 
@@ -162,8 +175,21 @@ def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list
             cur.append(comp)
     if cur:
         bubbles.append(cur)
+
+    # LINE は1回の push/reply で最大5メッセージ。超過分のバブルは送れないが、黙って捨てると
+    # 後半ジャンルの見出しが無言で消える。最後のバブルに省略を明示する(件数=タップ可能な見出し数)。
+    kept = bubbles[:MAX_MESSAGES]
+    dropped = bubbles[MAX_MESSAGES:]
+    if dropped and kept:
+        n = sum(1 for b in dropped for c in b
+                if isinstance(c, dict) and str(c.get("action", {}).get("data", "")).startswith("detail:"))
+        note = (f"…ほか {n} 件の見出しは次回の配信でお届けします。" if n
+                else "…一部の見出しは次回の配信でお届けします。")
+        kept[-1] = kept[-1] + [{"type": "text", "text": note, "size": "xs",
+                                "color": "#999999", "wrap": True, "margin": "md"}]
+
     specs: list[dict] = []
-    for idx, body in enumerate(bubbles[:MAX_MESSAGES]):
+    for idx, body in enumerate(kept):
         specs.append({
             "type": "flex", "alt": alt_first if idx == 0 else alt_rest,
             "contents": {"type": "bubble", "size": "giga",
@@ -173,7 +199,8 @@ def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list
 
 
 def digest_specs(
-    grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None
+    grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None,
+    digest_date: date | None = None,
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列)に変換する。
 
@@ -209,7 +236,7 @@ def digest_specs(
         for i, it in enumerate(bigs):
             if i > 0:
                 components.append(_sep("lg"))
-            components.append(_big_item_block(it))
+            components.append(_big_item_block(it, _detail_data(it, digest_date, slot)))
 
     if smalls:
         if components:
@@ -217,7 +244,7 @@ def digest_specs(
         components.append({"type": "text", "text": "そのほかの見出し(タップで詳細)",
                            "size": "xs", "color": "#888888", "weight": "bold"})
         for it in smalls:
-            components.append(_small_row(it))
+            components.append(_small_row(it, _detail_data(it, digest_date, slot)))
 
     alt = _GREETING.get(slot or "", "今日のニュース")
     return _pack_bubbles(components, alt_first=alt, alt_rest="ニュースのつづき")

@@ -50,3 +50,13 @@ def test_curation_helpers_smoke():
     assert "JSON" in instr and "detail" in instr  # detail 指示を含む
     s = format_tweets_for_curation(make_tweets(3))
     assert "[0]" in s and "[2]" in s
+
+
+def test_importance_normalized_and_source_idxs_cleaned():
+    """importance は前後空白/大小無視で正規化、source_idxs は bool/非数値を除き重複も除く。"""
+    items = parse_curated([{
+        "title": "a", "summary": "s", "importance": "  BIG  ", "score": 10,
+        "source_idxs": [2, 2, True, 1.0, "x", 3],
+    }])
+    assert items[0].importance == "big"
+    assert items[0].source_idxs == [2, 1, 3]  # 重複/bool/非数値を除去、順序は保持

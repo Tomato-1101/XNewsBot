@@ -70,6 +70,30 @@ def test_detail_spec_contains_title_and_source():
     assert "https://x.com/u/status/1" in spec["text"]
 
 
+def test_digest_specs_uses_stable_detail_key_with_date():
+    """digest_date を渡すと postback は安定キー(日付:slot:genre:rank)になる(id 直指定でない)。"""
+    import json
+    from datetime import date
+    item = _big()
+    item.id = 7
+    item.rank = 0
+    specs = lc.digest_specs({"AI": [item]}, greeting=False, slot="morning",
+                            digest_date=date(2026, 6, 8))
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "detail:20260608:morning:AI:0" in blob
+    assert '"detail:7"' not in blob  # id 直指定にフォールバックしていない
+
+
+def test_pack_bubbles_overflow_adds_notice():
+    """5メッセージを超える量は黙って捨てず、最後のバブルに省略を明示する。"""
+    comps = [{"type": "text", "text": "あ" * 2200, "wrap": True,
+              "action": {"type": "postback", "data": f"detail:{i}"}} for i in range(7)]
+    specs = lc._pack_bubbles(comps, alt_first="a", alt_rest="b")
+    assert len(specs) == lc.MAX_MESSAGES  # 5 で頭打ち
+    last_body = specs[-1]["contents"]["body"]["contents"]
+    assert any("次回の配信" in c.get("text", "") for c in last_body)
+
+
 def test_pack_bubbles_measures_utf8_bytes():
     """バブル分割はUTF-8バイト数で判定する(日本語は1文字3バイト)。件数は削らない。"""
     import json

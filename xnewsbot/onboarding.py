@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Callable
 
 from sqlmodel import Session, select
 
+from . import digest
 from . import line_client as lc
 from . import mockdata
 from .genres import GENRE_KEYS, SELECTABLE_KEYS
@@ -259,8 +261,13 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
             ])
 
     elif data.startswith("time:"):
+        # 時刻設定中(初回 or 編集)以外で、履歴に残った古い時刻ボタンをタップされても
+        # 勝手に朝の時刻を書き換えない(設定が意図せず変わるのを防ぐ)。
+        if sub.onboarding_step not in ("morning", "evening"):
+            messenger.reply(reply_token, [lc.menu_spec("メニュー")])
+            return
         hhmm = data.split(":", 1)[1]
-        slot = sub.onboarding_step if sub.onboarding_step in ("morning", "evening") else "morning"
+        slot = sub.onboarding_step
         if len(hhmm) == 4 and hhmm.isdigit():
             _apply_slot_time(session, messenger, sub, slot, int(hhmm[:2]), int(hhmm[2:]), reply_token)
 
@@ -304,19 +311,41 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         messenger.reply(reply_token, [lc.menu_spec("メニュー")])
 
 
-def _handle_detail(session, messenger, item_id_str: str, reply_token: str) -> None:
-    """小ニュースの見出しタップ(postback detail:<id>)に、その記事の詳細を reply する。"""
-    try:
-        item_id = int(item_id_str)
-    except ValueError:
-        messenger.reply(reply_token, [lc.menu_spec("メニュー")])
-        return
-    item = session.get(NewsItem, item_id)
+def _handle_detail(session, messenger, payload: str, reply_token: str) -> None:
+    """見出しタップ(postback)に、その記事の詳細を reply する。
+
+    payload は 2 形式を受ける:
+      - 安定キー "YYYYMMDD:slot:genre:rank"(現行。再収集で id が変わっても引ける)
+      - 整数 id(履歴に残る旧ボタン。後方互換)"""
+    item = _resolve_detail_item(session, payload)
     if item is None:
         messenger.reply(reply_token, [lc.text_spec(
             "この記事は見つかりませんでした(配信が更新された可能性があります)。")])
         return
     messenger.reply(reply_token, [lc.detail_spec(item)])
+
+
+def _resolve_detail_item(session, payload: str) -> NewsItem | None:
+    payload = (payload or "").strip()
+    if payload.isdigit():  # 旧形式: NewsItem.id 直指定
+        return session.get(NewsItem, int(payload))
+    parts = payload.split(":")
+    if len(parts) != 4:
+        return None
+    ymd, slot, genre, rank_s = parts
+    try:
+        d = date(int(ymd[0:4]), int(ymd[4:6]), int(ymd[6:8]))
+        rank = int(rank_s)
+    except (ValueError, IndexError):
+        return None
+    dg = digest.get_genre_digest(session, genre, d, slot)
+    if dg is None:
+        return None
+    return session.exec(
+        select(NewsItem).where(
+            NewsItem.genre_digest_id == dg.id, NewsItem.rank == rank
+        )
+    ).first()
 
 
 def _do_cancel(session, messenger, sub: Subscriber, reply_token: str) -> None:
