@@ -70,6 +70,23 @@ def test_detail_spec_contains_title_and_source():
     assert "https://x.com/u/status/1" in spec["text"]
 
 
+def test_small_row_shows_multiple_genre_tags():
+    """横断話題の小見出しは該当ジャンルを「株/経済/政治」のように併記する。"""
+    item = _small(0)
+    item.genres = ["株", "経済", "政治"]
+    spec = lc._small_row(item, "detail:x")
+    assert "【株/経済/政治】" in spec["text"]
+
+
+def test_big_block_shows_multiple_genre_tags():
+    """横断話題の大ニュース見出しも該当ジャンルを併記する。"""
+    import json
+    item = _big()  # genre="AI"
+    item.genres = ["AI", "テクノロジー"]
+    blob = json.dumps(lc._big_item_block(item, "detail:x"), ensure_ascii=False)
+    assert "【AI/テクノロジー】大ニュース" in blob
+
+
 def test_digest_specs_uses_stable_detail_key_with_date():
     """digest_date を渡すと postback は安定キー(日付:slot:genre:rank)になる(id 直指定でない)。"""
     import json

@@ -26,6 +26,7 @@ class CuratedItem:
     importance: str          # "big" | "small"
     score: int               # 0-100 (重要度の目安)
     detail: str = ""         # 「詳細を見る」用の長め解説(背景・経緯。空なら表示時 summary で代替)
+    genres: list[str] = field(default_factory=list)  # 該当ジャンルタグ(横断話題。例 ["経済","株"])
     source_idxs: list[int] = field(default_factory=list)
 
 
@@ -103,6 +104,12 @@ def _coerce_items(data: list) -> list[CuratedItem]:
             if xi not in seen:
                 seen.add(xi)
                 idxs.append(xi)
+        # 該当ジャンルタグ(横断重複排除で1件にまとめた話題の関連ジャンル)。文字列のみ・重複除去。
+        genres: list[str] = []
+        for g in (d.get("genres") or []):
+            gs = str(g).strip()
+            if gs and gs not in genres:
+                genres.append(gs)
         items.append(
             CuratedItem(
                 title=title[:80],
@@ -110,6 +117,7 @@ def _coerce_items(data: list) -> list[CuratedItem]:
                 detail=str(d.get("detail") or "").strip(),
                 importance=importance,
                 score=score,
+                genres=genres,
                 source_idxs=idxs,
             )
         )

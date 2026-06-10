@@ -52,6 +52,15 @@ def test_curation_helpers_smoke():
     assert "[0]" in s and "[2]" in s
 
 
+def test_parse_curated_parses_genre_tags():
+    """横断重複排除の該当ジャンルタグ(genres)を取り込む(重複除去・順序保持)。"""
+    items = parse_curated([{
+        "title": "利上げ", "summary": "s", "importance": "big", "score": 80,
+        "genres": ["経済", "株", "経済", "政治"], "source_idxs": [0],
+    }])
+    assert items[0].genres == ["経済", "株", "政治"]
+
+
 def test_importance_normalized_and_source_idxs_cleaned():
     """importance は前後空白/大小無視で正規化、source_idxs は bool/非数値を除き重複も除く。"""
     items = parse_curated([{

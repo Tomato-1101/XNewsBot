@@ -94,6 +94,17 @@ def settings_summary_text(sub: Subscriber) -> str:
 
 # ---- ニュース配信 ----
 
+def _tag_labels(item: NewsItem) -> list[str]:
+    """表示するジャンルタグの label 列。item.genres(複数)が無ければ主ジャンルのみ。"""
+    keys = item.genres or [item.genre]
+    return [GENRES.get(k, {}).get("label", k) for k in keys]
+
+
+def _tag_text(item: NewsItem) -> str:
+    """ジャンルタグを「経済/株/政治」の形に。横断話題がどのジャンルに関わるかを示す。"""
+    return "/".join(_tag_labels(item))
+
+
 def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> str:
     """「詳細を見る」postback の data。
 
@@ -109,12 +120,13 @@ def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> 
 def _big_item_block(item: NewsItem, detail_data: str) -> dict:
     """大ニュース1件分の縦ブロック(見出し+タイトル+要約+元ポストリンク)。
     複数件を1枚の縦長バブルに積み上げるための部品(スマホで横スクロール不要にする)。"""
-    label = GENRES.get(item.genre, {}).get("label", item.genre)
-    # 常時ジャンル(特大)は専用見出し・赤系アクセントで目立たせる
+    # 常時ジャンル(特大)は専用見出し・赤系アクセントで目立たせる。関連ジャンルがあれば併記。
     if item.genre in ALWAYS_KEYS:
-        heading, accent = f"🚨 {label}ニュース", "#D32F2F"
+        related = [GENRES.get(k, {}).get("label", k) for k in (item.genres or []) if k not in ALWAYS_KEYS]
+        extra = ("  " + " / ".join(related)) if related else ""
+        heading, accent = f"🚨 特大ニュース{extra}", "#D32F2F"
     else:
-        heading, accent = f"【{label}】大ニュース", ACCENT
+        heading, accent = f"【{_tag_text(item)}】大ニュース", ACCENT
     contents = [
         {"type": "text", "text": heading, "size": "sm",
          "color": accent, "weight": "bold"},
@@ -147,9 +159,8 @@ def _big_item_block(item: NewsItem, detail_data: str) -> dict:
 def _small_row(item: NewsItem, detail_data: str) -> dict:
     """小ニュース1件分のコンパクトな縦行(タップで詳細 postback)。
     横カルーセルをやめ縦1枚に同居させることで、配信を1メッセージに収めて通数を節約する。"""
-    label = GENRES.get(item.genre, {}).get("label", item.genre)
     return {
-        "type": "text", "text": f"▷ 【{label}】{item.title}",
+        "type": "text", "text": f"▷ 【{_tag_text(item)}】{item.title}",
         "size": "sm", "color": "#333333", "wrap": True, "margin": "md",
         "action": {"type": "postback", "data": detail_data, "displayText": "詳細を見る"},
     }
@@ -257,8 +268,7 @@ DETAIL_MAX_CHARS = 4800
 def detail_spec(item: NewsItem) -> dict:
     """「詳細を見る」タップで返す本文。見出しの再掲で終わらせず長め解説(detail。
     無ければ summary)を載せる。元ポストは本文を載せず、見たい人向けにリンクだけ残す。"""
-    label = GENRES.get(item.genre, {}).get("label", item.genre)
-    lines = [f"【{label}】{item.title}"]
+    lines = [f"【{_tag_text(item)}】{item.title}"]
 
     body = item.detail or item.summary
     if body:

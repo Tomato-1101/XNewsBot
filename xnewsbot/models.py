@@ -92,7 +92,10 @@ class GenreDigest(SQLModel, table=True):
 class NewsItem(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     genre_digest_id: int = Field(index=True, foreign_key="genredigest.id")
-    genre: str = ""             # 表示・詳細で使うため非正規化して保持
+    genre: str = ""             # 所属ダイジェストのジャンル(主ジャンル)。出典idxの基準・非正規化保持
+    # 表示用の該当ジャンルタグ(複数可)。横断重複排除で1件にまとめた話題が、どのジャンルに
+    # 関係するかを示す(例: 利上げ → ["経済","株","政治"])。空なら表示時 [genre] で代替。
+    genres: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     importance: str = "small"   # "big" | "small"
     rank: int = 0
     title: str = ""

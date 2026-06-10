@@ -45,6 +45,9 @@ def _migrate(engine) -> None:
         ncols = {row[1] for row in conn.execute(text("PRAGMA table_info(newsitem)"))}
         if ncols and "detail" not in ncols:
             conn.execute(text("ALTER TABLE newsitem ADD COLUMN detail VARCHAR DEFAULT ''"))
+        if ncols and "genres" not in ncols:
+            # JSON 列。既存行は空配列にしておき、表示時は主ジャンル genre で代替する。
+            conn.execute(text("ALTER TABLE newsitem ADD COLUMN genres JSON DEFAULT '[]'"))
 
 
 @contextmanager

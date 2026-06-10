@@ -15,6 +15,7 @@ from sqlmodel import Session, select
 
 from . import xclient
 from .curator import CuratedItem
+from .genres import GENRE_KEYS
 from .models import GenreDigest, NewsItem
 
 
@@ -35,10 +36,15 @@ def _build_news_items(
         ]
         source_urls = [s["url"] for s in source_tweets if s["url"]]
         top_views = max((s["views"] for s in source_tweets), default=0)
+        # 表示用ジャンルタグ: Claude が付けた関連ジャンル(既知キーのみ)に主ジャンルを足し、
+        # 表示順(GENRE_KEYS)で整列・重複排除。タグが無ければ主ジャンルのみ。
+        tag_set = {g for g in ci.genres if g in GENRE_KEYS} | {genre}
+        tags = [g for g in GENRE_KEYS if g in tag_set]
         items.append(
             NewsItem(
                 genre_digest_id=digest_id,
                 genre=genre,
+                genres=tags,
                 importance=ci.importance,
                 rank=rank,
                 title=ci.title,
