@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import Settings, get_settings
-from .genres import excludes, keywords, min_faves
+from .genres import excludes, keywords, lang, min_faves
 
 BASE_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 KEY_FILE = Path(__file__).resolve().parent.parent / ".key"
@@ -214,20 +214,29 @@ def collect(genre: str, settings: Settings | None = None, key: str | None = None
     key = key or load_key(settings)
     kws = keywords(genre)
     ex = excludes(genre)
-    query = "(" + " OR ".join(kws) + ") lang:ja" + _window_clause(settings.collect_hours)
+    query = "(" + " OR ".join(kws) + ")"
+    # 言語フィルタ: "ja"=日本語のみ(既定)。"any"/"" は付けない=英語の一次情報も拾う
+    # (世界の速報を、日本語で言及されるのを待たずに取得する。要約は Claude が日本語にする)。
+    g_lang = lang(genre)
+    if g_lang and g_lang != "any":
+        query += f" lang:{g_lang}"
+    query += _window_clause(settings.collect_hours)
     # 除外語はサーバ側(best-effort)とクライアント側(確定的)の両方で効かせる
     for term in ex:
         query += f" -{term}"
 
     gmin = min_faves(genre)
     min_f = gmin if gmin is not None else settings.collect_min_faves
+    min_v = settings.collect_min_views_floor
 
     tweets = fetch_with_retry(query, "Top", settings.collect_max_tweets, key)
     tweets = [t for t in tweets if not t.get("isReply")]
     if ex:
         tweets = [t for t in tweets if not any(term in (t.get("text") or "") for term in ex)]
     if min_f:
-        tweets = [t for t in tweets if _int(t, "likeCount") >= min_f]
+        # いいね下限 OR 表示回数下限。伸びる前の速報(高view・低like)を取りこぼさない。
+        tweets = [t for t in tweets
+                  if _int(t, "likeCount") >= min_f or (min_v and _int(t, "viewCount") >= min_v)]
     tweets = _filter_recent(tweets, settings.collect_hours)
     tweets.sort(key=views, reverse=True)
     return tweets

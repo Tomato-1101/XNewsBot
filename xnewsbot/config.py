@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     collect_max_tweets: int = 60    # 1ジャンルあたり取得上限(課金/レート/速度対策)
     collect_hours: float = 24       # 収集対象の直近時間
     collect_min_faves: int = 200    # 最低いいね数(ノイズ除去)
+    # 出たばかりで「いいね」が伸びる前の速報を取りこぼさないため、表示回数(viewCount)が
+    # この値以上なら、いいね下限を満たさなくても採用する(いいね OR 表示回数)。
+    collect_min_views_floor: int = 20000
 
     @property
     def sqlite_url(self) -> str:

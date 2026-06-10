@@ -29,6 +29,8 @@ def _load() -> dict[str, dict]:
             "exclude": list(g.get("exclude", [])),
             "min_faves": g.get("min_faves"),  # None なら設定の既定値を使う
             "selectable": bool(g.get("selectable", True)),  # false=常時ジャンル(全員に常時配信)
+            # 収集の言語フィルタ。"ja"=日本語のみ(既定)。"any"/""=言語指定なし(英語の一次情報も拾う)。
+            "lang": str(g.get("lang", "ja")).strip().lower(),
             "note": g.get("note", ""),
         }
     if not out:
@@ -71,3 +73,8 @@ def min_faves(genre: str) -> int | None:
     """ジャンル別の最低いいね数(未指定なら None → 設定の既定値を使う)。"""
     v = GENRES[genre].get("min_faves")
     return int(v) if v is not None else None
+
+
+def lang(genre: str) -> str:
+    """収集の言語フィルタ。"ja"=日本語のみ。"any"/"" なら言語指定なし(英語等も拾う)。"""
+    return GENRES[genre].get("lang", "ja")
