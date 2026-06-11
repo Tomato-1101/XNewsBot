@@ -97,7 +97,9 @@ TIMEOUT_BIN=""
 if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 540"
 elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 540"; fi
 PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
-if ! $TIMEOUT_BIN "$CLAUDE" -p "$PROMPT" --allowedTools Read Write >> "$LOG" 2>&1; then
+# モデルを明示する。未指定だと settings.json 既定(Fable 5・1M)を継承して 1 実行 ~12 分かかる。
+# 定刻配信は 15 分前起動で余裕が薄いので、品質を保ちつつ速い Opus 4.8 を使う。
+if ! $TIMEOUT_BIN "$CLAUDE" --model claude-opus-4-8 -p "$PROMPT" --allowedTools Read Write >> "$LOG" 2>&1; then
   log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
 fi
 # claude が exit 0 でも __CUR__ を書かない/空のことがある。空のまま ingest すると
