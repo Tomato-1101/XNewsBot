@@ -14,7 +14,8 @@ import json
 from dataclasses import dataclass, field
 
 # Claude に渡す(=ソースとして採番する)ツイート数の上限。source_idxs はこの範囲。
-CURATE_INPUT_LIMIT = 40
+# 候補プールを広げ Claude がより多くの話題から選べるよう 40→60(2026-06-11 本人要望)。
+CURATE_INPUT_LIMIT = 60
 # 1ジャンルあたり「大ニュース」の最大件数
 MAX_BIG_PER_GENRE = 3
 
