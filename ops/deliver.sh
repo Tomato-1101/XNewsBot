@@ -93,9 +93,11 @@ fi
 # 2) キュレーション(ヘッドレス Claude Code, Read/Write のみ)
 # claude -p が稀にハングすると定刻配信が無限ブロックするため、timeout が在れば被せる
 # (GNU coreutils。macOS は未導入なら gtimeout。どちらも無ければ従来どおり無制限実行)。
+# 実測: Opus 4.8 のキュレーションは約8分(498s/300KB raw)。旧540s上限は実測の92%で、
+# ニュースが多い日に延びると打ち切られ配信失敗しうる。15分前起動(収集~2分)でも収まる720sへ。
 TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 540"
-elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 540"; fi
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 720"
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 720"; fi
 PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 # モデルを明示する。未指定だと settings.json 既定(Fable 5・1M)を継承して 1 実行 ~12 分かかる。
 # 定刻配信は 15 分前起動で余裕が薄いので、品質を保ちつつ速い Opus 4.8 を使う。
