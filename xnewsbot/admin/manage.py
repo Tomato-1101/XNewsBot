@@ -20,6 +20,10 @@ _OK_MESSAGES = {
     "keys": "APIキーを更新しました(次回の収集から反映されます)。",
     "collect": "収集パラメータを保存しました(次回の収集から反映されます)。",
     "delivery": "配信時刻を変更し、配信ジョブを再登録しました。",
+    "run_now": "今すぐ配信を開始しました。バックグラウンドで最新を収集・要約し、全購読者へ送信します"
+               "(完了まで約10分。結果は配信ログに記録されます)。",
+    "run_refresh": "今すぐ更新を開始しました。バックグラウンドで最新を収集・要約します"
+                   "(完了まで約10分。LINE へは送信しません)。",
 }
 
 
@@ -52,6 +56,19 @@ def manage_index(
             "flash_err": err,
         },
     )
+
+
+@router.post("/manage/run")
+def run_now(mode: str = Form(...), _user: str = Depends(require_auth)) -> RedirectResponse:
+    """「今すぐ」: 定刻を待たず収集→キュレーションを起動する(deliver.sh をバックグラウンド実行)。
+    mode='now'=全購読者へ配信(無料枠を消費する不可逆操作) / 'refresh'=配信せず収集のみ(無料)。"""
+    if mode not in ("now", "refresh"):
+        return _redirect("err=不正なモードです。")
+    try:
+        stores.launch_deliver(mode)
+    except Exception as e:
+        return _redirect(f"err=起動に失敗: {e}")
+    return _redirect(f"ok=run_{mode}")
 
 
 @router.post("/manage/genres")

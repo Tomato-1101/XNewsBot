@@ -206,6 +206,28 @@ def reload_deliver_agent() -> None:
         raise RuntimeError(f"launchctl bootstrap 失敗: {(r.stderr or r.stdout).strip()}")
 
 
+# --- 今すぐ実行 (配信 / 更新。deliver.sh をバックグラウンド起動) ---
+
+_RUN_MODES = {"now": "--now", "refresh": "--refresh"}
+
+
+def launch_deliver(mode: str) -> None:
+    """deliver.sh をバックグラウンド起動する(収集→キュレーション→[配信])。約10分かかるため
+    Web リクエストをブロックせず投げっぱなしにする(進捗・結果は配信ログに残る)。
+    mode='now'=定刻を待たず全購読者へ今すぐ配信(無料枠を消費) /
+    mode='refresh'=配信せず収集・取り込みのみ(Web表示の更新だけ・無料)。"""
+    flag = _RUN_MODES.get(mode)
+    if flag is None:
+        raise ValueError(f"不正なモードです: {mode}")
+    if not DELIVER_SH.exists():
+        raise FileNotFoundError(f"deliver.sh が見つかりません: {DELIVER_SH}")
+    subprocess.Popen(
+        ["/bin/bash", str(DELIVER_SH), flag],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def write_delivery_time(slot: str, hhmm: str) -> None:
     """配信時刻を変更: deliver.sh(定刻) + plist(15分前) を更新し launchd を再登録。
     途中で失敗したらファイルを変更前に戻し、可能なら配信ジョブも復旧する(ロールバック)。"""

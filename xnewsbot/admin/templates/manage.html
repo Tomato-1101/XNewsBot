@@ -6,6 +6,22 @@
 {% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
 
 <section class="panel">
+  <h2>今すぐ</h2>
+  <p class="hint">定刻を待たず、いま最新ニュースを収集→キュレーションします(バックグラウンド実行・完了まで約10分)。</p>
+  <div class="run-actions">
+    <form method="post" action="/manage/run" class="needs-confirm"
+          data-confirm="今すぐ全購読者へ配信します。&#10;最新ニュースを収集・要約し、LINE で購読者全員に送信します。&#10;これは無料枠(200通/月)を消費する取り消せない操作です。&#10;&#10;本当に配信しますか？">
+      <input type="hidden" name="mode" value="now">
+      <button type="submit" class="warn">今すぐ配信（全購読者へ）</button>
+    </form>
+    <form method="post" action="/manage/run">
+      <input type="hidden" name="mode" value="refresh">
+      <button type="submit" class="ghost">今すぐ更新（配信なし・無料）</button>
+    </form>
+  </div>
+</section>
+
+<section class="panel">
   <h2>APIキー(twitterapi.io)</h2>
   <p class="hint">上が最優先。レート制限(429)・失敗時に下のキーへ自動フォールバックします。値はマスク表示です。<br>
     この画面で扱うのは <code>.key</code> ファイルのキーです(.env や Keychain のキーも収集には使われますが、ここには表示・編集しません)。</p>

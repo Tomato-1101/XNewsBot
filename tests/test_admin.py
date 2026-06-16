@@ -115,6 +115,48 @@ def test_repeated_failures_lock_out_ip(wired):
         assert c.get("/manage", auth=AUTH, headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
 
 
+# --- 今すぐ実行(配信 / 更新) ---
+
+def test_run_now_launches_delivery(wired, monkeypatch):
+    """今すぐ配信ボタン: deliver.sh を now モードで起動し、開始メッセージを表示する。"""
+    calls: list[str] = []
+    monkeypatch.setattr(stores, "launch_deliver", lambda mode: calls.append(mode))
+    with TestClient(app) as c:
+        r = c.post("/manage/run", data={"mode": "now"}, auth=AUTH)
+    assert r.status_code == 200  # PRG 後の /manage
+    assert calls == ["now"]
+    assert "今すぐ配信を開始" in r.text
+
+
+def test_run_refresh_launches_without_push(wired, monkeypatch):
+    """今すぐ更新ボタン: refresh モードで起動し、LINE送信なしと案内する。"""
+    calls: list[str] = []
+    monkeypatch.setattr(stores, "launch_deliver", lambda mode: calls.append(mode))
+    with TestClient(app) as c:
+        r = c.post("/manage/run", data={"mode": "refresh"}, auth=AUTH)
+    assert r.status_code == 200
+    assert calls == ["refresh"]
+    assert "LINE へは送信しません" in r.text
+
+
+def test_run_rejects_unknown_mode(wired, monkeypatch):
+    """未知のモードは起動しない(誤った送信を防ぐ)。"""
+    calls: list[str] = []
+    monkeypatch.setattr(stores, "launch_deliver", lambda mode: calls.append(mode))
+    with TestClient(app) as c:
+        r = c.post("/manage/run", data={"mode": "bogus"}, auth=AUTH)
+    assert calls == []
+    assert "不正なモード" in r.text
+
+
+def test_launch_deliver_validates(wired):
+    """launch_deliver は不正モードを弾き、deliver.sh が無ければ実プロセスを起こさず例外。"""
+    with pytest.raises(ValueError):
+        stores.launch_deliver("bogus")
+    with pytest.raises(FileNotFoundError):  # wired は DELIVER_SH を存在しない tmp に向けている
+        stores.launch_deliver("now")
+
+
 # --- ニュース閲覧 ---
 
 def test_news_view_shows_items(wired):

@@ -8,6 +8,7 @@
   --accent: #2f6df6;
   --accent-soft: #e7efff;
   --danger: #d9483b;
+  --warn: #c8780a;
   --shadow: 0 1px 3px rgba(20, 30, 50, .08), 0 6px 18px rgba(20, 30, 50, .05);
   --radius: 12px;
 }
@@ -21,6 +22,7 @@ html[data-theme="dark"] {
   --accent: #5b9bff;
   --accent-soft: #21304a;
   --danger: #ff6b5e;
+  --warn: #e0a23a;
   --shadow: 0 1px 3px rgba(0, 0, 0, .3), 0 6px 18px rgba(0, 0, 0, .25);
 }
 
@@ -145,6 +147,12 @@ button:hover { filter: brightness(1.05); }
 button:disabled { opacity: .35; cursor: default; }
 .key-actions button { background: var(--surface); color: var(--text-soft); padding: 5px 9px; }
 .key-actions button.danger { color: var(--danger); }
+
+/* --- 今すぐ実行 --- */
+.run-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+.run-actions form { margin: 0; }
+button.warn { background: var(--warn); }
+button.ghost { background: var(--surface-2); color: var(--text); border-color: var(--border); }
 
 .grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: end; }
 .grid-form label, .delivery label { display: flex; flex-direction: column; gap: 5px; font-size: .85rem; color: var(--text-soft); }

@@ -7,6 +7,10 @@
 #                            当日未配信の全購読者へ送信し、配信済みに記録する。
 #   deliver.sh --user Uxxxx  今すぐ配信(常駐サーバが起動)。そのユーザーへ最新を送る。
 #                            定刻枠は消費しない(配信済みにはしない)。
+#   deliver.sh --now         今すぐ配信(管理UI)。定刻を待たず、当該スロット未配信の購読者
+#                            全員へ即送信する(定刻配信と同じく配信済みに記録)。
+#   deliver.sh --refresh     今すぐ更新(管理UI)。収集→キュレーション→DB取り込みだけ行い、
+#                            LINE へは送信しない(Web表示の更新のみ・無料)。
 #
 # 役割分担(分業): 収集(twitterapi.io)と送信(LINE)はこのスクリプト=プログラムが行い、
 #   記事の選別・日本語見出し・要約の生成だけをヘッドレス Claude Code が担う。
@@ -20,21 +24,28 @@ LOG="$HOME/Library/Logs/xnewsbot-deliver.log"
 export PATH="/Users/tomato/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 cd "$PROJ" || exit 1
 
+# 実行モード: due(定刻・既定) / user(今すぐ個人) / now(今すぐ全購読者) / refresh(今すぐ更新・配信なし)
+MODE="due"
 USER_ID=""
-if [ "${1:-}" = "--user" ]; then USER_ID="${2:-}"; fi
+case "${1:-}" in
+  --user)    MODE="user"; USER_ID="${2:-}" ;;
+  --now)     MODE="now" ;;
+  --refresh) MODE="refresh" ;;
+  "")        MODE="due" ;;
+  *) echo "不明な引数: $1 (使い方: deliver.sh [--user Uxxxx | --now | --refresh])" >&2; exit 2 ;;
+esac
 
 HOUR=$(date +%H)
 if [ "$HOUR" -lt 15 ]; then SLOT=morning; else SLOT=evening; fi
-# 中間ファイル: 定刻(--due)の収集中(配信5分前〜定刻)に「今すぐ配信」(--user)が走ると、
-# 同一パスでは raw/curated を互いに上書きして定刻配信の内容が壊れる。
-# --user はユーザー+プロセス(PID)ごとに別ファイルにして衝突させない(連打の同士討ちも防ぐ)。
-if [ -n "$USER_ID" ]; then
-  RAW="/tmp/xnews_${SLOT}_${USER_ID}_$$_raw.json"
-  CUR="/tmp/xnews_${SLOT}_${USER_ID}_$$_curated.json"
-else
-  RAW="/tmp/xnews_${SLOT}_raw.json"
-  CUR="/tmp/xnews_${SLOT}_curated.json"
-fi
+# 中間ファイル: 定刻(due)の収集中(配信5分前〜定刻)に「今すぐ」系が走ると、同一パスでは
+# raw/curated を互いに上書きして定刻配信の内容が壊れる。定刻以外はモード+プロセス(PID)ごとに
+# 別ファイルにして衝突させない(連打の同士討ちも防ぐ)。
+case "$MODE" in
+  user)    RAW="/tmp/xnews_${SLOT}_${USER_ID}_$$_raw.json"; CUR="/tmp/xnews_${SLOT}_${USER_ID}_$$_curated.json" ;;
+  now)     RAW="/tmp/xnews_${SLOT}_now_$$_raw.json";        CUR="/tmp/xnews_${SLOT}_now_$$_curated.json" ;;
+  refresh) RAW="/tmp/xnews_${SLOT}_refresh_$$_raw.json";    CUR="/tmp/xnews_${SLOT}_refresh_$$_curated.json" ;;
+  *)       RAW="/tmp/xnews_${SLOT}_raw.json";               CUR="/tmp/xnews_${SLOT}_curated.json" ;;
+esac
 
 # 定刻(配信時刻)。launchd はこの5分前に起動して先に収集を始め、結果を定刻ちょうどに送る
 # (=リアルタイムを保ちつつ届く時刻は8:00/21:00で揃える)。
@@ -43,7 +54,7 @@ MORNING_HHMM="0800"
 EVENING_HHMM="2100"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
-log "==== deliver start slot=$SLOT target=${USER_ID:-<due>} ===="
+log "==== deliver start slot=$SLOT mode=$MODE target=${USER_ID:--} ===="
 
 # 当日 HHMM(定刻)まで待ってから送る。
 # - 定刻まで時間がある(収集・キュレーションが定刻前に終わった)場合だけ、定刻ちょうどまで待つ。
@@ -122,12 +133,23 @@ fi
 #  日付は YYYY-MM-DD で空白を含まないためクォートなし展開で安全)
 DDATE=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['date'])" "$RAW" 2>/dev/null)
 DATE_OPT=""; [ -n "$DDATE" ] && DATE_OPT="--date $DDATE"
-if [ -n "$USER_ID" ]; then
-  # 今すぐ配信: 待たずに即送信(その瞬間の最新を届ける)
-  "$PY" scripts/pipeline.py push --user "$USER_ID" --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
-else
-  # 定刻配信: 5分前に収集を始めているので、定刻ちょうどまで待ってから送信
-  if [ "$SLOT" = morning ]; then wait_until "$MORNING_HHMM"; else wait_until "$EVENING_HHMM"; fi
-  "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
-fi
-log "==== deliver done slot=$SLOT ===="
+case "$MODE" in
+  user)
+    # 今すぐ配信(個人): 待たずに即送信(その瞬間の最新を届ける)
+    "$PY" scripts/pipeline.py push --user "$USER_ID" --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
+    ;;
+  now)
+    # 今すぐ配信(全購読者): 定刻を待たず、当該スロット未配信の購読者全員へ即送信(配信済みに記録)
+    "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
+    ;;
+  refresh)
+    # 今すぐ更新: LINE へは送らない(ingest 済み=DB/Web表示は最新になっている)
+    log "今すぐ更新: 取り込みのみ完了(LINE送信なし)"
+    ;;
+  *)
+    # 定刻配信: 5分前に収集を始めているので、定刻ちょうどまで待ってから送信
+    if [ "$SLOT" = morning ]; then wait_until "$MORNING_HHMM"; else wait_until "$EVENING_HHMM"; fi
+    "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
+    ;;
+esac
+log "==== deliver done slot=$SLOT mode=$MODE ===="
