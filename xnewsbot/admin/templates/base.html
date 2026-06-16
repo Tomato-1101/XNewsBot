@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}XNewsBot{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script>
+    // 描画前にテーマを確定(チラつき防止)。保存値が無ければ OS 設定に追従。
+    (function () {
+      try {
+        var t = localStorage.getItem("xnews-theme");
+        if (!t) t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📰 XNewsBot</div>
+    <nav>
+      <a href="/" {% if active == "news" %}class="active"{% endif %}>ニュース</a>
+      <a href="/manage" {% if active == "manage" %}class="active"{% endif %}>管理</a>
+    </nav>
+    <button id="theme-toggle" class="theme-btn" type="button" aria-label="テーマ切替">🌙</button>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

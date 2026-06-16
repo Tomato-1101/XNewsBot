@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}ニュース — XNewsBot{% endblock %}
+
+{% macro tags(item) %}
+  {% if item.tags %}<span class="tags">{% for t in item.tags %}<span class="chip">{{ t }}</span>{% endfor %}</span>{% endif %}
+{% endmacro %}
+
+{% macro sources(item) %}
+  {% if item.source_urls %}
+    <div class="sources">
+      {% if item.top_view_count %}<span class="views">👁 {{ "{:,}".format(item.top_view_count) }}</span>{% endif %}
+      {% for url in item.source_urls %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">元投稿{{ loop.index }}</a>{% endfor %}
+    </div>
+  {% endif %}
+{% endmacro %}
+
+{% block content %}
+<div class="toolbar">
+  <form class="filters" method="get" action="/">
+    <select name="date_str" onchange="this.form.submit()" aria-label="日付">
+      {% if not avail_dates %}<option value="{{ cur_date }}">{{ cur_date }}</option>{% endif %}
+      {% for d in avail_dates %}<option value="{{ d }}" {% if d == cur_date %}selected{% endif %}>{{ d }}</option>{% endfor %}
+    </select>
+    <div class="slot-tabs">
+      {% for s, label in slot_labels.items() %}
+      <a class="slot-tab {% if s == cur_slot %}active{% endif %}" href="/?date_str={{ cur_date }}&slot={{ s }}">{{ label }}</a>
+      {% endfor %}
+    </div>
+  </form>
+  <span class="count">{{ total }} 件</span>
+</div>
+
+{% if not sections %}
+  <p class="empty">この日付・スロットのニュースはまだありません。</p>
+{% endif %}
+
+{% for sec in sections %}
+<section class="genre">
+  <h2 class="genre-title">{{ sec.label }}</h2>
+
+  {% for item in sec.big %}
+  <article class="card big">
+    <h3>{{ item.title }}</h3>
+    {{ tags(item) }}
+    <p class="summary">{{ item.summary }}</p>
+    {% if item.detail %}<details><summary>詳しく読む</summary><p class="detail">{{ item.detail }}</p></details>{% endif %}
+    {{ sources(item) }}
+  </article>
+  {% endfor %}
+
+  {% if sec.small %}
+  <ul class="small-list">
+    {% for item in sec.small %}
+    <li class="card small">
+      <details>
+        <summary><span class="small-title">{{ item.title }}</span> {{ tags(item) }}</summary>
+        <p class="summary">{{ item.summary }}</p>
+        {% if item.detail %}<p class="detail">{{ item.detail }}</p>{% endif %}
+        {{ sources(item) }}
+      </details>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

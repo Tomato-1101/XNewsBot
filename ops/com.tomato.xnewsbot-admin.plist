@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot 管理Web UI(uvicorn :8011)を macOS LaunchAgent で常駐させる。
+  ~/Library/LaunchAgents/com.tomato.xnewsbot-admin.plist に配置する。
+  WorkingDirectory は必須(.env / .key / config/genres.toml / xnewsbot.db が相対パスのため)。
+
+  公開範囲: --host 0.0.0.0 で同一 LAN(Wi-Fi)から見られるが、ngrok は :8010 のみトンネルする
+  ため外部には公開されない。APIキー管理を含むので、認証(XNEWSBOT_ADMIN_PASSWORD)は必須。
+  パスワードは .env に書く(起動時に取り込む)か、環境変数で渡す。
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-admin.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-admin
+    再起動: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-admin
+    状態  : launchctl list | grep xnewsbot-admin
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot-admin</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tomato/Project/XNewsBot/.venv/bin/uvicorn</string>
+        <string>xnewsbot.admin.main:app</string>
+        <string>--host</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>8011</string>
+        <string>--log-level</string>
+        <string>warning</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-admin.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-admin.err.log</string>
+</dict>
+</plist>
