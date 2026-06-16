@@ -10,13 +10,13 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..db import init_db
 from . import manage, news, stores
-from .web import STATIC_DIR
+from .web import COOKIE_MAX_AGE, COOKIE_NAME, STATIC_DIR
 
 log = logging.getLogger("xnewsbot.admin")
 
@@ -38,6 +38,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="XNewsBot 管理", version=__version__, lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _set_remember_cookie(request: Request, call_next):
+    """require_auth が Basic 認証を通した端末に、以後用の永続クッキーを焼く。"""
+    response = await call_next(request)
+    token = getattr(request.state, "set_remember", None)
+    if token:
+        response.set_cookie(
+            COOKIE_NAME, token, max_age=COOKIE_MAX_AGE, httponly=True, samesite="lax"
+        )
+    return response
+
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(news.router)
 app.include_router(manage.router)

@@ -86,6 +86,23 @@ def test_refuses_start_without_password(monkeypatch, tmp_path):
             pass
 
 
+def test_cookie_remembers_device_after_basic(wired):
+    """Basic 認証が通った端末には永続クッキーを焼き、以後はパスワード無しで素通しする。"""
+    with TestClient(app) as c:
+        r = c.get("/manage", auth=AUTH)
+        assert r.status_code == 200
+        assert "xnb_auth" in r.cookies  # ログイン成功でクッキーが焼かれる
+        # 以後は Basic ヘッダ無し(クッキーのみ)で 200 = 毎回パスワードを求めない
+        assert c.get("/manage").status_code == 200
+
+
+def test_bad_cookie_is_rejected(wired):
+    """偽造クッキーは通さない(Basic も無ければ 401)。"""
+    with TestClient(app) as c:
+        c.cookies.set("xnb_auth", "deadbeef")
+        assert c.get("/manage").status_code == 401
+
+
 # --- ニュース閲覧 ---
 
 def test_news_view_shows_items(wired):
