@@ -73,21 +73,41 @@ def _keychain_get() -> str:
         return ""
 
 
-def load_key(settings: Settings | None = None) -> str:
+def _split_keys(raw: str | None) -> list[str]:
+    """カンマ/改行区切りの文字列を個別キーのリストに分割(strip・空除去)。"""
+    if not raw:
+        return []
+    return [p.strip() for p in raw.replace(",", "\n").splitlines() if p.strip()]
+
+
+def load_keys(settings: Settings | None = None) -> list[str]:
+    """優先度順(先頭=最優先)の twitterapi.io APIキー配列を返す。重複は順序を保って除去。
+
+    探索順(上が優先): .env(カンマ区切り可) -> 環境変数(同) -> Keychain(単一) -> .key(1行1キー)。
+    キーが1つだけなら従来と同じ挙動(後方互換)。全滅で XClientError。
+    上位キーが 429/失敗のときだけ下位キーへフォールバックする(fetch_with_retry)。
+    """
     settings = settings or get_settings()
-    key = (settings.twitterapi_io_key or "").strip()
-    if not key:
-        key = os.environ.get("TWITTERAPI_IO_KEY", "").strip()
-    if not key:
-        key = _keychain_get()
-    if not key and KEY_FILE.exists():
-        key = KEY_FILE.read_text(encoding="utf-8").strip()
-    if not key:
+    keys: list[str] = []
+    keys += _split_keys(settings.twitterapi_io_key)
+    keys += _split_keys(os.environ.get("TWITTERAPI_IO_KEY"))
+    kc = _keychain_get()
+    if kc:
+        keys.append(kc)
+    if KEY_FILE.exists():
+        keys += _split_keys(KEY_FILE.read_text(encoding="utf-8"))
+    keys = list(dict.fromkeys(keys))  # 順序保持の重複除去
+    if not keys:
         raise XClientError(
             "twitterapi.io の APIキーが見つかりません(.env / 環境変数 / Keychain / .key いずれも未設定)。\n"
             "  Keychain設定例: security add-generic-password -a \"$USER\" -s twitterapi_io_key -w"
         )
-    return key
+    return keys
+
+
+def load_key(settings: Settings | None = None) -> str:
+    """最優先の1キーを返す(後方互換の薄いラッパ)。"""
+    return load_keys(settings)[0]
 
 
 def _int(obj: dict, field: str) -> int:
@@ -177,41 +197,56 @@ def fetch(query: str, query_type: str, max_tweets: int, key: str) -> list[dict]:
     return collected[:max_tweets]
 
 
-def fetch_with_retry(query: str, query_type: str, max_tweets: int, key: str,
+def fetch_with_retry(query: str, query_type: str, max_tweets: int, keys: list[str],
                      retries: int = 3) -> list[dict]:
     """空ページ(プール由来の非決定性)と一時的エラー(タイムアウト/429/5xx)の両方を再試行する。
+    複数キーは優先度順(先頭=最優先)。各キーで下記の再試行を尽くし、そのキーが失敗(429含む)
+    したら次の優先度キーへフォールバックする。
 
     - XClientRetryable は指数バックオフ(429 は Retry-After 尊重)で再試行。
-    - 空結果も従来どおり再試行。
-    - 最終試行でも一時的エラーなら例外を投げ、呼び出し側(pipeline._one)が
-      そのジャンルだけ空として扱う(他ジャンルの収集は止めない)。
-    - 恒久エラー(XClientError かつ非 Retryable, 例: 4xx)は即時送出(再試行しても無駄)。
+    - 空結果も従来どおり再試行。空のまま完走したら「該当ツイート無し」として確定し、
+      下位キーへはフォールバックしない(同じデータソースなので無駄・下位キーを無駄に消費しない)。
+    - そのキーで最終試行でも一時的エラー、または恒久エラー(4xx)なら次キーへ。
+    - 全キーが失敗したら最後の例外を投げ、呼び出し側(pipeline._one)がそのジャンルだけ
+      空として扱う(他ジャンルの収集は止めない)。
     """
-    for attempt in range(retries):
+    last_exc: XClientError | None = None
+    for i, key in enumerate(keys):
         try:
-            tweets = fetch(query, query_type, max_tweets, key)
-        except XClientRetryable as e:
-            if attempt >= retries - 1:
-                raise
-            delay = e.retry_after if e.retry_after is not None else RETRY_BASE_DELAY * (2 ** attempt)
-            time.sleep(min(delay, RETRY_MAX_DELAY))
+            for attempt in range(retries):
+                try:
+                    tweets = fetch(query, query_type, max_tweets, key)
+                except XClientRetryable as e:
+                    if attempt >= retries - 1:
+                        raise
+                    delay = e.retry_after if e.retry_after is not None else RETRY_BASE_DELAY * (2 ** attempt)
+                    time.sleep(min(delay, RETRY_MAX_DELAY))
+                    continue
+                if tweets:
+                    return tweets
+                if attempt < retries - 1:
+                    time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
+            return []  # このキーで完走・結果は空(=該当ツイート無し)。フォールバックしない。
+        except XClientError as e:  # XClientRetryable(再試行尽き)も恒久4xxもここで捕捉
+            last_exc = e
+            if i < len(keys) - 1:
+                # 鍵の値は絶対に出さない。index のみログ(deliver.sh のログに乗る)。
+                print(f"  キー#{i} 失敗 → 次キーへ ({type(e).__name__})", file=sys.stderr)
             continue
-        if tweets:
-            return tweets
-        if attempt < retries - 1:
-            time.sleep(RETRY_BASE_DELAY * (2 ** attempt))
-    return []
+    assert last_exc is not None  # keys は load_keys で非空保証
+    raise last_exc
 
 
-def collect(genre: str, settings: Settings | None = None, key: str | None = None) -> list[dict]:
+def collect(genre: str, settings: Settings | None = None, keys: list[str] | None = None) -> list[dict]:
     """指定ジャンルの直近トップ投稿を viewCount 降順で返す。
 
     twitterapi.io の min_faves / -filter:replies は best-effort で揺らぐため、
     クエリは最小限(キーワード+言語+時間窓)に留め、いいね下限・返信除外・直近性は
-    クライアント側で確定的にフィルタする。空ページ対策に再試行する。
+    クライアント側で確定的にフィルタする。空ページ対策に再試行し、キーは優先度順に
+    フォールバックする(keys 未指定なら load_keys で取得)。
     """
     settings = settings or get_settings()
-    key = key or load_key(settings)
+    keys = keys or load_keys(settings)
     kws = keywords(genre)
     ex = excludes(genre)
     query = "(" + " OR ".join(kws) + ")"
@@ -229,7 +264,7 @@ def collect(genre: str, settings: Settings | None = None, key: str | None = None
     min_f = gmin if gmin is not None else settings.collect_min_faves
     min_v = settings.collect_min_views_floor
 
-    tweets = fetch_with_retry(query, "Top", settings.collect_max_tweets, key)
+    tweets = fetch_with_retry(query, "Top", settings.collect_max_tweets, keys)
     tweets = [t for t in tweets if not t.get("isReply")]
     if ex:
         tweets = [t for t in tweets if not any(term in (t.get("text") or "") for term in ex)]

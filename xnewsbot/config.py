@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # --- twitterapi.io (Xの読み取り) ---
     # 空なら macOS Keychain(service=twitterapi_io_key) を自動で読む(x-research と鍵共有)。
+    # カンマ区切りで複数キーを優先度順に指定可(先頭が最優先・429/失敗で次へ)。詳細は xclient.load_keys。
     twitterapi_io_key: str | None = None
 
     # --- DB / サーバ ---

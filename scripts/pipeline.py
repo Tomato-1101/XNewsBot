@@ -111,9 +111,9 @@ def cmd_collect(args) -> None:
     out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
            "slot": args.slot, "genres": {g: [] for g in genres}}
 
-    # 鍵は不変。ジャンルごとに load_key()→Keychain サブプロセスを叩くのは無駄かつ並列で多重に
-    # security を起動するので、ここで1度だけ取得して各収集に渡す。
-    key = xclient.load_key(settings)
+    # 鍵は不変。ジャンルごとに load_keys()→Keychain サブプロセスを叩くのは無駄かつ並列で多重に
+    # security を起動するので、ここで1度だけ取得して各収集に渡す(優先度順・フォールバック用)。
+    keys = xclient.load_keys(settings)
 
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
     # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
@@ -121,7 +121,7 @@ def cmd_collect(args) -> None:
         # 1ジャンルの失敗(再試行しても回復しないタイムアウト/恒久エラー)で収集全体を落とさない。
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
         try:
-            return g, xclient.collect(g, settings=settings, key=key)[:CURATE_INPUT_LIMIT]
+            return g, xclient.collect(g, settings=settings, keys=keys)[:CURATE_INPUT_LIMIT]
         except Exception as e:
             print(f"  {g}: 収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
             return g, []
