@@ -1,11 +1,14 @@
-"""管理UIの共有部品: Jinja2 テンプレートと認証(Basic + 永続クッキー)。
+"""管理UIの共有部品: Jinja2 テンプレートと認証(Basic + 永続クッキー + 総当たり対策)。
 
-LAN/tailnet 公開するため全ルートに認証を必須化する。パスワードは環境変数 XNEWSBOT_ADMIN_PASSWORD。
+公開(Tailscale Funnel)するため全ルートに認証を必須化する。パスワードは環境変数 XNEWSBOT_ADMIN_PASSWORD。
 未設定ならアクセスを拒否(無認証で APIキー管理画面を晒さない)。
 
 一度ログインした端末には毎回パスワードを求めないよう、Basic 認証が通ったら永続クッキーを焼き、
 以後はそのクッキーで素通しする。クッキー値はパスワード由来の不可逆トークン(HMAC)なので
 平文パスワードは保存されず、パスワードを変えれば既存クッキーは自動的に失効する。
+
+公開時の唯一の防壁がパスワードなので、同一IPからの連続失敗を数えて一定回数で一時ロックし、
+短いパスワードでも総当たりを事実上不能にする(正規利用は初回成功→クッキーで以後素通しのため無影響)。
 """
 
 from __future__ import annotations
@@ -14,6 +17,8 @@ import hashlib
 import hmac
 import os
 import secrets
+import time
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import Depends, HTTPException, Request, status
@@ -26,9 +31,15 @@ STATIC_DIR = _DIR / "static"
 
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# tailscale serve が TLS を終端し http で uvicorn に渡すため Secure は付けない(tailnet 限定 + HttpOnly)。
+# tailscale serve/funnel が TLS を終端し http で uvicorn に渡すため Secure は付けない(HttpOnly + 認証で保護)。
 COOKIE_NAME = "xnb_auth"
 COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1年: 端末に一度入れたら以後パスワードを求めない
+
+# 総当たり対策: 直近 WINDOW 秒で MAX 回失敗したIPを LOCK 秒ロック(その間は正解でも拒否)。
+_FAIL_MAX = 10
+_FAIL_WINDOW = 600
+_LOCK_SECONDS = 600
+_fails: dict[str, list[float]] = defaultdict(list)
 
 _security = HTTPBasic(auto_error=False)
 
@@ -42,12 +53,28 @@ def remember_token(password: str) -> str:
     return hmac.new(password.encode(), b"xnewsbot-admin-remember", hashlib.sha256).hexdigest()
 
 
+def _client_ip(request: Request) -> str:
+    """funnel/ngrok 越しは X-Forwarded-For 先頭が実クライアント。"""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _locked(ip: str) -> bool:
+    now = time.time()
+    recent = [t for t in _fails[ip] if now - t < _FAIL_WINDOW]
+    _fails[ip] = recent
+    return len(recent) >= _FAIL_MAX
+
+
 def require_auth(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(_security),
 ) -> str:
     """Basic 認証 or 永続クッキーで通す。Basic が通った端末には以後用のクッキーを焼く
-    (実際のクッキー付与は main.py のミドルウェアが request.state.set_remember を見て行う)。"""
+    (実際のクッキー付与は main.py のミドルウェアが request.state.set_remember を見て行う)。
+    連続失敗IPは一時ロックして総当たりを防ぐ。"""
     password = _admin_password()
     if not password:
         raise HTTPException(
@@ -59,11 +86,21 @@ def require_auth(
     cookie = request.cookies.get(COOKIE_NAME)
     if cookie and secrets.compare_digest(cookie, token):
         return "admin"
-    # 2) Basic 認証が正しければ通し、以後のためにクッキーを焼くよう印を付ける
+    # 2) ロック中IPは正解でも拒否(総当たり遮断)
+    ip = _client_ip(request)
+    if _locked(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="試行回数が多すぎます。しばらく待ってから再試行してください。",
+            headers={"Retry-After": str(_LOCK_SECONDS)},
+        )
+    # 3) Basic 認証が正しければ通し、失敗カウントを消し、以後のためにクッキーを焼く印を付ける
     if credentials and secrets.compare_digest(credentials.password, password):
+        _fails.pop(ip, None)
         request.state.set_remember = token
         return credentials.username or "admin"
-    # 3) それ以外は Basic チャレンジ
+    # 4) それ以外は失敗を記録して Basic チャレンジ
+    _fails[ip].append(time.time())
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="認証に失敗しました。",

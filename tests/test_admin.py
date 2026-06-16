@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from xnewsbot.admin import news, stores
+from xnewsbot.admin import news, stores, web
 from xnewsbot.admin.main import app
 from xnewsbot.models import GenreDigest, NewsItem
 
@@ -53,6 +53,7 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(stores, "REPO_PLIST", tmp_path / "repo.plist")
     monkeypatch.setattr(stores, "INSTALLED_PLIST", tmp_path / "installed.plist")
     monkeypatch.setattr(stores, "reload_deliver_agent", lambda: None)  # 実 launchd に触れない
+    web._fails.clear()  # 総当たりカウンタをテスト間で持ち越さない
 
     engine = create_engine(
         "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -101,6 +102,17 @@ def test_bad_cookie_is_rejected(wired):
     with TestClient(app) as c:
         c.cookies.set("xnb_auth", "deadbeef")
         assert c.get("/manage").status_code == 401
+
+
+def test_repeated_failures_lock_out_ip(wired):
+    """同一IPの連続失敗で一時ロック(429)。公開時の総当たり対策。"""
+    headers = {"X-Forwarded-For": "203.0.113.9"}
+    with TestClient(app) as c:
+        for _ in range(web._FAIL_MAX):
+            assert c.get("/manage", auth=("admin", "wrong"), headers=headers).status_code == 401
+        # ロック後は正しいパスワードでも 429(別IPは影響を受けない)
+        assert c.get("/manage", auth=AUTH, headers=headers).status_code == 429
+        assert c.get("/manage", auth=AUTH, headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
 
 
 # --- ニュース閲覧 ---
