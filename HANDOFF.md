@@ -4,16 +4,18 @@
 
 ## 目的
 X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーションし **LINE Bot** で配信する。
-大ニュースは要約付きで即配信、そのほかは見出しのみ→タップで詳細。**1日2回(朝・夜)**配信。
+大ニュースは要約付きで即配信、そのほかは見出しのみ→タップで詳細。**1日1回(朝08:00)**配信
+(2026-06-24 にコスト節約で夜21:00 を停止。夜のコード/UIは残置し再開可)。
 ジャンルと朝/夜の時刻は Bot 対話で設定/変更。詳細は README.md。
 
 ## 決定事項
 - 稼働: **ローカル Mac 常駐(launchd 3点) + トンネル(ngrok 固定ドメイン)**。
   - `com.tomato.xnewsbot`(uvicorn:8010 webhook専任) / `com.tomato.xnewsbot-ngrok`(固定ドメイン→:8010, `--log=stdout`必須) /
-    `com.tomato.xnewsbot-deliver`(配信時刻の15分前=07:45/20:45 起動 → 定刻08:00/21:00 着)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
+    `com.tomato.xnewsbot-deliver`(配信時刻の15分前=07:45 起動 → 定刻08:00 着)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
 - 加工: **Claude Code が定期実行でキュレーション(Anthropic API キーは使わない=従量課金なし)**。
-- 配信: **朝(既定 08:00)・夜(既定 21:00 着)の2スロット**。各スロットで最新を収集し直す(=朝夜で別内容)。
-  収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため**15分前(07:45/20:45)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
+- 配信: **1日1回・朝(既定 08:00)の1スロット**。直近24hの最新を収集してキュレーション。
+  収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため**15分前(07:45)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
+  - 2026-06-24: 唯一の従量課金API(twitterapi.io)・Claude実行・LINE push を約半減させるため夜21:00 スロットを停止し1日1回化。夜は `-deliver` plist の StartCalendarInterval に 20:45 dict を戻し bootout→bootstrap で再開できる(evening_enabled/onboardingの夜時刻設定はコードに残置)。
 - ジャンル: **特大(常時) / AI / 株 / 経済 / 政治 / RPA / 世界情勢 / テクノロジー / ビジネス / 健康 / 暗号資産**(`config/genres.toml` で編集)。
   各ジャンルは海外・国際キーワードも併記し日本だけでなく世界の話題も拾う(lang:jaは維持)。
 - 表示(見やすさ優先): **大ニュースはジャンル順(特大→各ジャンル)に全件表示**(1ジャンルが多くても他を押し出さない/各ジャンル最低1件/無いジャンルは出さない)、**小ニュースは見出し行を全件表示**(タップで詳細。旧「ほかN件」隠れバグ解消)。1バブル~7KB超で次メッセージへ自動分割(`digest_specs`/`_pack_bubbles`、件数は削らない)。選択肢に**「キャンセル」**追加。
@@ -26,10 +28,10 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 2部構成（READMEの「アーキテクチャ」も参照）
 1. **常駐サーバ**(`com.tomato.xnewsbot`, FastAPI:8010): **LINE Webhook 受信専任**(オンボーディング/設定変更/
    詳細タップ/今すぐ配信)。定刻配信の tick は既定で無効(`scheduler_enabled=False`)。
-2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の15分前=07:45/20:45 に起動):
+2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の15分前=07:45 に起動):
    先に `pipeline.py collect`(--due) → **Claude Code がキュレーション** → `pipeline.py ingest` を済ませ、
-   `deliver.sh` の `wait_until` で**定刻(08:00/21:00)まで待ってから** `pipeline.py push --due`(=その時刻までの最新を、届く時刻を揃えて配信/古いDBを送らない)。
-   配信時刻を変えたら **plist の StartCalendarInterval(15分前) と deliver.sh の MORNING_HHMM/EVENING_HHMM(定刻) の両方**を更新する。
+   `deliver.sh` の `wait_until` で**定刻(08:00)まで待ってから** `pipeline.py push --due`(=その時刻までの最新を、届く時刻を揃えて配信/古いDBを送らない)。
+   配信時刻を変えたら **plist の StartCalendarInterval(15分前) と deliver.sh の MORNING_HHMM(定刻) の両方**を更新する。
    「今すぐ配信」は常駐サーバが `deliver.sh --user` を別プロセス起動して同様にリアルタイム配信する。
    **役割分担(分業)**: 収集と送信はプログラム、記事選別・見出し・要約の生成だけヘッドレス Claude(Read/Writeのみ)。
 
