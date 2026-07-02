@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import re
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +56,13 @@ NOTABLE_MARKERS = [
 ]
 
 MAX_QUERY_TERMS = 6  # 1ジャンルの検索クエリに使うキーワード数(OR)。長すぎると焦点がぼける。
+
+# ---- LLM判定層(ヒューリスティック通過分をヘッドレスClaudeで最終判定) ----
+# deliver.sh のキュレーションと同じ流儀(サブスク実行・APIキー不使用・Read/Writeのみ許可・tmp経由)。
+CLAUDE_BIN = "/Users/tomato/.local/bin/claude"
+JUDGE_MODEL = "claude-opus-4-8"
+JUDGE_TIMEOUT = 240  # 秒。ハングで監視サイクルを止めないための上限。
+JUDGE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "ops" / "breaking_judge_prompt.md"
 
 
 def norm_key(title: str) -> str:
@@ -99,6 +109,85 @@ def select_breaking(candidates, *, level, lookback_min, now, seen_keys):
     return picked
 
 
+def parse_verdicts(picked, verdict_data):
+    """LLM判定結果(dict)を検証し (accepted, rejected) に分ける純関数(ネットワーク/subprocess 非依存)。
+
+    picked は (genre, item, key) の列。要素は (genre, item, key, reason) にして返す。
+    形式が壊れていたら None(fail-closed のシグナル)。verdict の無い idx は安全側で rejected 扱い。
+    """
+    verdicts = verdict_data.get("verdicts")
+    if not isinstance(verdicts, list):
+        return None
+    by_idx: dict[int, tuple[bool, str]] = {}
+    for v in verdicts:
+        if not isinstance(v, dict):
+            return None
+        idx = v.get("idx")
+        major = v.get("major")
+        if not isinstance(idx, int) or isinstance(idx, bool) or not isinstance(major, bool):
+            return None
+        if idx < 0 or idx >= len(picked):  # 範囲外の idx は形式破壊とみなす
+            return None
+        by_idx[idx] = (major, str(v.get("reason", "")))
+    accepted, rejected = [], []
+    for idx, (genre, item, key) in enumerate(picked):
+        if idx in by_idx:
+            major, reason = by_idx[idx]
+        else:
+            major, reason = False, "判定なし"  # verdict の無い idx は再送しないよう rejected に落とす
+        (accepted if major else rejected).append((genre, item, key, reason))
+    return accepted, rejected
+
+
+def judge_breaking(picked, settings):
+    """picked をヘッドレスClaudeで最終判定し (accepted, rejected) を返す。失敗は全て None(fail-closed)。
+
+    候補を tmp に書き→プロンプトのプレースホルダを置換→claude を Read/Write のみで実行→
+    verdict ファイルをパース→parse_verdicts。あらゆる失敗で None を返しログに理由1行(呼び出し側は今回何も送らない)。
+    """
+    now = datetime.now(timezone.utc)
+    cands_path = f"/tmp/xnews_breaking_cands_{os.getpid()}.json"
+    verdict_path = f"/tmp/xnews_breaking_verdict_{os.getpid()}.json"
+    cands = []
+    for idx, (genre, item, _key) in enumerate(picked):
+        minutes_ago = int((now - item.published).total_seconds() // 60)
+        cands.append({"idx": idx, "genre": genre, "title": item.title,
+                      "source": item.source, "minutes_ago": minutes_ago})
+    try:
+        Path(cands_path).write_text(json.dumps(cands, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"[breaking] 判定: 候補ファイル書き込み失敗: {e}", file=sys.stderr)
+        return None
+    try:
+        prompt = JUDGE_PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError as e:
+        print(f"[breaking] 判定: プロンプト読み込み失敗: {e}", file=sys.stderr)
+        return None
+    prompt = prompt.replace("__CANDS__", cands_path).replace("__VERDICT__", verdict_path)
+
+    Path(verdict_path).unlink(missing_ok=True)  # 前回の残骸を掴まないよう先に消す
+    try:
+        subprocess.run([CLAUDE_BIN, "--model", JUDGE_MODEL, "-p", prompt,
+                        "--allowedTools", "Read", "Write"],
+                       timeout=JUDGE_TIMEOUT, capture_output=True)
+    except subprocess.TimeoutExpired:
+        print(f"[breaking] 判定: タイムアウト({JUDGE_TIMEOUT}s)", file=sys.stderr)
+        return None
+    except OSError as e:
+        print(f"[breaking] 判定: claude 実行失敗: {e}", file=sys.stderr)
+        return None
+
+    try:
+        verdict_data = json.loads(Path(verdict_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"[breaking] 判定: verdict 読み込み/パース失敗: {e}", file=sys.stderr)
+        return None
+    result = parse_verdicts(picked, verdict_data)
+    if result is None:
+        print("[breaking] 判定: verdict の形式が不正(fail-closed)", file=sys.stderr)
+    return result
+
+
 # ---- 既送ストア(xnewsbot.db 内の breaking_sent テーブルを raw sqlite で自己管理) ----
 
 def _store(db_path: str) -> sqlite3.Connection:
@@ -106,15 +195,24 @@ def _store(db_path: str) -> sqlite3.Connection:
     con.execute(
         "CREATE TABLE IF NOT EXISTS breaking_sent("
         "key TEXT PRIMARY KEY, title TEXT, url TEXT, genre TEXT, sent_at TEXT)")
+    # LLM判定で見送った(否認)話題。次サイクルで再判定・再送しないため既送と同様に記録する。
+    con.execute(
+        "CREATE TABLE IF NOT EXISTS breaking_rejected("
+        "key TEXT PRIMARY KEY, title TEXT, reason TEXT, at TEXT)")
     con.commit()
     return con
 
 
 def _seen_keys(con: sqlite3.Connection, since: datetime) -> set[str]:
-    """直近(送信済みの重複判定に十分な期間)の既送キー集合。"""
-    rows = con.execute("SELECT key FROM breaking_sent WHERE sent_at >= ?",
+    """直近(重複判定に十分な期間)の既送 + 否認済みキーの和集合。
+
+    否認済みも含めるのは、一度見送った話題を次サイクルで再度判定・再送しないため。
+    """
+    sent = con.execute("SELECT key FROM breaking_sent WHERE sent_at >= ?",
                        (since.isoformat(),)).fetchall()
-    return {r[0] for r in rows}
+    rejected = con.execute("SELECT key FROM breaking_rejected WHERE at >= ?",
+                          (since.isoformat(),)).fetchall()
+    return {r[0] for r in sent} | {r[0] for r in rejected}
 
 
 def _sent_today(con: sqlite3.Connection, day_start: datetime) -> int:
@@ -125,6 +223,12 @@ def _sent_today(con: sqlite3.Connection, day_start: datetime) -> int:
 def _record(con: sqlite3.Connection, key, item, genre, when) -> None:
     con.execute("INSERT OR REPLACE INTO breaking_sent(key,title,url,genre,sent_at) VALUES(?,?,?,?,?)",
                (key, item.title, item.url, genre, when.isoformat()))
+    con.commit()
+
+
+def _record_rejected(con: sqlite3.Connection, key, item, genre, reason, when) -> None:
+    con.execute("INSERT OR REPLACE INTO breaking_rejected(key,title,reason,at) VALUES(?,?,?,?)",
+               (key, item.title, reason, when.isoformat()))
     con.commit()
 
 
@@ -224,12 +328,35 @@ def run(dry_run: bool = False) -> int:
           file=sys.stderr)
 
     if not picked:
+        con.close()
+        return 0
+
+    # LLM判定層: ヒューリスティック通過分をヘッドレスClaudeで最終判定し、重大なものだけ残す。
+    # dry-run でも判定は実行して結果を見せるが、否認記録・送信はしない(抑制状態を汚さない)。
+    if settings.breaking_judge_enabled:
+        result = judge_breaking(picked, settings)
+        if result is None:  # fail-closed: 判定に失敗したら今回は何も送らない
+            print("[breaking] LLM判定に失敗(fail-closed)。今回は送信しない", file=sys.stderr)
+            con.close()
+            return 0
+        accepted, rejected = result
+        print(f"[breaking] LLM判定: 候補{len(picked)}件 → 重大{len(accepted)}件 / 見送り{len(rejected)}件",
+              file=sys.stderr)
+        for genre, item, key, reason in rejected:
+            print(f"[breaking] 見送り: [{genre}] {item.title[:50]}… ({reason})", file=sys.stderr)
+            if not dry_run:
+                _record_rejected(con, key, item, genre, reason, now)
+        picked = [(genre, item, key) for genre, item, key, _reason in accepted]
+
+    if not picked:
+        con.close()
         return 0
 
     messenger = None
     if not dry_run:
         if not settings.line_channel_access_token:
             print("[breaking] LINE トークン未設定。送信不可。", file=sys.stderr)
+            con.close()
             return 1
         messenger = lc.LineMessenger(settings.line_channel_access_token)
 

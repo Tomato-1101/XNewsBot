@@ -25,6 +25,9 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   速報を検出し「今のグループ」(DB `subscriber.push_to` のグループ)へ即 push。乱造防止=重複排除(SQLite `breaking_sent`)+日次上限
   (`breaking_max_per_day`,既定5=LINE無料枠200通/月を守る)+鮮度窓 の3重。積極度=`breaking_level`(strict/medium/broad)。
   **実グループへ送るので初回稼働はユーザーの明示 GO を得てから bootstrap する**。動作確認は送信しない `--dry-run`。
+  - **LLM判定層**（同日追加, トグル `breaking_judge_enabled` 既定ON）: ヒューリスティック通過分をヘッドレス Claude
+    (`claude --model claude-opus-4-8`, `ops/breaking_judge_prompt.md`)が「今すぐ割り込む価値があるか」で最終判定。
+    判定失敗(タイムアウト/セッション上限/パース不能)は **fail-closed=送らない**。見送りは `breaking_rejected` に記録し再判定しない。
 - **定時ダイジェストの候補は X(twitterapi.io)＋無料ニュース(Google ニュースRSS)をマージ**（`collect_use_newsfeeds`,質向上）。
   X が空でもニュースで配信継続。ニュース候補は `source:"news"`・エンゲージ0(キュレーションプロンプトが信頼扱い)。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル

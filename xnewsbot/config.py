@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     breaking_lookback_min: int = 25
     # 1日の最大push件数(グループを荒らさない/LINE無料枠200通/月を守る。既定5=月150+ダイジェスト分)。
     breaking_max_per_day: int = 5
+    # ヒューリスティック通過分をヘッドレスClaudeで最終判定する層のトグル。失敗時は送らない(fail-closed)。
+    breaking_judge_enabled: bool = True
 
     @property
     def sqlite_url(self) -> str:
