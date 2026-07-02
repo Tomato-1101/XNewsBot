@@ -16,6 +16,13 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 - 配信: **1日1回・朝(既定 08:00)の1スロット**。直近24hの最新を収集してキュレーション。
   収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため**15分前(07:45)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
   - 2026-06-24: 唯一の従量課金API(twitterapi.io)・Claude実行・LINE push を約半減させるため夜21:00 スロットを停止し1日1回化。夜は `-deliver` plist の StartCalendarInterval に 20:45 dict を戻し bootout→bootstrap で再開できる(evening_enabled/onboardingの夜時刻設定はコードに残置)。
+  - 2026-07-02: 質優先(コスト度外視)へ方針転換。**定時ダイジェストの候補を X + 無料ニュース(Google ニュースRSS)のマージに拡張**(`xnewsbot/newsfeeds.py`, `collect_use_newsfeeds`, 1ジャンル+`collect_newsfeeds_per_genre`件)。lang="any"ジャンルは英語ロケールも収集。ニュース候補は `source:"news"`/エンゲージ0でキュレーションが信頼扱い(`ops/curate_prompt.md`)。X が空でもニュースで配信継続。※候補増でキュレーション時間が延びうる→初回の実配信で720s以内に収まるか要観察(超えるなら `collect_newsfeeds_per_genre` を下げる)。
+- 速報リアルタイム配信(2026-07-02 新設): **`scripts/monitor_breaking.py` を `com.tomato.xnewsbot-breaking`(15分毎)が実行**。定時ダイジェストとは独立した「速報だけ」の常時チャンネル。
+  - 無料のみ(Google ニュースRSS 主力 + GDELT best-effort。GDELTは5秒/回制限で不安定なので失敗は空で握る)。twitterapi.io は使わない。
+  - 検出(積極度=`breaking_level`, 既定 medium): 監視は選択ジャンル(特大の汎用語は除外)、直近`breaking_lookback_min`分に公開・見出しに速報/注目マーカー・トピック整合、を満たすものだけ。
+  - 配信先=「今のグループ」= DB `subscriber.push_to` のグループ(C…。既にbot参加済み)。`breaking_group_id` で上書き可。
+  - 乱造防止3重: 重複排除(SQLite `breaking_sent`)＋日次上限(`breaking_max_per_day`, 既定5=LINE無料枠200通/月を守る)＋鮮度窓。
+  - **実グループへ送るため初回稼働はユーザーの明示 GO を得てから bootstrap する(現状 plist は設置済み・未起動)**。送信しない確認は `--dry-run`。LLM判定での高品質化は将来オプション。
 - ジャンル: **特大(常時) / AI / 株 / 経済 / 政治 / RPA / 世界情勢 / テクノロジー / ビジネス / 健康 / 暗号資産**(`config/genres.toml` で編集)。
   各ジャンルは海外・国際キーワードも併記し日本だけでなく世界の話題も拾う(lang:jaは維持)。
 - 表示(見やすさ優先): **大ニュースはジャンル順(特大→各ジャンル)に全件表示**(1ジャンルが多くても他を押し出さない/各ジャンル最低1件/無いジャンルは出さない)、**小ニュースは見出し行を全件表示**(タップで詳細。旧「ほかN件」隠れバグ解消)。1バブル~7KB超で次メッセージへ自動分割(`digest_specs`/`_pack_bubbles`、件数は削らない)。選択肢に**「キャンセル」**追加。

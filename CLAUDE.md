@@ -19,8 +19,14 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
-- 常駐: launchd 3点 `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信)。
+- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信) / `-breaking`(速報監視・15分毎)。
   状態確認: `launchctl list | grep xnewsbot`。plist 変更は bootout→bootstrap（kickstart では反映されない）。
+- **速報リアルタイム配信**（2026-07-02 追加, `scripts/monitor_breaking.py` / `-breaking` plist）: 無料(Google ニュースRSS+GDELT補助)で
+  速報を検出し「今のグループ」(DB `subscriber.push_to` のグループ)へ即 push。乱造防止=重複排除(SQLite `breaking_sent`)+日次上限
+  (`breaking_max_per_day`,既定5=LINE無料枠200通/月を守る)+鮮度窓 の3重。積極度=`breaking_level`(strict/medium/broad)。
+  **実グループへ送るので初回稼働はユーザーの明示 GO を得てから bootstrap する**。動作確認は送信しない `--dry-run`。
+- **定時ダイジェストの候補は X(twitterapi.io)＋無料ニュース(Google ニュースRSS)をマージ**（`collect_use_newsfeeds`,質向上）。
+  X が空でもニュースで配信継続。ニュース候補は `source:"news"`・エンゲージ0(キュレーションプロンプトが信頼扱い)。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル
   (evening_enabled) は残してあり、`-deliver` plist の StartCalendarInterval に 20:45 dict を戻せば再開できる。
 - 配信時刻を変えるときは **plist の StartCalendarInterval（15分前）と `ops/deliver.sh` の MORNING_HHMM（定刻）の両方**を更新。

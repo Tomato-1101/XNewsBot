@@ -30,12 +30,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlmodel import select  # noqa: E402
 
-from xnewsbot import digest, xclient  # noqa: E402
+from xnewsbot import digest, newsfeeds, xclient  # noqa: E402
 from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import CURATE_INPUT_LIMIT, parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
-from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre  # noqa: E402
+from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords, lang  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 
@@ -63,6 +63,35 @@ def _trim(t: dict) -> dict:
         "createdAt": t.get("createdAt", ""),
         "author": {"userName": a.get("userName", "?"), "followers": a.get("followers", 0)},
     }
+
+
+def _newsfeed_candidates(genre: str, settings) -> list[dict]:
+    """無料ニュース(Google ニュースRSS)をジャンルの候補に足す(質向上・コスト度外視)。
+
+    X(twitterapi.io)由来の候補に、大手報道の記事見出しを加えて Claude の選択肢を厚くする。
+    lang="any" のジャンルは英語ロケールも引いて世界の一次ニュースも拾う。失敗時は空(=Xのみ・無害)。
+    """
+    if not settings.collect_use_newsfeeds:
+        return []
+    kws = keywords(genre)
+    if not kws:
+        return []
+    terms = kws[:6]
+    query = "(" + " OR ".join(terms) + ")" if len(terms) > 1 else terms[0]
+    items = newsfeeds.google_news(query, within_hours=settings.collect_hours)
+    if lang(genre) == "any":
+        items += newsfeeds.google_news(query, lang="en", region="US",
+                                       within_hours=settings.collect_hours)
+    seen: set[str] = set()
+    out: list[dict] = []
+    for it in items:
+        if it.url in seen:
+            continue
+        seen.add(it.url)
+        out.append(newsfeeds.as_candidate(it))
+        if len(out) >= settings.collect_newsfeeds_per_genre:
+            break
+    return out
 
 
 def _due_genres(settings) -> list[str]:
@@ -117,19 +146,22 @@ def cmd_collect(args) -> None:
 
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
     # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
-    def _one(g: str) -> tuple[str, list[dict]]:
+    def _one(g: str) -> tuple[str, list[dict], int, int]:
         # 1ジャンルの失敗(再試行しても回復しないタイムアウト/恒久エラー)で収集全体を落とさない。
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
+        # X(有料)と 無料ニュース(RSS)の両方を集めて候補プールにする(質向上)。片方が空でも続ける。
         try:
-            return g, xclient.collect(g, settings=settings, keys=keys)[:CURATE_INPUT_LIMIT]
+            tweets = xclient.collect(g, settings=settings, keys=keys)[:CURATE_INPUT_LIMIT]
         except Exception as e:
-            print(f"  {g}: 収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
-            return g, []
+            print(f"  {g}: X収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
+            tweets = []
+        news = _newsfeed_candidates(g, settings)
+        return g, [_trim(t) for t in tweets] + news, len(tweets), len(news)
 
     with ThreadPoolExecutor(max_workers=min(3, len(genres))) as pool:
-        for g, tweets in pool.map(_one, genres):  # 入力順を保つ
-            out["genres"][g] = [_trim(t) for t in tweets]
-            print(f"  {g}: {len(tweets)} 件 収集", file=sys.stderr)
+        for g, cands, n_x, n_news in pool.map(_one, genres):  # 入力順を保つ
+            out["genres"][g] = cands
+            print(f"  {g}: {len(cands)} 件 収集 (X {n_x} + ニュース {n_news})", file=sys.stderr)
 
     text = json.dumps(out, ensure_ascii=False, indent=2)
     if args.out:

@@ -51,6 +51,22 @@ class Settings(BaseSettings):
     # この値以上なら、いいね下限を満たさなくても採用する(いいね OR 表示回数)。
     collect_min_views_floor: int = 20000
 
+    # --- 定時ダイジェストの無料ソース併用(質向上・コスト度外視) ---
+    # X(twitterapi.io)に加え Google ニュースRSS を各ジャンルの候補に足して Claude の選択肢を厚くする。
+    collect_use_newsfeeds: bool = True      # False で従来どおり X のみ
+    collect_newsfeeds_per_genre: int = 15   # 1ジャンルに足す無料ニュース記事の上限(raw肥大→キュレーション時間を抑える)
+
+    # --- 速報リアルタイム監視(scripts/monitor_breaking.py) ---
+    breaking_enabled: bool = True
+    # 速報の配信先グループID。空なら DB(subscriber.push_to のグループ=今のグループ)を自動解決。
+    breaking_group_id: str | None = None
+    # 検出の積極度: "strict"=大事件のみ / "medium"=各ジャンルの大きめも(既定) / "broad"=鮮度のみ。
+    breaking_level: str = "medium"
+    # 直近この分数以内に公開された記事だけを速報候補にする(監視間隔15分+取りこぼし余裕)。
+    breaking_lookback_min: int = 25
+    # 1日の最大push件数(グループを荒らさない/LINE無料枠200通/月を守る。既定5=月150+ダイジェスト分)。
+    breaking_max_per_day: int = 5
+
     @property
     def sqlite_url(self) -> str:
         return f"sqlite:///{self.db_path}"

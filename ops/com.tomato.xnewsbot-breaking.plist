@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot 速報監視 (scripts/monitor_breaking.py) を 15分毎に実行する LaunchAgent。
+  無料(Google ニュースRSS + GDELT補助)で速報を検出し、「今のグループ」(DB subscriber.push_to)へ即 push。
+  定時ダイジェスト(com.tomato.xnewsbot-deliver)とは独立した「速報だけ」の常時チャンネル。
+
+  乱造防止 = 重複排除(SQLite breaking_sent) + 日次上限(breaking_max_per_day) + 鮮度窓 の3重。
+  設定は .env/config.py: breaking_enabled / breaking_level / breaking_max_per_day / breaking_group_id 等。
+
+  ※ 実際にグループへ送信するので、初回稼働はユーザーの明示 GO を得てから bootstrap する。
+     動作確認だけなら送信しない dry-run: .venv/bin/python scripts/monitor_breaking.py --dry-run
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-breaking.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-breaking
+    手動実行: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-breaking
+    状態  : launchctl list | grep xnewsbot-breaking
+    ログ  : ~/Library/Logs/xnewsbot-breaking.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot-breaking</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tomato/Project/XNewsBot/.venv/bin/python</string>
+        <string>scripts/monitor_breaking.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <!-- 15分毎にポーリング(直近1時間の新着から鮮度窓内の速報を検出) -->
+    <key>StartInterval</key>
+    <integer>900</integer>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-breaking.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-breaking.log</string>
+</dict>
+</plist>
