@@ -11,9 +11,17 @@
   ※ 実際にグループへ送信するので、初回稼働はユーザーの明示 GO を得てから bootstrap する。
      動作確認だけなら送信しない dry-run: .venv/bin/python scripts/monitor_breaking.py --dry-run
 
+  ※ 2026-08-02 停止中。LINE無料枠(200通/月)を11日で使い切ったため(速報1件=グループ内の
+     友だち人数分=実測3通課金。5件/日 → ダイジェスト3通と合わせて18通/日)。
+     config.py の breaking_enabled も既定 False にしてある(launchd が動いても即 return)。
+     再開するには: breaking_enabled=True + breaking_max_per_day を 1 以下にしてから
+     下記の enable → bootstrap。
+
   管理:
-    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-breaking.plist
+    起動  : launchctl enable gui/$(id -u)/com.tomato.xnewsbot-breaking   # 停止時に disable 済み
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-breaking.plist
     停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-breaking
+            launchctl disable gui/$(id -u)/com.tomato.xnewsbot-breaking  # ログイン時の自動復活も止める
     手動実行: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-breaking
     状態  : launchctl list | grep xnewsbot-breaking
     ログ  : ~/Library/Logs/xnewsbot-breaking.log

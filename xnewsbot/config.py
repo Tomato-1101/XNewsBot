@@ -57,7 +57,11 @@ class Settings(BaseSettings):
     collect_newsfeeds_per_genre: int = 15   # 1ジャンルに足す無料ニュース記事の上限(raw肥大→キュレーション時間を抑える)
 
     # --- 速報リアルタイム監視(scripts/monitor_breaking.py) ---
-    breaking_enabled: bool = True
+    # 2026-08-02: 既定OFF。速報1件のグループpushはグループ内の友だち人数分(実測3通)
+    # 課金され、日次上限5件だと ダイジェスト3通+速報15通=18通/日 → LINE無料枠200通/月を
+    # 11日で使い切った(7/21枯渇→7/22〜7/31は全push 429で不着)。再開するときは
+    # breaking_max_per_day を 1 以下にしてから(3通/日×31=93通+ダイジェスト93通で枠内)。
+    breaking_enabled: bool = False
     # 速報の配信先グループID。空なら DB(subscriber.push_to のグループ=今のグループ)を自動解決。
     breaking_group_id: str | None = None
     # 検出の積極度: "strict"=大事件のみ / "medium"=各ジャンルの大きめも(既定) / "broad"=鮮度のみ。

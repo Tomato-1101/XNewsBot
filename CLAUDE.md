@@ -19,9 +19,15 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
-- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信) / `-breaking`(速報監視・15分毎)。
+- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信)。
+  ※ `-breaking`(速報監視) は **2026-08-02 に停止**（bootout + disable + `breaking_enabled=False`）。
   状態確認: `launchctl list | grep xnewsbot`。plist 変更は bootout→bootstrap（kickstart では反映されない）。
-- **速報リアルタイム配信**（2026-07-02 追加, `scripts/monitor_breaking.py` / `-breaking` plist）: 無料(Google ニュースRSS+GDELT補助)で
+- **LINE 無料枠は 200通/月**。カウントは「メッセージ数 × 宛先数」で、グループ宛 push はグループ内の
+  友だち人数分（実測3通）課金される。定時ダイジェストは Flex が 3〜4 メッセージに分割されるので
+  **1回の配信で 3〜4通**消費する（1通ではない）。速報を日次5件で回した結果 18通/日 → 11日で枯渇し、
+  2026-07-22〜31 の10日間は全 push が 429 で不着だった。新しい送信経路を足すときは必ずこの計算をする。
+  残枠は `GET /v2/bot/message/quota/consumption`、日別実績は `GET /v2/bot/insight/message/delivery?date=YYYYMMDD` で確認できる（無料）。
+- **速報リアルタイム配信**（2026-07-02 追加・2026-08-02 停止, `scripts/monitor_breaking.py` / `-breaking` plist）: 無料(Google ニュースRSS+GDELT補助)で
   速報を検出し「今のグループ」(DB `subscriber.push_to` のグループ)へ即 push。乱造防止=重複排除(SQLite `breaking_sent`)+日次上限
   (`breaking_max_per_day`,既定5=LINE無料枠200通/月を守る)+鮮度窓 の3重。積極度=`breaking_level`(strict/medium/broad)。
   **実グループへ送るので初回稼働はユーザーの明示 GO を得てから bootstrap する**。動作確認は送信しない `--dry-run`。
