@@ -87,12 +87,12 @@ def test_ingest_empty_without_existing_creates_empty(session):
 def test_ingest_sets_multi_genre_tags(session):
     """横断話題は主ジャンルを含め、表示順(GENRE_KEYS)で整列した genres タグを持つ。"""
     from xnewsbot.curator import CuratedItem
-    ci = CuratedItem(title="利上げ", summary="s", importance="big", score=80,
-                     genres=["政治", "株", "不正なキー"], source_idxs=[0])
-    d = digest.ingest_curated(session, "経済", D, "morning", [ci], make_tweets(2))
+    ci = CuratedItem(title="半導体大手が決算", summary="s", importance="big", score=80,
+                     genres=["テクノロジー", "AI", "不正なキー"], source_idxs=[0])
+    d = digest.ingest_curated(session, "株", D, "morning", [ci], make_tweets(2))
     item = digest.items_of_digest(session, d.id)[0]
-    # 主ジャンル(経済)を含め、未知キーは除外、GENRE_KEYS順(株→経済→政治)で整列
-    assert item.genres == ["株", "経済", "政治"]
+    # 主ジャンル(株)を含め、未知キーは除外、GENRE_KEYS順(AI→株→テクノロジー)で整列
+    assert item.genres == ["AI", "株", "テクノロジー"]
 
 
 def test_ingest_nonempty_replaces(session):

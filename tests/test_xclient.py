@@ -24,11 +24,11 @@ def test_collect_omits_lang_for_any(monkeypatch):
 
 
 def test_collect_includes_lang_ja(monkeypatch):
-    """lang 既定("ja")のジャンル(政治)は lang:ja を付ける。"""
+    """lang 既定("ja")のジャンル(RPA)は lang:ja を付ける。"""
     cap = {}
     monkeypatch.setattr(xclient, "fetch_with_retry",
                         lambda q, qt, mx, keys: (cap.__setitem__("q", q), [])[1])
-    xclient.collect("政治", settings=_Settings(), keys=["k"])
+    xclient.collect("RPA", settings=_Settings(), keys=["k"])
     assert "lang:ja" in cap["q"]
 
 
