@@ -47,6 +47,13 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
    配信時刻を変えたら **plist の StartCalendarInterval(15分前) と deliver.sh の MORNING_HHMM(定刻) の両方**を更新する。
    「今すぐ配信」は常駐サーバが `deliver.sh --user` を別プロセス起動して同様にリアルタイム配信する。
    **役割分担(分業)**: 収集と送信はプログラム、記事選別・見出し・要約の生成だけヘッドレス Claude(Read/Writeのみ)。
+3. **取りこぼし救済**(`ops/deliver.sh --recover` を launchd `com.tomato.xnewsbot-recover` が 12:30/17:00/21:00 に起動,
+   2026-08-15 追加): 当日の朝スロットが未配信のときだけ最新を集め直して即送信する(定刻待ちなし・朝スロット固定)。
+   最初に `pipeline.py pending --slot morning`(exit 0=未配信 / 64=配信済み)を見るので、成功した日は
+   収集も Claude も呼ばずに0.2秒で終わる。3回とも失敗すると macOS 通知が出る(`deliver.sh` の EXIT trap)。
+   **追加の経緯**: 2026-08-12/13/15 はヘッドレス Claude が `You've hit your session limit` で落ち、
+   8/14 は Mac が停止して起動自体しなかった。結果 8/11 を最後に4日間ダイジェストが届かず、誰も気づかなかった。
+   セッション上限は昼過ぎ(実測12:10)にリセットされるため、時間を置いた再試行だけで大半は自動復旧する。
 
 ## 実装状況（2026-06-09）
 - コア実装・ユニットテスト完了。**29 tests passing**（`.venv/bin/python -m pytest -q`）。

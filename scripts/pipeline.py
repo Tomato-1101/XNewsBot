@@ -258,6 +258,33 @@ def cmd_push(args) -> None:
             sys.exit("--user または --due を指定してください。")
 
 
+def cmd_pending(args) -> None:
+    """当該スロットの当日分がまだ届いていない購読者がいるかを返す。
+
+    exit 0 = 未配信あり(配信すべき) / EXIT_NO_TARGET = 全員配信済み(何もしなくてよい)。
+    リカバリ実行(deliver.sh --recover)が、収集やヘッドレス Claude を呼ぶ前に
+    空振りかどうかを判定するために使う(成功済みの日に何度起動されても無害にする)。
+    """
+    settings = get_settings()
+    slot = args.slot or slot_for_now(datetime.now(ZoneInfo(settings.default_tz)))
+    init_db()
+    with get_session() as session:
+        subs = session.exec(
+            select(Subscriber).where(Subscriber.is_onboarded == True)  # noqa: E712
+        ).all()
+        pending = [
+            sub.line_user_id
+            for sub in subs
+            if sub.enabled_genres
+            and sub.slot_enabled(slot)
+            and sub.last_on(slot) != datetime.now(ZoneInfo(sub.tz)).date()
+        ]
+    if not pending:
+        print(f"未配信なし slot={slot}", file=sys.stderr)
+        sys.exit(EXIT_NO_TARGET)
+    print(f"未配信 {len(pending)} 名 slot={slot}", file=sys.stderr)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="XNewsBot パイプライン")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -281,8 +308,16 @@ def main() -> None:
     pp.add_argument("--slot", choices=SLOTS, help="省略時は現在時刻から推定")
     pp.add_argument("--date", help="配信するダイジェストの日付 YYYY-MM-DD(省略時は現在日。0時跨ぎ対策)")
 
+    pn = sub.add_parser("pending", help="当日未配信の購読者がいるか(exit 0=いる / 64=いない)")
+    pn.add_argument("--slot", choices=SLOTS, help="省略時は現在時刻から推定")
+
     args = p.parse_args()
-    {"collect": cmd_collect, "ingest": cmd_ingest, "push": cmd_push}[args.cmd](args)
+    {
+        "collect": cmd_collect,
+        "ingest": cmd_ingest,
+        "push": cmd_push,
+        "pending": cmd_pending,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":

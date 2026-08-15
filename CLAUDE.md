@@ -19,7 +19,9 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
-- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信)。
+- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信) /
+  `-recover`(12:30・17:00・21:00 に `deliver.sh --recover`。当日朝が未配信の日だけ集め直して送る自動復旧。
+  配信済みの日は `pipeline.py pending` を見て即終了するので無害。2026-08-15 追加)。
   ※ `-breaking`(速報監視) は **2026-08-02 に停止**（bootout + disable + `breaking_enabled=False`）。
   状態確認: `launchctl list | grep xnewsbot`。plist 変更は bootout→bootstrap（kickstart では反映されない）。
 - **LINE 無料枠は 200通/月**。カウントは「メッセージ数 × 宛先数」で、グループ宛 push はグループ内の

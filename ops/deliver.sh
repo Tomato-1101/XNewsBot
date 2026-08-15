@@ -11,6 +11,9 @@
 #                            全員へ即送信する(定刻配信と同じく配信済みに記録)。
 #   deliver.sh --refresh     今すぐ更新(管理UI)。収集→キュレーション→DB取り込みだけ行い、
 #                            LINE へは送信しない(Web表示の更新のみ・無料)。
+#   deliver.sh --recover     取りこぼし救済(launchd の -recover から昼/夕/夜に自動実行)。
+#                            当日の朝スロットが未配信のときだけ最新を集め直して送る。
+#                            配信済みなら収集も Claude も呼ばずに即終了する。
 #
 # 役割分担(分業): 収集(twitterapi.io)と送信(LINE)はこのスクリプト=プログラムが行い、
 #   記事の選別・日本語見出し・要約の生成だけをヘッドレス Claude Code が担う。
@@ -25,18 +28,24 @@ export PATH="/Users/tomato/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:
 cd "$PROJ" || exit 1
 
 # 実行モード: due(定刻・既定) / user(今すぐ個人) / now(今すぐ全購読者) / refresh(今すぐ更新・配信なし)
+#           / recover(取りこぼし救済)
 MODE="due"
 USER_ID=""
 case "${1:-}" in
   --user)    MODE="user"; USER_ID="${2:-}" ;;
   --now)     MODE="now" ;;
   --refresh) MODE="refresh" ;;
+  --recover) MODE="recover" ;;
   "")        MODE="due" ;;
-  *) echo "不明な引数: $1 (使い方: deliver.sh [--user Uxxxx | --now | --refresh])" >&2; exit 2 ;;
+  *) echo "不明な引数: $1 (使い方: deliver.sh [--user Uxxxx | --now | --refresh | --recover])" >&2; exit 2 ;;
 esac
 
 HOUR=$(date +%H)
 if [ "$HOUR" -lt 15 ]; then SLOT=morning; else SLOT=evening; fi
+# リカバリは「朝の定時配信を落とした日の取り戻し」なので、実行が何時でも朝スロット固定。
+# (時刻から evening と判定させると、停止中の夜スロットとして配信済み記録が付き、
+#  肝心の朝スロットは未配信のまま翌日以降もリカバリが空回りする)
+[ "$MODE" = recover ] && SLOT=morning
 # 中間ファイル: 定刻(due)の収集中(配信5分前〜定刻)に「今すぐ」系が走ると、同一パスでは
 # raw/curated を互いに上書きして定刻配信の内容が壊れる。定刻以外はモード+プロセス(PID)ごとに
 # 別ファイルにして衝突させない(連打の同士討ちも防ぐ)。
@@ -44,6 +53,7 @@ case "$MODE" in
   user)    RAW="/tmp/xnews_${SLOT}_${USER_ID}_$$_raw.json"; CUR="/tmp/xnews_${SLOT}_${USER_ID}_$$_curated.json" ;;
   now)     RAW="/tmp/xnews_${SLOT}_now_$$_raw.json";        CUR="/tmp/xnews_${SLOT}_now_$$_curated.json" ;;
   refresh) RAW="/tmp/xnews_${SLOT}_refresh_$$_raw.json";    CUR="/tmp/xnews_${SLOT}_refresh_$$_curated.json" ;;
+  recover) RAW="/tmp/xnews_${SLOT}_recover_$$_raw.json";    CUR="/tmp/xnews_${SLOT}_recover_$$_curated.json" ;;
   *)       RAW="/tmp/xnews_${SLOT}_raw.json";               CUR="/tmp/xnews_${SLOT}_curated.json" ;;
 esac
 
@@ -54,7 +64,35 @@ MORNING_HHMM="0800"
 EVENING_HHMM="2100"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
+
+# リカバリが失敗したまま黙って終わると、当日分が落ちたことに誰も気づけない。
+# 通知は無料(macOS ローカル)なので、失敗時だけ画面に出す(成功・不要のときは出さない)。
+notify_recover_failure() {
+  local rc=$?
+  if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
+    osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
+  fi
+  return 0
+}
+trap notify_recover_failure EXIT
+
 log "==== deliver start slot=$SLOT mode=$MODE target=${USER_ID:--} ===="
+
+# リカバリ: 当日分が既に届いていれば何もしない(収集も Claude も呼ばずに終わる)。
+# これがあるので launchd から1日に何度起動されても、失敗した日だけ再試行される。
+if [ "$MODE" = recover ]; then
+  "$PY" scripts/pipeline.py pending --slot "$SLOT" >> "$LOG" 2>&1
+  PEND_RC=$?
+  if [ "$PEND_RC" -eq 64 ]; then
+    log "リカバリ不要(当日 $SLOT は配信済み)"; exit 0
+  elif [ "$PEND_RC" -ne 0 ]; then
+    # 判定自体が壊れたときは送信を試みる側に倒す(二重送信は push --due が当日済みを弾くので起きない)
+    log "未配信チェックに失敗 (exit=$PEND_RC)。安全側に倒して配信を試みる"
+  fi
+  # 何が原因で落ちたのかをリカバリのログ行に残す(あとから原因分布を追えるようにする)
+  LAST_FAIL=$(grep -E "キュレーション\(claude\)に失敗|collect に失敗|collect 全滅|ingest に失敗|キュレーション結果が空" "$LOG" | tail -1)
+  log "リカバリ実行: 当日 $SLOT が未配信。直近の失敗: ${LAST_FAIL:-記録なし(起動自体を逃した可能性)}"
+fi
 
 # 当日 HHMM(定刻)まで待ってから送る。
 # - 定刻まで時間がある(収集・キュレーションが定刻前に終わった)場合だけ、定刻ちょうどまで待つ。
@@ -145,6 +183,10 @@ case "$MODE" in
   refresh)
     # 今すぐ更新: LINE へは送らない(ingest 済み=DB/Web表示は最新になっている)
     log "今すぐ更新: 取り込みのみ完了(LINE送信なし)"
+    ;;
+  recover)
+    # リカバリ: 定刻はとうに過ぎているので待たずに即送信(定刻配信と同じく配信済みに記録)
+    "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
     ;;
   *)
     # 定刻配信: 5分前に収集を始めているので、定刻ちょうどまで待ってから送信

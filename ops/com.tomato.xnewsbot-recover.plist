@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot 取りこぼし救済(リカバリ)。~/Library/LaunchAgents/ に配置する。
+
+  朝07:45 起動の -deliver が失敗した日に、当日中に自動で送り直すための保険。
+  2026-08-12/13/15 は収集まで成功したのにヘッドレス Claude が
+  「You've hit your session limit」で落ち、8/14 は Mac が停止していて起動自体しなかった。
+  結果 8/11 を最後に4日間ダイジェストが届かず、誰も気づかなかった。
+
+  ops/deliver.sh --recover は最初に pipeline.py pending で当日の朝スロットが
+  配信済みかを確認し、配信済みなら収集も Claude も呼ばずに即終了する。
+  したがって下の時刻に毎日起動されても、成功した日は何もせず、落ちた日だけ再試行される。
+
+  時刻の意図:
+    12:30 … Claude のセッション上限は昼過ぎにリセットされる(実測 12:10)。その直後の1回目。
+    17:00 … 昼も上限だった/Mac がスリープだった場合の2回目。
+    21:00 … 当日中の最後の砦。ここも失敗すると macOS 通知が出る(deliver.sh の EXIT trap)。
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-recover.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-recover
+    手動実行: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-recover
+    状態  : launchctl list | grep xnewsbot-recover
+    ログ  : ~/Library/Logs/xnewsbot-deliver.log (-deliver と同じログに追記される)
+  ※ plist を変更したら bootout → bootstrap で入れ直す(kickstart では反映されない)。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot-recover</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/tomato/Project/XNewsBot/ops/deliver.sh</string>
+        <string>--recover</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key><integer>12</integer>
+            <key>Minute</key><integer>30</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>17</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key><integer>21</integer>
+            <key>Minute</key><integer>0</integer>
+        </dict>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-recover.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-recover.err.log</string>
+</dict>
+</plist>
