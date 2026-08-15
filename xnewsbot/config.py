@@ -11,6 +11,12 @@ from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from . import keychain_env
+
+# .env を置かずに中央 Keychain だけで動かすため、Settings を作る前に環境変数へ流し込む
+# （launchd 起動ではログインシェルを通らず apikeys.zsh の export が効かないため）。
+keychain_env.load()
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
