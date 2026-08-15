@@ -66,11 +66,20 @@ EVENING_HHMM="2100"
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
 # リカバリが失敗したまま黙って終わると、当日分が落ちたことに誰も気づけない。
-# 通知は無料(macOS ローカル)なので、失敗時だけ画面に出す(成功・不要のときは出さない)。
+# 当日最後の試行(20時以降=21:00の回)で失敗したときだけ LINE に1通知らせる。
+# 途中の回(12:30/17:00)で送らないのは、そのあと自動で再試行して復旧する見込みがあるため
+# (無料枠200通/月を、確定した失敗1件につき1通に抑える。宛先は本人=1通・グループ宛は3通課金)。
+# macOS 通知は無料なので毎回出す(Mac が起きていればその場で気づける)。
 notify_recover_failure() {
   local rc=$?
   if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
+    if [ "$(date +%H)" -ge 20 ]; then
+      "$PY" scripts/pipeline.py alert --text "XNewsBot: 本日のダイジェストを配信できませんでした。自動リトライ(12:30/17:00/21:00)も全て失敗しています。
+直近のエラー: ${LAST_FAIL:-記録なし(起動自体を逃した可能性)}
+ログ: ~/Library/Logs/xnewsbot-deliver.log" >> "$LOG" 2>&1
+      log "LINE へ失敗を通知(当日最終試行)"
+    fi
   fi
   return 0
 }

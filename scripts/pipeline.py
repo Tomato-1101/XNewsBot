@@ -285,6 +285,33 @@ def cmd_pending(args) -> None:
     print(f"未配信 {len(pending)} 名 slot={slot}", file=sys.stderr)
 
 
+def cmd_alert(args) -> None:
+    """運用アラートを購読者本人へ LINE で1通だけ送る(当日中の復旧に失敗したとき)。
+
+    宛先はグループ(push_to)ではなく本人(line_user_id)。グループ宛 push は
+    グループ内の友だち人数分が課金される(実測3通)ため、無料枠200通/月を無駄にしない。
+    """
+    settings = get_settings()
+    if not settings.line_channel_access_token:
+        sys.exit("LINE_CHANNEL_ACCESS_TOKEN が未設定です。")
+    messenger = lc.LineMessenger(settings.line_channel_access_token)
+    init_db()
+    with get_session() as session:
+        subs = session.exec(
+            select(Subscriber).where(Subscriber.is_onboarded == True)  # noqa: E712
+        ).all()
+        targets = [sub.line_user_id for sub in subs if sub.enabled_genres]
+    if not targets:
+        print("アラート対象なし", file=sys.stderr)
+        sys.exit(EXIT_NO_TARGET)
+    for to in targets:
+        try:
+            messenger.push(to, [lc.text_spec(args.text)])
+            print(f"アラート送信 → {to}", file=sys.stderr)
+        except Exception as e:  # 通知が落ちても呼び出し元(リカバリ)の後始末は続ける
+            print(f"アラート送信 失敗 {to}: {e}", file=sys.stderr)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="XNewsBot パイプライン")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -311,12 +338,16 @@ def main() -> None:
     pn = sub.add_parser("pending", help="当日未配信の購読者がいるか(exit 0=いる / 64=いない)")
     pn.add_argument("--slot", choices=SLOTS, help="省略時は現在時刻から推定")
 
+    pa = sub.add_parser("alert", help="運用アラートを購読者本人へ LINE で1通送る")
+    pa.add_argument("--text", required=True, help="送信する本文")
+
     args = p.parse_args()
     {
         "collect": cmd_collect,
         "ingest": cmd_ingest,
         "push": cmd_push,
         "pending": cmd_pending,
+        "alert": cmd_alert,
     }[args.cmd](args)
 
 
