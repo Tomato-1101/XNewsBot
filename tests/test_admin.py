@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
+from xnewsbot import keychain_env
 from xnewsbot.admin import news, stores, web
 from xnewsbot.admin.main import app
 from xnewsbot.models import GenreDigest, NewsItem
@@ -45,6 +46,7 @@ DELIVER_SH = 'MORNING_HHMM="0800"\nEVENING_HHMM="2100"\n'
 @pytest.fixture
 def wired(monkeypatch, tmp_path):
     monkeypatch.setenv("XNEWSBOT_ADMIN_PASSWORD", "testpw")
+    monkeypatch.setattr(keychain_env, "load", lambda: None)  # 実 Keychain には触れない
     # 設定ファイルは全て tmp に向ける(実ファイルを汚さない)
     monkeypatch.setattr(stores, "KEY_FILE", tmp_path / ".key")
     monkeypatch.setattr(stores, "ENV_FILE", tmp_path / ".env")
@@ -79,8 +81,9 @@ def test_requires_auth(wired):
 
 
 def test_refuses_start_without_password(monkeypatch, tmp_path):
-    """パスワードが環境変数にも .env にも無ければ起動を拒否する。"""
+    """パスワードが環境変数にも Keychain にも .env にも無ければ起動を拒否する。"""
     monkeypatch.delenv("XNEWSBOT_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setattr(keychain_env, "load", lambda: None)  # 実 Keychain には触れない
     monkeypatch.setattr(stores, "ENV_FILE", tmp_path / ".env")  # 空(存在しない)
     with pytest.raises(RuntimeError):
         with TestClient(app):
@@ -105,14 +108,33 @@ def test_bad_cookie_is_rejected(wired):
 
 
 def test_repeated_failures_lock_out_ip(wired):
-    """同一IPの連続失敗で一時ロック(429)。公開時の総当たり対策。"""
-    headers = {"X-Forwarded-For": "203.0.113.9"}
-    with TestClient(app) as c:
+    """同一IPの連続失敗で一時ロック(429)。IPはソケットの接続元で数える
+    (X-Forwarded-For は詐称できるため既定では見ない=偽装でロックを回避できない)。"""
+    with TestClient(app, client=("203.0.113.9", 51000)) as c:
         for _ in range(web._FAIL_MAX):
-            assert c.get("/manage", auth=("admin", "wrong"), headers=headers).status_code == 401
-        # ロック後は正しいパスワードでも 429(別IPは影響を受けない)
-        assert c.get("/manage", auth=AUTH, headers=headers).status_code == 429
-        assert c.get("/manage", auth=AUTH, headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
+            assert c.get("/manage", auth=("admin", "wrong")).status_code == 401
+        # ロック後は正しいパスワードでも 429。XFF を付け替えても回避できない
+        assert c.get("/manage", auth=AUTH).status_code == 429
+        assert c.get("/manage", auth=AUTH,
+                     headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 429
+    # 別IP(別の接続元)は影響を受けない
+    with TestClient(app, client=("198.51.100.1", 51001)) as other:
+        assert other.get("/manage", auth=AUTH).status_code == 200
+
+
+def test_trusted_proxy_uses_rightmost_forwarded_for(wired, monkeypatch):
+    """信頼プロキシ構成(XNEWSBOT_TRUST_PROXY=1)では XFF の右端=プロキシが付けた値で数える。"""
+    monkeypatch.setenv(web.TRUST_PROXY_ENV, "1")
+    with TestClient(app, client=("127.0.0.1", 51002)) as c:
+        for _ in range(web._FAIL_MAX):
+            assert c.get("/manage", auth=("admin", "wrong"),
+                         headers={"X-Forwarded-For": "1.2.3.4, 203.0.113.9"}).status_code == 401
+        # 左側(クライアント由来)を差し替えてもロックは外れない
+        assert c.get("/manage", auth=AUTH,
+                     headers={"X-Forwarded-For": "9.9.9.9, 203.0.113.9"}).status_code == 429
+        # 右端が別IPなら影響を受けない
+        assert c.get("/manage", auth=AUTH,
+                     headers={"X-Forwarded-For": "1.2.3.4, 198.51.100.7"}).status_code == 200
 
 
 # --- 今すぐ実行(配信 / 更新) ---
@@ -240,6 +262,18 @@ def test_collect_params_preserve_other_lines(wired):
     assert "COLLECT_MAX_TWEETS=250" in out
     assert "COLLECT_HOURS=12" in out
     assert "COLLECT_MAX_TWEETS=100" not in out
+
+
+def test_collect_params_reject_below_minimum(wired):
+    """0や負値は収集を無音で壊す(0件で配信中止・期間制限の消失)ので保存しない。"""
+    stores.ENV_FILE.write_text("COLLECT_MAX_TWEETS=100\nCOLLECT_HOURS=24\n", encoding="utf-8")
+    with TestClient(app) as c:
+        assert c.post("/manage/collect", data={"COLLECT_MAX_TWEETS": "0"}, auth=AUTH,
+                      follow_redirects=False).status_code == 303
+        assert c.post("/manage/collect", data={"COLLECT_HOURS": "0"}, auth=AUTH,
+                      follow_redirects=False).status_code == 303
+    out = stores.ENV_FILE.read_text(encoding="utf-8")
+    assert "COLLECT_MAX_TWEETS=100" in out and "COLLECT_HOURS=24" in out  # 元のまま
 
 
 def test_collect_params_reject_non_numeric(wired):

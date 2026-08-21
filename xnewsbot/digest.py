@@ -88,15 +88,17 @@ def ingest_curated(
     existing = get_genre_digest(session, genre, local_date, slot)
     if not curated and existing:
         return existing
+    # 削除と作成は1トランザクションにまとめる(中間 commit を挟むと、その隙にプロセスが落ちた
+    # ときに当日分が「消えたまま作られていない」状態で残り、catch-up の揃い判定が永久に揃わない)。
     if existing:
         for it in items_of_digest(session, existing.id):
             session.delete(it)
         session.delete(existing)
-        session.commit()
+        session.flush()
 
     digest = GenreDigest(digest_date=local_date, slot=slot, genre=genre)
     session.add(digest)
-    session.commit()
+    session.flush()  # commit せずに id だけ採番する(NewsItem の外部キーに要る)
     session.refresh(digest)
 
     for item in _build_news_items(digest.id, genre, curated, tweets):

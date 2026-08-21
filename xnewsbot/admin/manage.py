@@ -40,8 +40,8 @@ def manage_index(
 ) -> HTMLResponse:
     keys = [{"index": i, "masked": stores.mask_key(k)} for i, k in enumerate(stores.read_keys())]
     collect = [
-        {"env": env, "label": label, "value": stores.read_collect_params()[env]}
-        for env, _attr, _cast, label in stores.COLLECT_FIELDS
+        {"env": env, "label": label, "value": stores.read_collect_params()[env], "min": minimum}
+        for env, _attr, _cast, label, minimum in stores.COLLECT_FIELDS
     ]
     return templates.TemplateResponse(
         request,
@@ -110,14 +110,17 @@ def edit_keys(
 @router.post("/manage/collect")
 async def save_collect(request: Request, _user: str = Depends(require_auth)) -> RedirectResponse:
     form = await request.form()
-    for env, _attr, cast, label in stores.COLLECT_FIELDS:
+    for env, _attr, cast, label, minimum in stores.COLLECT_FIELDS:
         raw = (form.get(env) or "").strip()
         if raw == "":
             continue
         try:
-            cast(raw)  # 数値として妥当か検証(不正なら書かない)
+            value = cast(raw)  # 数値として妥当か検証(不正なら書かない)
         except (TypeError, ValueError):
             return _redirect(f"err={label}({env}) の値が不正です: {raw}")
+        # 0/負値は収集を無音で壊す(0件で配信中止・期間制限の消失)ため保存しない
+        if value < minimum:
+            return _redirect(f"err={label}({env}) は {minimum:g} 以上にしてください: {raw}")
         stores.set_env_var(env, raw)
     return _redirect("ok=collect")
 

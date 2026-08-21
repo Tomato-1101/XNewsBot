@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import date
 
@@ -173,13 +174,55 @@ def _sep(margin: str = "md", color: str = "#E5E5E5") -> dict:
 _GREETING = {"morning": "おはようございます。今朝のニュースです", "evening": "こんばんは。今夜のニュースです"}
 
 
+def _byte_size(contents: list[dict]) -> int:
+    """LINE が数えるのと同じ「JSON のバイト数」。日本語は1文字3バイトなので文字数では測れない。"""
+    return len(json.dumps(contents, ensure_ascii=False).encode("utf-8"))
+
+
+def _text_nodes(node) -> list[dict]:
+    """コンポーネント木の中の text を持つ dict を集める(切り詰め対象)。"""
+    found: list[dict] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("text"), str):
+            found.append(node)
+        for v in node.values():
+            found += _text_nodes(v)
+    elif isinstance(node, list):
+        for v in node:
+            found += _text_nodes(v)
+    return found
+
+
+def _fit_component(comp: dict) -> dict:
+    """単体で BUBBLE_MAX_BYTES を超えるコンポーネントを、収まるまで長い本文から切り詰める。
+
+    バブル分割はコンポーネント単位なので、1件が単体で上限を超えると分割しても収まらず、
+    LINE が 400 を返してその回の push が丸ごと失敗する(=その日のダイジェストが全滅する)。
+    要約の質を変える処理ではなく、異常に長い出力が来たときだけ働く最後の安全網。
+    """
+    if _byte_size([comp]) <= BUBBLE_MAX_BYTES:
+        return comp
+    comp = copy.deepcopy(comp)
+    nodes = _text_nodes(comp)
+    # 一番長い本文を半分にする、を収まるまで繰り返す(見出しなど短い要素は残る)
+    for _ in range(20):
+        target = max(nodes, key=lambda n: len(n["text"]), default=None)
+        if target is None or len(target["text"]) <= 20:
+            break
+        target["text"] = target["text"][: max(20, len(target["text"]) // 2)].rstrip() + "…"
+        if _byte_size([comp]) <= BUBBLE_MAX_BYTES:
+            break
+    return comp
+
+
 def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list[dict]:
     """縦に並ぶ components を、1バブルが大きくなり過ぎない範囲で複数バブルに詰める。
     件数は削らず(=全部出す)、サイズ超過時のみ次のバブル(=次メッセージ)へ送る。"""
     bubbles: list[list[dict]] = []
     cur: list[dict] = []
     for comp in components:
-        if cur and len(json.dumps(cur + [comp], ensure_ascii=False).encode("utf-8")) > BUBBLE_MAX_BYTES:
+        comp = _fit_component(comp)  # 単体で上限超過なら切り詰める(push 全滅の防止)
+        if cur and _byte_size(cur + [comp]) > BUBBLE_MAX_BYTES:
             bubbles.append(cur)
             cur = [comp]
         else:

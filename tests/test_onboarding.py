@@ -105,6 +105,19 @@ def test_edit_morning_time_keeps_onboarded(session, messenger):
     assert sub.is_onboarded
 
 
+def test_malformed_time_postback_falls_back_to_menu(session, messenger):
+    """不正形式の time: postback でも必ず応答する(無反応で reply_token を捨てない)。"""
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("postback", data="morning_edit"))
+    before = messenger.replies[-1]
+    handle_event(session, messenger, ev("postback", data="time:99"))     # 桁数が不正
+    assert messenger.replies[-1] != before and len(messenger.last_reply) == 1
+    handle_event(session, messenger, ev("postback", data="time:2599"))   # 時刻として範囲外
+    assert len(messenger.last_reply) == 1
+    sub = _sub(session)
+    assert (sub.morning_hour, sub.morning_minute) == (7, 0)  # 設定は書き換わらない
+
+
 def test_edit_evening_time_keeps_onboarded(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("postback", data="evening_edit"))

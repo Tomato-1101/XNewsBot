@@ -123,6 +123,23 @@ def test_pack_bubbles_measures_utf8_bytes():
     assert sum(len(s["contents"]["body"]["contents"]) for s in specs) == 12
 
 
+def test_pack_bubbles_truncates_single_oversized_component():
+    """単体で上限を超えるコンポーネントは切り詰めて必ず送れる形にする
+    (分割しても収まらず LINE が 400 を返すと、その回の push が丸ごと落ちるため)。"""
+    import json
+    huge = {"type": "box", "layout": "vertical", "contents": [
+        {"type": "text", "text": "見出し", "weight": "bold"},
+        {"type": "text", "text": "長すぎる要約。" * 2000, "wrap": True},
+    ]}
+    specs = lc._pack_bubbles([huge], alt_first="a", alt_rest="b")
+    for s in specs:
+        body = s["contents"]["body"]["contents"]
+        assert len(json.dumps(body, ensure_ascii=False).encode("utf-8")) <= lc.BUBBLE_MAX_BYTES
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "見出し" in blob  # 見出しは残る(本文だけ削る)
+    assert len(huge["contents"][1]["text"]) == len("長すぎる要約。") * 2000  # 元データは壊さない
+
+
 def test_spec_to_sdk_message_text_and_flex():
     """line-bot-sdk v3 への変換が壊れていないか(API名の検証)。"""
     text = lc.text_spec("こんにちは", [{"label": "AI", "data": "genre:AI"}])

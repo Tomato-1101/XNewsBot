@@ -65,6 +65,26 @@ EVENING_HHMM="2100"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
+# 多重起動の防止。「今すぐ配信」の連打や、定刻/リカバリと重なると deliver.sh が並行実行され、
+# 同じ内容が複数回 push されて LINE 無料枠(200通/月)を無駄に消費する。
+# mkdir は同名ディレクトリの同時作成に必ず1つしか成功しないのでロックとして使う
+# (macOS の bash 3.2 に flock は無い)。異常終了で残ったロックは mtime で回収する。
+LOCK_DIR="/tmp/xnewsbot-deliver.lock"
+LOCK_STALE_SEC=1800   # 最長の正常実行(15分前起動 + claude 12分 + 送信)より十分長い値
+OWN_LOCK=0
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then OWN_LOCK=1; echo $$ > "$LOCK_DIR/pid" 2>/dev/null; return 0; fi
+  local mtime age
+  mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
+  age=$(( $(date +%s) - mtime ))
+  if [ "$age" -ge "$LOCK_STALE_SEC" ]; then
+    log "古いロック(${age}s 経過)を回収して続行"
+    rm -rf "$LOCK_DIR"
+    if mkdir "$LOCK_DIR" 2>/dev/null; then OWN_LOCK=1; echo $$ > "$LOCK_DIR/pid" 2>/dev/null; return 0; fi
+  fi
+  return 1
+}
+
 # リカバリが失敗したまま黙って終わると、当日分が落ちたことに誰も気づけない。
 # 当日最後の試行(20時以降=21:00の回)で失敗したときだけ LINE に1通知らせる。
 # 途中の回(12:30/17:00)で送らないのは、そのあと自動で再試行して復旧する見込みがあるため
@@ -72,6 +92,7 @@ log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 # macOS 通知は無料なので毎回出す(Mac が起きていればその場で気づける)。
 notify_recover_failure() {
   local rc=$?
+  [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"   # 自分が取ったロックだけ返す
   if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
     if [ "$(date +%H)" -ge 20 ]; then
@@ -84,6 +105,13 @@ notify_recover_failure() {
   return 0
 }
 trap notify_recover_failure EXIT
+
+# 先行ジョブが走っていれば何もせず終わる(exit 0: リカバリの失敗通知を誤発火させない。
+# 先行ジョブがそのまま配信を完了させるので、この起動でやるべきことは無い)。
+if ! acquire_lock; then
+  log "他の配信ジョブが実行中(pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '?'))。今回の起動(mode=$MODE)は何もせず終了"
+  exit 0
+fi
 
 log "==== deliver start slot=$SLOT mode=$MODE target=${USER_ID:--} ===="
 

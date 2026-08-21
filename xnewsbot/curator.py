@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 CURATE_INPUT_LIMIT = 60
 # 1ジャンルあたり「大ニュース」の最大件数
 MAX_BIG_PER_GENRE = 3
+# 本文の上限(安全網)。指示どおりの出力(summary 2〜3文 / detail 4〜8文)には当たらない値にし、
+# 指示を外れた長文が来たときだけ切る。上限が無いと Flex がサイズ超過し push が丸ごと失敗する。
+SUMMARY_MAX_CHARS = 500
+DETAIL_MAX_CHARS = 2000
 
 
 @dataclass
@@ -81,6 +85,10 @@ def _extract_json_array(raw: str) -> list:
     return json.loads(s[start : end + 1])
 
 
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
 def _coerce_items(data: list) -> list[CuratedItem]:
     items: list[CuratedItem] = []
     for d in data:
@@ -114,8 +122,8 @@ def _coerce_items(data: list) -> list[CuratedItem]:
         items.append(
             CuratedItem(
                 title=title[:80],
-                summary=str(d.get("summary") or "").strip(),
-                detail=str(d.get("detail") or "").strip(),
+                summary=_clip(str(d.get("summary") or "").strip(), SUMMARY_MAX_CHARS),
+                detail=_clip(str(d.get("detail") or "").strip(), DETAIL_MAX_CHARS),
                 importance=importance,
                 score=score,
                 genres=genres,

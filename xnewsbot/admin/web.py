@@ -39,7 +39,13 @@ COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # 1年: 端末に一度入れたら以後�
 _FAIL_MAX = 10
 _FAIL_WINDOW = 600
 _LOCK_SECONDS = 600
+# 記録するIPの上限。大量のIP(偽装ヘッダ・ボットネット)で辞書が無制限に膨らむのを防ぐ。
+_FAIL_IP_MAX = 1000
 _fails: dict[str, list[float]] = defaultdict(list)
+
+# 既定では X-Forwarded-For を信用しない(クライアントが自由に付けられるため)。
+# 前段で tailscale serve/funnel 等が TLS を終端する構成のときだけ 1 にする。
+TRUST_PROXY_ENV = "XNEWSBOT_TRUST_PROXY"
 
 _security = HTTPBasic(auto_error=False)
 
@@ -54,18 +60,39 @@ def remember_token(password: str) -> str:
 
 
 def _client_ip(request: Request) -> str:
-    """funnel/ngrok 越しは X-Forwarded-For 先頭が実クライアント。"""
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    """ロックの単位に使う実クライアントIP。
+
+    X-Forwarded-For はクライアントが自由に詐称でき、直アクセス(LAN)では偽装IPごとに
+    失敗カウントが分散してロックが無効化されるため既定では見ない。前段に信頼できる
+    プロキシが居る構成(XNEWSBOT_TRUST_PROXY=1)のときだけ、そのプロキシが末尾に足す
+    **右端**の値を実クライアントとして使う(左側はクライアント由来で信用できない)。
+    """
+    if os.environ.get(TRUST_PROXY_ENV, "").strip().lower() in ("1", "true", "yes"):
+        parts = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "?"
 
 
 def _locked(ip: str) -> bool:
     now = time.time()
-    recent = [t for t in _fails[ip] if now - t < _FAIL_WINDOW]
-    _fails[ip] = recent
+    recent = [t for t in _fails.get(ip, []) if now - t < _FAIL_WINDOW]
+    if recent:
+        _fails[ip] = recent
+    else:
+        _fails.pop(ip, None)  # 期限切れのエントリは残さない(辞書を膨らませない)
     return len(recent) >= _FAIL_MAX
+
+
+def _record_fail(ip: str) -> None:
+    """失敗を1件記録する。上限を超えたら期限切れ→最古の順に捨てて件数を抑える。"""
+    if ip not in _fails and len(_fails) >= _FAIL_IP_MAX:
+        now = time.time()
+        for stale in [k for k, v in _fails.items() if not v or now - v[-1] >= _FAIL_WINDOW]:
+            _fails.pop(stale, None)
+        while len(_fails) >= _FAIL_IP_MAX:
+            _fails.pop(min(_fails, key=lambda k: _fails[k][-1] if _fails[k] else 0.0), None)
+    _fails[ip].append(time.time())
 
 
 def require_auth(
@@ -100,7 +127,7 @@ def require_auth(
         request.state.set_remember = token
         return credentials.username or "admin"
     # 4) それ以外は失敗を記録して Basic チャレンジ
-    _fails[ip].append(time.time())
+    _record_fail(ip)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="認証に失敗しました。",

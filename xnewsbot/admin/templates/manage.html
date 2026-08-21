@@ -52,7 +52,7 @@
   <h2>収集パラメータ</h2>
   <form method="post" action="/manage/collect" class="grid-form">
     {% for c in collect %}
-    <label>{{ c.label }}<input type="number" step="any" name="{{ c.env }}" value="{{ c.value }}"></label>
+    <label>{{ c.label }}<input type="number" step="any" min="{{ c.min }}" name="{{ c.env }}" value="{{ c.value }}"></label>
     {% endfor %}
     <button type="submit">保存</button>
   </form>

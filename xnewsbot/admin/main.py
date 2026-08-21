@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__
+from .. import __version__, keychain_env
 from ..db import init_db
 from . import manage, news, stores
 from .web import COOKIE_MAX_AGE, COOKIE_NAME, STATIC_DIR
@@ -23,7 +23,10 @@ log = logging.getLogger("xnewsbot.admin")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 認証パスワードは環境変数優先、無ければ .env(秘密の置き場)から取り込む。
+    # 認証パスワードは環境変数優先、無ければ Keychain、無ければ .env(秘密の置き場)から取り込む。
+    # (config の Keychain 読み込みは get_settings() まで遅延したため、環境変数を直接見る
+    #  ここでは明示的に呼ぶ。既に入っている値は上書きされない)
+    keychain_env.load()
     if not os.environ.get("XNEWSBOT_ADMIN_PASSWORD"):
         pw = stores.get_env_var("XNEWSBOT_ADMIN_PASSWORD")
         if pw:

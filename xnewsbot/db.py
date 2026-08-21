@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
 from .config import get_settings
@@ -15,14 +16,28 @@ from . import models  # noqa: F401
 _engine = None
 
 
+def _sqlite_pragmas(dbapi_conn, _record) -> None:
+    """常駐サーバ(webhook) / 管理UI(:8011) / 配信ジョブが同じ xnewsbot.db を同時に触るため、
+    接続ごとに WAL(読みと書きが並行できる)と busy_timeout(ロック中は即諦めず待つ)を入れる。
+    既定は busy_timeout=0 で、収集中の書き込みと webhook が重なると即 "database is locked"
+    になり取りこぼす。様式は tau_log.py に合わせる。"""
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA busy_timeout=5000")
+    cur.close()
+
+
 def get_engine():
     global _engine
     if _engine is None:
         settings = get_settings()
         # check_same_thread=False: FastAPI/スケジューラの別スレッドからも使うため
+        # timeout: ロック待ちの上限秒(sqlite3.connect の引数。PRAGMA busy_timeout と同じ待ち)
         _engine = create_engine(
-            settings.sqlite_url, connect_args={"check_same_thread": False}
+            settings.sqlite_url,
+            connect_args={"check_same_thread": False, "timeout": 5},
         )
+        event.listen(_engine, "connect", _sqlite_pragmas)
     return _engine
 
 

@@ -268,8 +268,12 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
             return
         hhmm = data.split(":", 1)[1]
         slot = sub.onboarding_step
-        if len(hhmm) == 4 and hhmm.isdigit():
+        if len(hhmm) == 4 and hhmm.isdigit() and int(hhmm[:2]) < 24 and int(hhmm[2:]) < 60:
             _apply_slot_time(session, messenger, sub, slot, int(hhmm[:2]), int(hhmm[2:]), reply_token)
+        else:
+            # 履歴に残った旧形式など想定外の data でも必ず何か返す
+            # (無反応だとタップしても動かないように見え、reply_token も無駄になる)
+            messenger.reply(reply_token, [lc.menu_spec("メニュー")])
 
     elif data == "genre_edit":
         sub.onboarding_step = "genres"
@@ -395,9 +399,11 @@ def _apply_slot_time(session, messenger, sub: Subscriber, slot: str,
         sub.is_onboarded = True
         sub.onboarding_step = "done"
         _save(session, sub)
+        # 実際に何回届くかは運用中の配信スロット(launchd)次第(現在は朝のみ)。
+        # 「朝と夜の2回」と約束すると夜が来ない日に故障と誤解されるため、時刻を約束しない文言にする。
         messenger.reply(reply_token, [
             lc.text_spec("設定が完了しました！\n" + lc.settings_summary_text(sub) +
-                         "\n\n毎日 朝と夜の2回ニュースをお届けします。「今すぐ配信」で今すぐ試せます。"),
+                         "\n\n上の設定した時間にニュースをお届けします。「今すぐ配信」で今すぐ試せます。"),
             lc.menu_spec("メニュー"),
         ])
 
@@ -405,7 +411,7 @@ def _apply_slot_time(session, messenger, sub: Subscriber, slot: str,
 def _help_spec() -> dict:
     return lc.text_spec(
         "【XNewsBotの使い方】\n"
-        "毎日 朝と夜の2回、X(Twitter)から集めたニュースをお届けします。\n"
+        "毎日、設定した時間に X(Twitter)から集めたニュースをお届けします。\n"
         "・大ニュースは要約付きで表示\n"
         "・そのほかは見出しのみ → タップで詳細\n\n"
         "「メニュー」と送ると、ジャンルや朝/夜の時刻をいつでも変更できます。",

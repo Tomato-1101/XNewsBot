@@ -27,12 +27,14 @@ REPO_PLIST = ROOT / "ops" / "com.tomato.xnewsbot-deliver.plist"
 INSTALLED_PLIST = Path.home() / "Library" / "LaunchAgents" / "com.tomato.xnewsbot-deliver.plist"
 DELIVER_LABEL = "com.tomato.xnewsbot-deliver"
 
-# (.env キー, Settings 属性, 変換, ラベル) — 収集パラメータの編集対象
-COLLECT_FIELDS: list[tuple[str, str, type, str]] = [
-    ("COLLECT_MAX_TWEETS", "collect_max_tweets", int, "1ジャンルの取得上限"),
-    ("COLLECT_HOURS", "collect_hours", float, "収集対象の直近時間(h)"),
-    ("COLLECT_MIN_FAVES", "collect_min_faves", int, "最低いいね数"),
-    ("COLLECT_MIN_VIEWS_FLOOR", "collect_min_views_floor", int, "表示回数の下限(いいね下限の代替)"),
+# (.env キー, Settings 属性, 変換, ラベル, 最小値) — 収集パラメータの編集対象
+# 最小値は「無音で壊れる値」を弾くためのもの: 取得上限0だと全ジャンル0件で配信中止、
+# 収集時間0だと期間の絞り込みが消えて全期間が対象になる(どちらもエラーにならず気づけない)。
+COLLECT_FIELDS: list[tuple[str, str, type, str, float]] = [
+    ("COLLECT_MAX_TWEETS", "collect_max_tweets", int, "1ジャンルの取得上限", 1),
+    ("COLLECT_HOURS", "collect_hours", float, "収集対象の直近時間(h)", 1),
+    ("COLLECT_MIN_FAVES", "collect_min_faves", int, "最低いいね数", 0),
+    ("COLLECT_MIN_VIEWS_FLOOR", "collect_min_views_floor", int, "表示回数の下限(いいね下限の代替)", 0),
 ]
 
 
@@ -95,7 +97,7 @@ def set_env_var(key: str, value: str) -> None:
 def read_collect_params() -> dict[str, object]:
     """収集パラメータの現在値(.env にあればそれ、無ければ Settings の既定値)。"""
     out: dict[str, object] = {}
-    for env, attr, cast, _ in COLLECT_FIELDS:
+    for env, attr, cast, _label, _min in COLLECT_FIELDS:
         raw = get_env_var(env)
         if raw not in (None, ""):
             try:
