@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  ngrok トンネル(固定ドメイン → localhost:8010)を macOS LaunchAgent で常駐させる。
+  ngrok トンネル(固定ドメイン → localhost:18010)を macOS LaunchAgent で常駐させる。
   ~/Library/LaunchAgents/com.tomato.xnewsbot-ngrok.plist に配置する。
   これでターミナルを開きっぱなしにしなくてよく、ログイン時に自動起動・落ちても自動再起動する。
 
@@ -29,7 +29,7 @@
         <string>http</string>
         <string>--url=https://YOUR-STATIC-DOMAIN.ngrok-free.dev</string>
         <string>--log=stdout</string>
-        <string>8010</string>
+        <string>18010</string>
     </array>
 
     <key>EnvironmentVariables</key>
