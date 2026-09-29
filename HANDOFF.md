@@ -111,6 +111,11 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 
 ## 既知の注意（launchd 実行時）
 - ヘッドレス Claude のログインが必要(`claude -p "ok" --allowedTools Read` で確認)。
+- 2026-09-30: ヘッドレス Claude はツイート/見出し(外部テキスト)を読むので権限を絞っている(deliver.sh / monitor_breaking.py)。
+  `--tools Read,Write --permission-mode dontAsk --setting-sources "" --strict-mcp-config` + 入力の `Read(//abs)`・出力の `Edit(//abs)` だけ許可、`--safe-mode` 付き。緩めない。
+  - cwd は実行ごとの空の `mktemp -d`/`tempfile.mkdtemp()`(速報の cands/verdict もその中)。固定パスは先置き・リンク差し替えを許すので使わない。
+    `--restricted` は速報判定だけに付与(ファイル系ツールを cwd 内に閉じ込めるため、cwd 外の `/tmp` RAW を読む deliver.sh では allow ルールがあっても拒否される＝実測)。
+  - 環境変数・managed 設定は隔離していない(launchd 環境を書き換えられる前提は対象外)。
 - collect が twitterapi の認証で落ちる場合は Keychain が launchd 文脈で読めていない →
   `.env` に `TWITTERAPI_IO_KEY=...` を追記し、常駐サーバを `launchctl kickstart -k` で再起動。
 - Mac がスリープで配信時刻を逃しても、launchd は起床時に1回だけ遅れて実行(=起床時点の最新を届ける)。

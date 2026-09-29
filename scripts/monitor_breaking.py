@@ -24,9 +24,11 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -145,9 +147,25 @@ def judge_breaking(picked, settings):
     候補を tmp に書き→プロンプトのプレースホルダを置換→claude を Read/Write のみで実行→
     verdict ファイルをパース→parse_verdicts。あらゆる失敗で None を返しログに理由1行(呼び出し側は今回何も送らない)。
     """
+    # cands/verdict と claude の cwd は実行ごとの一時ディレクトリにまとめる。固定パスや PID 由来の
+    # 予測可能な /tmp パスだと、先置きやシンボリックリンク差し替えで別ファイルを読み書きさせられうる。
+    # (作業ディレクトリ内の読み取りは許可ルールなしで通るので、.env のあるプロジェクト直下でも動かさない)
+    try:
+        work_dir = os.path.realpath(tempfile.mkdtemp(prefix="xnews_breaking_"))
+    except OSError as e:
+        print(f"[breaking] 判定: 一時ディレクトリ作成失敗: {e}", file=sys.stderr)
+        return None
+    try:
+        return _judge_in(picked, work_dir)
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _judge_in(picked, work_dir):
+    """judge_breaking の本体。work_dir(空の一時ディレクトリ)を claude の cwd と入出力置き場に使う。"""
     now = datetime.now(timezone.utc)
-    cands_path = f"/tmp/xnews_breaking_cands_{os.getpid()}.json"
-    verdict_path = f"/tmp/xnews_breaking_verdict_{os.getpid()}.json"
+    cands_path = os.path.join(work_dir, "cands.json")
+    verdict_path = os.path.join(work_dir, "verdict.json")
     cands = []
     for idx, (genre, item, _key) in enumerate(picked):
         minutes_ago = int((now - item.published).total_seconds() // 60)
@@ -165,16 +183,27 @@ def judge_breaking(picked, settings):
         return None
     prompt = prompt.replace("__CANDS__", cands_path).replace("__VERDICT__", verdict_path)
 
-    Path(verdict_path).unlink(missing_ok=True)  # 前回の残骸を掴まないよう先に消す
+    # 候補の見出しは信用できない外部テキスト。仕込まれた指示で任意ファイルを触られないよう、
+    # 使えるツールを Read/Write に限定(--tools)し、ユーザー設定の広い allow と hooks を読まず
+    # (--setting-sources "")、読めるのは cands・書けるのは verdict だけにする(Write は Edit ルールで判定)。
+    # 許可外は dontAsk で確認待ちにせず即拒否(ヘッドレスでハングさせない)。
+    # --safe-mode … CLAUDE.md/skills/plugins/hooks 等を読まない / --restricted … ファイル系ツールを
+    # cwd(=work_dir)内に閉じ込める(cands/verdict は work_dir 内なので正規処理は通る。実測済み)。
     try:
-        subprocess.run([CLAUDE_BIN, "--model", JUDGE_MODEL, "-p", prompt,
-                        "--allowedTools", "Read", "Write"],
-                       timeout=JUDGE_TIMEOUT, capture_output=True)
+        proc = subprocess.run([CLAUDE_BIN, "--model", JUDGE_MODEL, "-p", prompt,
+                               "--tools", "Read,Write", "--permission-mode", "dontAsk",
+                               "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+                               "--safe-mode", "--restricted",
+                               "--allowedTools", f"Read(/{cands_path})", f"Edit(/{verdict_path})"],
+                              timeout=JUDGE_TIMEOUT, capture_output=True, cwd=work_dir)
     except subprocess.TimeoutExpired:
         print(f"[breaking] 判定: タイムアウト({JUDGE_TIMEOUT}s)", file=sys.stderr)
         return None
     except OSError as e:
         print(f"[breaking] 判定: claude 実行失敗: {e}", file=sys.stderr)
+        return None
+    if proc.returncode != 0:  # 異常終了時に書きかけ/想定外の verdict を信用しない(fail-closed)
+        print(f"[breaking] 判定: claude が異常終了(exit={proc.returncode})", file=sys.stderr)
         return None
 
     try:

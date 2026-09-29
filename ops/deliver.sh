@@ -93,6 +93,7 @@ acquire_lock() {
 notify_recover_failure() {
   local rc=$?
   [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"   # 自分が取ったロックだけ返す
+  [ -n "${CLAUDE_CWD:-}" ] && rm -rf "$CLAUDE_CWD"   # キュレーション用の一時 cwd(mktemp -d)を片付ける
   if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
     if [ "$(date +%H)" -ge 20 ]; then
@@ -187,7 +188,21 @@ elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 720"; fi
 PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 # モデルを明示する。未指定だと settings.json 既定(Fable 5・1M)を継承して 1 実行 ~12 分かかる。
 # 定刻配信は 15 分前起動で余裕が薄いので、品質を保ちつつ速い Opus 4.8 を使う。
-if ! $TIMEOUT_BIN "$CLAUDE" --model claude-opus-4-8 -p "$PROMPT" --allowedTools Read Write >> "$LOG" 2>&1; then
+# raw のツイートは信用できない外部テキスト。仕込まれた指示で任意ファイルを触られないよう権限を絞る:
+#   --tools Read,Write … Bash/WebFetch 等を無効化 / --setting-sources "" … ユーザー設定の広い allow と hooks を読まない
+#   allow は RAW の Read と CUR の Edit(Write はこれで判定)だけ / dontAsk … 許可外は確認待ちにせず即拒否
+#   cwd は空の専用ディレクトリ(作業ディレクトリ内の読み取りは無条件で通るため .env のある $PROJ で動かさない)。
+#   固定パスだと先置き・シンボリックリンク差し替えを許すので実行ごとに mktemp -d で作り、EXIT trap で消す。
+#   --safe-mode … CLAUDE.md/skills/plugins/hooks 等を読まない。--restricted はファイル系ツールを cwd 内に
+#   閉じ込め、cwd 外の RAW(/tmp)が allow ルールがあっても拒否されるため使わない(2026-09-30 実測)。
+if ! CLAUDE_CWD="$(mktemp -d)"; then
+  log "キュレーション用の一時ディレクトリ(mktemp -d)を作れず中止"; exit 1
+fi
+# 権限拒否等で claude が CUR を書けなかったとき、前回の curated を当日分として ingest しないよう先に消す
+rm -f "$CUR"
+if ! ( cd "$CLAUDE_CWD" && $TIMEOUT_BIN "$CLAUDE" --model claude-opus-4-8 -p "$PROMPT" \
+       --tools Read,Write --permission-mode dontAsk --setting-sources "" --strict-mcp-config \
+       --no-session-persistence --safe-mode --allowedTools "Read(/$RAW)" "Edit(/$CUR)" ) >> "$LOG" 2>&1; then
   log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
 fi
 # claude が exit 0 でも __CUR__ を書かない/空のことがある。空のまま ingest すると
