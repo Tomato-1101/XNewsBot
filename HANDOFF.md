@@ -16,6 +16,7 @@
 - 鍵: 旧 Keychain `twitterapi_io_key`(残高切れ …d015)削除、中央 `TWITTERAPI_IO_KEY`/shared を …3e15 に差し替え(XAgent も同じ鍵を読む)。残 約305万クレジット≒1日1万で約300日。
 - 仮想通貨の公式アカウント: TheBlock__→TheBlockCo に修正、CoinDeskJapan・neweconomy_jp は実在せず削除。
 - xclient.py の tau_log 差分と AGENTS.md は他セッションの作業なので未コミットのまま残している。
+- 表示(10-02 e2f55d5): 1通目=要点＋「残り使用量」(X/LINE、取得失敗でも行を出す)、2通目=主なニュース(1ジャンル1枚・big、big0件は最上位1件を昇格)、3〜5通目=ほかのニュース(同じジャンル順)。試走で5通・153件・省略0。ほかが数十件増えると「省略」が出うる。
 - 次: 10/02 07:15 の本番を `~/Library/Logs/xnewsbot-deliver.log` で確認(分割並列・所要時間・push 成功・残量行・通数3)。
 
 ## 目的
