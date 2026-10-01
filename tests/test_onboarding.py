@@ -143,13 +143,13 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
-    # 先頭は「架空」警告、続いて現行レイアウト(要点バブル + 主なニュース + ほかのニュース)
+    # 先頭は「架空」警告、続いて現行レイアウト(要点バブル + 主なニュース + 注目ニュース + その他の見出し)
     assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
     assert specs[1]["type"] == "flex" and specs[1]["contents"]["type"] == "bubble"
     assert specs[2]["type"] == "flex" and specs[2]["contents"]["type"] == "carousel"
     assert specs[2]["alt"].startswith("主なニュース（")
     assert specs[3]["type"] == "flex" and specs[3]["contents"]["type"] == "carousel"
-    assert specs[3]["alt"].startswith("ほかのニュース（")
+    assert specs[3]["alt"].startswith("注目ニュース（")
     assert len(specs) <= 5  # reply 上限内
     import json
     blob = json.dumps(specs, ensure_ascii=False)
@@ -175,7 +175,7 @@ def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
     assert "X（ニュース取得）  残り 3,040,677クレジット（約$30.41）・あと約308日／今回 9,870" in summary
     assert "LINE（配信）  今月 残り 152/200通・あと約50回／今回 3通" in summary
     assert "主なニュース" in json.dumps(specs[2], ensure_ascii=False)
-    assert "ほか " in json.dumps(specs[3], ensure_ascii=False)
+    assert "注目 " in json.dumps(specs[3], ensure_ascii=False)
     # 小ニュースの要約が一覧に出る(タップしなくても読める)
     small = next(r for r in mockdata._MOCK if r[1] == "small" and r[0] == "AI")
     assert small[4] in json.dumps(specs[3], ensure_ascii=False)

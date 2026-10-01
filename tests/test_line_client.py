@@ -72,11 +72,13 @@ def test_genre_select_marks_selected():
 
 # ---- 要点バブル ----
 
-GUIDE_BOTH = "次: 主なニュース（ジャンルごとに横へスワイプ）→ その次: ほかのニュース（同じ順）"
+GUIDE_BRIEF = "次: 主なニュース → その他の見出し（どれもジャンルごとに横へスワイプ）"
+GUIDE_ALL = "次: 主なニュース → 注目ニュース → その他の見出し（どれもジャンルごとに横へスワイプ）"
 GUIDE_MAIN = "次: 主なニュース（ジャンルごとに横へスワイプ）"
 
 
 def test_digest_specs_summary_then_main_then_others():
+    # _small は score 40(< 50)なので、主に上がらなかった株の1件は「その他の見出し」に入る
     grouped = {"特大": [], "AI": [_big()], "株": [_small(0), _small(1)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert [s["type"] for s in specs] == ["flex", "flex", "flex"]
@@ -86,7 +88,7 @@ def test_digest_specs_summary_then_main_then_others():
     assert texts[0] == "6月8日(月) 朝のニュース"
     assert texts[1] == "AI 1・株 2（計3件）"  # 0件のジャンル(特大)は出さない
     assert "今日の要点" in texts
-    assert texts[-1] == GUIDE_BOTH
+    assert texts[-1] == GUIDE_BRIEF  # 注目ニュースが無い日は案内にも出さない
 
     main = specs[1]["contents"]
     assert main["type"] == "carousel"
@@ -98,9 +100,10 @@ def test_digest_specs_summary_then_main_then_others():
 
     others = specs[2]["contents"]
     assert others["type"] == "carousel"
-    assert [_texts(b["header"]) for b in others["contents"]] == [["株", "ほか 1件"]]
+    assert [_texts(b["header"]) for b in others["contents"]] == [["株", "その他 1件"]]
     assert others["contents"][0]["header"]["backgroundColor"] == "#0F766E"
-    assert specs[2]["alt"] == "ほかのニュース（株）"
+    assert others["contents"][0]["header"]["paddingAll"] == "12px"  # 主なニュースより低いヘッダー
+    assert specs[2]["alt"] == "その他の見出し（株）"
 
 
 def test_heading_same_without_greeting_and_evening_word():
@@ -325,7 +328,7 @@ def test_small_rows_listed_with_label_and_meta():
                          "created_at": "2026-06-05T23:00:00+00:00"}]  # NOW の2日前
     specs = lc.digest_specs({"株": [big, s0, s1]}, slot="morning", digest_date=D, now=NOW)
     bubble = specs[2]["contents"]["contents"][0]
-    assert _texts(bubble["header"]) == ["株", "ほか 2件"]
+    assert _texts(bubble["header"]) == ["株", "その他 2件"]
     body = bubble["body"]["contents"]
     assert "@v・2日前" in _texts(body)
     smalls = [c for c in body if c.get("type") == "box" and c.get("action")]
@@ -339,9 +342,9 @@ def test_small_rows_listed_with_label_and_meta():
     assert "小さな話題0" in _texts(only_small[1]["contents"])
 
 
-def test_small_row_shows_summary_truncated_and_keeps_tap():
-    """小ニュースも 見出し → 要約(100字超は「…」) → 出典・時刻 の順に出す。要約が空なら出さない。"""
-    s_short, s_long, s_exact, s_empty = _small(1), _small(2), _small(3), _small(4)
+def test_notable_row_shows_summary_truncated_and_keeps_tap():
+    """注目ニュース(score >= 50)は 見出し(太字) → 要約(100字超は「…」) → 出典・時刻 の順。要約が空なら出さない。"""
+    s_short, s_long, s_exact, s_empty = (_small(i, score=60) for i in (1, 2, 3, 4))
     s_short.summary = "短い要約"
     s_long.summary = "あ" * 100 + "いう"
     s_exact.summary = "え" * 100
@@ -356,8 +359,10 @@ def test_small_row_shows_summary_truncated_and_keeps_tap():
         ["小さな話題3", "え" * 100, "@v"],          # ちょうど100字は切らない
         ["小さな話題4", "@v"],                       # 要約が空なら行ごと出さない
     ]
-    summary = rows[0]["contents"][1]
-    assert (summary["size"], summary["color"], summary["wrap"]) == ("xs", "#666666", True)
+    title, summary, meta = rows[0]["contents"]
+    assert (title["size"], title["weight"], title["color"]) == ("sm", "bold", lc.TITLE_COLOR)
+    assert (summary["size"], summary["color"], summary["wrap"]) == ("xs", "#555555", True)
+    assert meta["size"] == "xxs"
     # 行のタップで詳細を開く動作は残す
     assert [r["action"]["data"] for r in rows] == [f"detail:20260608:morning:株:{i}" for i in (1, 2, 3, 4)]
     assert s_long.summary == "あ" * 100 + "いう"     # 元データは変えない
@@ -496,7 +501,7 @@ def test_heavy_day_fits_5_messages_without_omission():
 
 
 def test_genre_kept_whole_when_greedy_packing_fits():
-    """ジャンル単位で詰めて収まる日は、空きを埋めるための分割をしない(主/ほかとも1ジャンル1枚)。"""
+    """1ジャンルの件数が1ページ分(注目5件)以下なら、主/注目とも1ジャンル1枚。"""
     grouped = _bulk(["特大", "AI", "株", "テクノロジー"], 8)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert len(specs) == 3
@@ -554,9 +559,10 @@ def test_oversized_single_item_is_truncated_not_dropped():
 
 
 def _split_specs(specs) -> tuple[list[dict], list[dict]]:
-    """2通目以降を alt で「主なニュース」と「ほかのニュース」のカルーセルに分ける。"""
+    """2通目以降を alt で「主なニュース」とそれ以外(注目ニュース・その他の見出し)のカルーセルに分ける。"""
     main = [s["contents"] for s in specs[1:] if s["alt"].startswith("主なニュース（")]
-    others = [s["contents"] for s in specs[1:] if s["alt"].startswith("ほかのニュース（")]
+    others = [s["contents"] for s in specs[1:]
+              if s["alt"].startswith(("注目ニュース", "その他の見出し（"))]
     assert len(main) + len(others) == len(specs) - 1
     return main, others
 
@@ -566,13 +572,13 @@ def _bubble_datas(bubble) -> list[str]:
 
 
 def test_main_and_others_are_separate_carousels_in_same_genre_order():
-    """主なニュース(big)とほかのニュース(small)は別カルーセル。ジャンル順は両方とも grouped の順。"""
+    """主なニュース(big)と注目ニュース(small・score >= 50)は別カルーセル。ジャンル順は両方とも grouped の順。"""
     grouped = _bulk(["特大", "AI", "株", "テクノロジー", "暗号資産", "話題"], 6)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     main, others = _split_specs(specs)
     assert main and others
-    # 主なニュースの後にほかのニュースが続く(混ざらない)
+    # 主なニュースの後に注目ニュースが続く(混ざらない)
     alts = [s["alt"] for s in specs[1:]]
     assert alts == sorted(alts, key=lambda a: not a.startswith("主なニュース"))
     for b in (b for car in main for b in car["contents"]):
@@ -580,7 +586,7 @@ def test_main_and_others_are_separate_carousels_in_same_genre_order():
         big_ranks = {int(d.rsplit(":", 1)[1]) for d in _bubble_datas(b)}
         assert big_ranks <= {0, 1, 2}  # _bulk は先頭3件が big
     for b in (b for car in others for b in car["contents"]):
-        assert re.fullmatch(r"ほか \d+件", _texts(b["header"])[1])
+        assert re.fullmatch(r"注目 \d+件", _texts(b["header"])[1])  # _bulk の small は score 84〜87
         assert all(int(d.rsplit(":", 1)[1]) >= 3 for d in _bubble_datas(b))
     order = [lc._genre_label(g) for g in grouped]
     main_heads = [_texts(b["header"])[0] for car in main for b in car["contents"]]
@@ -590,7 +596,7 @@ def test_main_and_others_are_separate_carousels_in_same_genre_order():
 
 
 def test_genre_without_big_promotes_top_item_to_main():
-    """big が0件のジャンルは rank 最上位の1件を主なニュースへ(大きい見た目で)上げ、ほか側からは除く。"""
+    """big が0件のジャンルは rank 最上位の1件を主なニュースへ(大きい見た目で)上げ、下の段からは除く。"""
     small_genre = [_small(2, "株"), _small(0, "株"), _small(1, "株")]  # 並びは rank 順でなくてよい
     grouped = {"AI": [_big()], "株": small_genre}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
@@ -603,13 +609,13 @@ def test_genre_without_big_promotes_top_item_to_main():
     assert (title["size"], title.get("weight")) == ("md", "bold")
     assert "詳細を読む" in _texts(stock_main["body"])
     stock_others = others[0]["contents"][0]
-    assert _texts(stock_others["header"]) == ["株", "ほか 2件"]
+    assert _texts(stock_others["header"]) == ["株", "その他 2件"]
     assert _bubble_datas(stock_others) == ["detail:20260608:morning:株:1",
                                            "detail:20260608:morning:株:2"]
 
 
 def test_every_item_appears_exactly_once():
-    """全記事が主かほかのどちらか1か所だけに出る(省略注記が無い量のとき)。"""
+    """全記事が主・注目・その他のどれか1か所だけに出る(省略注記が無い量のとき)。"""
     grouped = {"特大": [_big("特大", 0)], "AI": [_big("AI", 0), _big("AI", 1), _small(2, "AI")],
                "株": [_small(0), _small(1)], "話題": [_small(0, "話題")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
@@ -620,7 +626,12 @@ def test_every_item_appears_exactly_once():
 
 
 def test_six_genres_x25_fits_5_messages_without_omission():
+    # 注目とその他が半々の日(実データに近い比率)。全件が注目の日は要約ぶん重く、
+    # 5通に収まらない分が「省略」になりうる(test_heavy_7_genres_x30_* で上限と件数の勘定を確かめる)
     grouped = _bulk(["特大", "AI", "株", "テクノロジー", "暗号資産", "話題"], 25, summary_len=100)
+    for items in grouped.values():
+        for it in items[3::2]:
+            it.score = 40
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
                             schedule=_HEAVY_SCHEDULE, now=NOW,
                             x_usage={"used": 9870, "remaining": 3_040_677},
@@ -646,6 +657,196 @@ def test_others_overflow_note_in_last_others_carousel():
     assert m
     shown = {d for s in specs[1:] for d in _bubble_datas(s["contents"])}
     assert len(shown) + int(m.group(1)) == sum(len(v) for v in grouped.values())
+
+
+# ---- 注目ニュース/その他の見出し(score で2段・ページ単位のバブル) ----
+
+def _omitted(specs) -> int:
+    blob = json.dumps(_carousels(specs), ensure_ascii=False)
+    return sum(int(n) for n in re.findall(r"ほか (\d+) 件は省略", blob))
+
+
+def _check_accounting(grouped, specs) -> list[str]:
+    """カルーセルに出た記事(重複なし) + 省略件数 = 全件。出た記事の postback data を返す。"""
+    datas = [d for car in _carousels(specs) for d in _bubble_datas(car)]
+    assert len(datas) == len(set(datas))
+    assert set(datas) <= {f"detail:20260608:morning:{g}:{it.rank}"
+                          for g, items in grouped.items() for it in items}
+    assert len(datas) + _omitted(specs) == sum(len(v) for v in grouped.values())
+    return datas
+
+
+def _heads(spec) -> list[list[str]]:
+    return [_texts(b["header"]) for b in spec["contents"]["contents"] if "header" in b]
+
+
+def test_tier_split_by_score_boundary_49_50():
+    """主以外は score 50 以上が注目ニュース、49 以下がその他の見出し。"""
+    grouped = {"AI": [_big(), _small(1, "AI", score=50), _small(2, "AI", score=49)]}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    assert [s["alt"] for s in specs[1:]] == ["主なニュース（AI）", "注目ニュース（AI）",
+                                             "その他の見出し（AI）"]
+    assert _bubble_datas(specs[2]["contents"]) == ["detail:20260608:morning:AI:1"]
+    assert _bubble_datas(specs[3]["contents"]) == ["detail:20260608:morning:AI:2"]
+    assert _heads(specs[2]) == [["AI", "注目 1件"]]
+    assert _heads(specs[3]) == [["AI", "その他 1件"]]
+    assert _texts(specs[0]["contents"])[-1] == GUIDE_ALL
+    assert lc.NOTABLE_MIN_SCORE == 50
+
+
+def test_notable_pages_of_5_with_page_headers():
+    def notable_spec(n):
+        items = [_big("AI")] + [_small(i, "AI", score=80) for i in range(1, n + 1)]
+        specs = lc.digest_specs({"AI": items}, slot="morning", digest_date=D, now=NOW)
+        assert len(specs) == 3 and specs[2]["alt"] == "注目ニュース（AI）"
+        return specs[2]
+
+    spec = notable_spec(12)
+    assert _heads(spec) == [["AI", "注目 1/3"], ["AI", "注目 2/3"], ["AI", "注目 3/3"]]
+    pages = [_bubble_datas(b) for b in spec["contents"]["contents"]]
+    assert [len(p) for p in pages] == [5, 5, 2]
+    assert [d for p in pages for d in p] == [f"detail:20260608:morning:AI:{i}" for i in range(1, 13)]
+    assert _heads(notable_spec(4)) == [["AI", "注目 4件"]]
+    assert _heads(notable_spec(5)) == [["AI", "注目 5件"]]
+    assert _heads(notable_spec(6)) == [["AI", "注目 1/2"], ["AI", "注目 2/2"]]
+    # 新しいページの先頭は区切り線で始めない
+    assert all(b["body"]["contents"][0]["type"] != "separator"
+               for b in notable_spec(12)["contents"]["contents"])
+
+
+def test_brief_pages_of_8_title_and_meta_only():
+    def brief_spec(n):
+        items = [_big("株")] + [_small(i, "株", score=30) for i in range(1, n + 1)]
+        specs = lc.digest_specs({"株": items}, slot="morning", digest_date=D, now=NOW)
+        assert len(specs) == 3 and specs[2]["alt"] == "その他の見出し（株）"
+        return specs[2]
+
+    spec = brief_spec(17)
+    assert _heads(spec) == [["株", "その他 1/3"], ["株", "その他 2/3"], ["株", "その他 3/3"]]
+    assert [len(_bubble_datas(b)) for b in spec["contents"]["contents"]] == [8, 8, 1]
+    assert _heads(brief_spec(6)) == [["株", "その他 6件"]]
+    # 1行は 見出し + 出典・時刻 だけ(要約はタップ先の詳細で読む)
+    rows = [c for c in spec["contents"]["contents"][0]["body"]["contents"] if c.get("action")]
+    assert all(_texts(r) == [f"小さな話題{i}", "@v"] for i, r in enumerate(rows, 1))
+    assert "小要約" not in _texts(spec)
+    title, meta = rows[0]["contents"]
+    assert (title["size"], title["color"], "weight" in title) == ("sm", lc.TEXT_COLOR, False)
+    assert meta["size"] == "xxs" and not meta.get("wrap")  # 出典・時刻は1行
+
+
+def test_tiers_follow_genre_order_and_never_mix_genres_in_a_bubble():
+    order = ["AI", "株", "暗号資産", "話題"]
+    grouped = {g: [_big(g)] + [_small(i, g, score=70 if i % 2 else 30) for i in range(1, 15)]
+               for g in order}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    assert [s["alt"].split("（")[0] for s in specs[1:]] == ["主なニュース", "注目ニュース",
+                                                          "その他の見出し"]
+    labels = [lc._genre_label(g) for g in order]
+    assert specs[2]["alt"] == "注目ニュース（" + "・".join(labels) + "）"
+    for spec, word in ((specs[2], "注目"), (specs[3], "その他")):
+        heads = _heads(spec)
+        # ジャンル順 → ページ順(注目は7件=2ページ、その他は7件=1ページ)
+        if word == "注目":
+            assert heads == [[lb, f"注目 {k}/2"] for lb in labels for k in (1, 2)]
+        else:
+            assert heads == [[lb, "その他 7件"] for lb in labels]
+        for b in spec["contents"]["contents"]:
+            genre = order[labels.index(_texts(b["header"])[0])]
+            assert all(d.split(":")[3] == genre for d in _bubble_datas(b))
+    assert _check_accounting(grouped, specs) and _omitted(specs) == 0
+
+
+def _heavy7(kind: str) -> dict[str, list[NewsItem]]:
+    """7ジャンル×30件(先頭3件 big)・要約100字。kind で主以外の score を決める。"""
+    genres = ["特大", "AI", "株", "暗号資産", "テクノロジー", "話題", "ビジネス"]
+    grouped = _bulk(genres, 30, summary_len=100)
+    for items in grouped.values():
+        for k, it in enumerate(items[3:]):
+            it.score = {"notable": 70, "brief": 30, "mixed": 70 if k % 2 else 30}[kind]
+    return grouped
+
+
+def test_heavy_7_genres_x30_within_limits_for_any_tier_mix():
+    """注目が多い日・その他が多い日・半々の日のどれでも、5通・12枚・48000B・28000B を超えず、
+    全記事がどこかに出るか省略件数に数えられる。段の並びは 主 → 注目 → その他。"""
+    for kind in ("notable", "brief", "mixed"):
+        grouped = _heavy7(kind)
+        specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
+                                schedule=_HEAVY_SCHEDULE, now=NOW,
+                                x_usage={"used": 9870, "remaining": 3_040_677},
+                                line_quota={"limit": 200, "used": 45, "cost": 3})
+        _check_limits_and_coverage(grouped, specs)
+        _check_accounting(grouped, specs)
+        alts = [s["alt"] for s in specs[1:]]
+        assert alts[0].startswith("主なニュース（")
+        if kind == "notable":
+            assert all(a.startswith("注目ニュース（") for a in alts[1:])
+        if kind == "brief":
+            assert all(a.startswith("その他の見出し（") for a in alts[1:])
+            assert _omitted(specs) == 0  # 見出しだけなら 189件でも収まる
+        # 注目が多い日・半々の日は要約ぶん重く、5通に入りきらない分は省略件数に数える
+        # (上の _check_accounting で「出た件数 + 省略件数 = 全件」を確認済み)
+
+
+def _big_main(genres: list[str], n_big: int) -> dict[str, list[NewsItem]]:
+    """主なニュースが重い(長い要約の big が多い)データ。"""
+    out = {}
+    for g in genres:
+        out[g] = [_big(g, r, score=95, title=f"{g}大{r}" + "あ" * 30) for r in range(n_big)]
+        for it in out[g]:
+            it.summary = "大" * 400
+    return out
+
+
+def test_main_needs_two_messages_tiers_get_one_each():
+    """主なニュースが2通要る日は、注目・その他に1通ずつ(合計5)。入らない分は各段の末尾で省略件数を出す。"""
+    genres = ["AI", "株", "暗号資産", "テクノロジー", "話題", "ビジネス", "健康"]
+    grouped = _big_main(genres, 4)  # 1ジャンル約9KB × 7 = 1通(48000B)に入らず2通
+    for g in genres:
+        grouped[g] += [_small(r, g, score=70) for r in range(4, 34)]
+        grouped[g] += [_small(r, g, score=30) for r in range(34, 64)]
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    assert len(specs) == lc.MAX_MESSAGES
+    assert [s["alt"].split("（")[0] for s in specs[1:]] == ["主なニュース", "主なニュース",
+                                                          "注目ニュース", "その他の見出し"]
+    for spec in specs[3:]:
+        assert re.fullmatch(r"ほか \d+ 件は省略", _texts(spec["contents"]["contents"][-1])[0])
+    # 主なニュースは省略しない(主 → 注目 → その他の優先度)
+    main_datas = {d for s in specs[1:3] for d in _bubble_datas(s["contents"])}
+    assert main_datas == {f"detail:20260608:morning:{g}:{r}" for g in genres for r in range(4)}
+    _check_accounting(grouped, specs)
+
+
+def test_overflow_continuation_packs_notable_then_brief_in_one_message():
+    """注目もその他も1通に収まらない日は、各段の1通目の後に「続き」を1通。続きは段を混ぜて
+    注目 → その他の並び順で詰める(注目の続きを優先して1通使い切らない)。"""
+    genres = ["AI", "株", "暗号資産", "テクノロジー", "話題"]
+    grouped = {}
+    for g in genres:
+        grouped[g] = [_big(g, 0)]
+        grouped[g] += [_small(r, g, score=70) for r in range(1, 11)]     # 注目10件=2ページ
+        grouped[g] += [_small(r, g, score=30) for r in range(11, 29)]    # その他18件=3ページ
+        for it in grouped[g][1:]:
+            it.summary = "要" * 100
+            it.title = f"{g}の話題{it.rank:02d}" + "あ" * 30
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    assert len(specs) == lc.MAX_MESSAGES
+    kinds = [s["alt"].split("（")[0] for s in specs[1:]]
+    assert kinds == ["主なニュース", "注目ニュース", "その他の見出し", "注目ニュース・その他の見出し"]
+    notes = [h[1] for h in _heads(specs[4])]
+    # 続きの1通: 注目の続き → その他の続き(段の境目は1回だけ)
+    first_brief = next(i for i, n in enumerate(notes) if n.startswith("その他"))
+    assert notes[:first_brief] and all(n.startswith("注目") for n in notes[:first_brief])
+    assert all(n.startswith("その他") for n in notes[first_brief:])
+    # 注目の1通目 + 続きの注目部分を並べると、注目の全記事がジャンル順 → rank 順に1回ずつ並ぶ
+    cont = specs[4]["contents"]["contents"][:first_brief]
+    notable_seq = _bubble_datas(specs[2]["contents"]) + [d for b in cont for d in _bubble_datas(b)]
+    assert notable_seq == [f"detail:20260608:morning:{g}:{r}" for g in genres for r in range(1, 11)]
+    assert _omitted(specs) == 0
+    _check_accounting(grouped, specs)
 
 
 # ---- 詳細 ----
