@@ -1,0 +1,44 @@
+{# 残り使用量パネル。ニュース画面の右列と管理画面の先頭で共用する(context: usage) #}
+<section class="usage" id="usage" aria-labelledby="usage-h">
+  <h2 class="rail-h" id="usage-h">残り使用量</h2>
+
+  <div class="meter-card {% if usage.x and usage.x.low %}is-low{% endif %}">
+    <h3 class="meter-name">X（ニュース取得）</h3>
+    {% if usage.x %}
+      {% set x = usage.x %}
+      <p class="meter-big">
+        {% if x.days_left is not none %}あと約<b>{{ "{:,}".format(x.days_left) }}</b>日{% else %}<b>{{ "{:,}".format(x.remaining) }}</b>クレジット{% endif %}
+      </p>
+      <p class="meter-sub">残り {{ "{:,}".format(x.remaining) }} クレジット（約${{ "%.2f"|format(x.usd) }}）</p>
+      {% if x.low %}<p class="meter-warn">残りが少なくなっています。twitterapi.io でチャージしてください。</p>{% endif %}
+      <div class="bars" role="img" aria-label="直近{{ x.history|length }}回の消費クレジット">
+        {% for h in x.history %}<span class="bar" style="--h: {{ [h.pct, 4]|max }}%" title="{{ h.date.month }}/{{ h.date.day }}  {{ '{:,}'.format(h.used) }}"></span>{% endfor %}
+      </div>
+      <dl class="meter-facts">
+        <div><dt>1回の平均</dt><dd>{{ "{:,}".format(x.avg) }}</dd></div>
+        <div><dt>前回（{{ x.as_of.month }}/{{ x.as_of.day }}）</dt><dd>{{ "{:,}".format(x.last_used) }}</dd></div>
+      </dl>
+    {% else %}
+      <p class="meter-none">まだ記録がありません。次の配信で収集した後に表示されます。</p>
+    {% endif %}
+  </div>
+
+  <div class="meter-card {% if usage.line and (usage.line.low or not usage.line.enough) %}is-low{% endif %}">
+    <h3 class="meter-name">LINE（配信）</h3>
+    {% if usage.line %}
+      {% set l = usage.line %}
+      <p class="meter-big">今月 残り<b>{{ l.remaining }}</b>通<span class="meter-of"> / {{ l.limit }}</span></p>
+      <div class="gauge" role="img" aria-label="今月 {{ l.limit }}通のうち {{ l.used }}通を使用">
+        <span style="width: {{ l.pct_used }}%"></span>
+      </div>
+      <p class="meter-sub">今月 {{ l.used }}通 使用・1回の配信で {{ l.cost }}通</p>
+      {% if l.enough %}
+        <p class="meter-ok">月末まで毎朝配信しても足ります（あと{{ l.days_left }}回 × {{ l.cost }}通 = {{ l.need }}通）。</p>
+      {% else %}
+        <p class="meter-warn">月末まで毎朝配信すると {{ l.need - l.remaining }}通 足りません（あと{{ l.days_left }}回 × {{ l.cost }}通 = {{ l.need }}通）。「今すぐ配信」は控えてください。</p>
+      {% endif %}
+    {% else %}
+      <p class="meter-none">LINE から取得できませんでした。しばらくしてから開き直してください。</p>
+    {% endif %}
+  </div>
+</section>

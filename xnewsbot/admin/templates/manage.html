@@ -1,89 +1,106 @@
 {% extends "base.html" %}
 {% block title %}管理 — XNewsBot{% endblock %}
 {% block content %}
-
-{% if flash_ok %}<div class="flash ok">{{ flash_ok }}</div>{% endif %}
-{% if flash_err %}<div class="flash err">{{ flash_err }}</div>{% endif %}
-
-<section class="panel">
-  <h2>今すぐ</h2>
-  <p class="hint">定刻を待たず、いま最新ニュースを収集→キュレーションします(バックグラウンド実行・完了まで約10分)。</p>
-  <div class="run-actions">
-    <form method="post" action="/manage/run" class="needs-confirm"
-          data-confirm="今すぐ全購読者へ配信します。&#10;最新ニュースを収集・要約し、LINE で購読者全員に送信します。&#10;これは無料枠(200通/月)を消費する取り消せない操作です。&#10;&#10;本当に配信しますか？">
-      <input type="hidden" name="mode" value="now">
-      <button type="submit" class="warn">今すぐ配信（全購読者へ）</button>
-    </form>
-    <form method="post" action="/manage/run">
-      <input type="hidden" name="mode" value="refresh">
-      <button type="submit" class="ghost">今すぐ更新（配信なし・無料）</button>
-    </form>
+<div class="edition-bar">
+  <div class="wrap edition-inner">
+    <div class="edition">
+      <h1 class="edition-date">管理</h1>
+      <p class="edition-sub">配信・収集・ジャンルの設定と、残り使用量の確認</p>
+    </div>
   </div>
-</section>
+</div>
 
-<section class="panel">
-  <h2>APIキー(twitterapi.io)</h2>
-  <p class="hint">上が最優先。レート制限(429)・失敗時に下のキーへ自動フォールバックします。値はマスク表示です。<br>
-    この画面で扱うのは <code>.key</code> ファイルのキーです(.env や Keychain のキーも収集には使われますが、ここには表示・編集しません)。</p>
-  {% if keys %}
-  <ol class="keys">
-    {% for k in keys %}
-    <li>
-      <code class="masked">{{ k.masked }}</code>
-      <span class="key-actions">
-        <form method="post" action="/manage/keys"><input type="hidden" name="action" value="up"><input type="hidden" name="index" value="{{ k.index }}"><button {% if loop.first %}disabled{% endif %} title="上へ">▲</button></form>
-        <form method="post" action="/manage/keys"><input type="hidden" name="action" value="down"><input type="hidden" name="index" value="{{ k.index }}"><button {% if loop.last %}disabled{% endif %} title="下へ">▼</button></form>
-        <form method="post" action="/manage/keys" class="needs-confirm" data-confirm="このAPIキーを削除しますか？"><input type="hidden" name="action" value="delete"><input type="hidden" name="index" value="{{ k.index }}"><button class="danger" title="削除">✕</button></form>
-      </span>
-    </li>
-    {% endfor %}
-  </ol>
-  {% else %}
-  <p class="empty"><code>.key</code> にキーはありません。.env や Keychain に設定済みなら収集は動作します。ここで追加すると最優先で使われます。</p>
-  {% endif %}
-  <form method="post" action="/manage/keys" class="add-key">
-    <input type="hidden" name="action" value="add">
-    <input type="password" name="value" placeholder="新しい APIキーを貼り付け" autocomplete="off" required>
-    <button type="submit">追加</button>
-  </form>
-</section>
+<div class="wrap layout">
+  <main class="main-col manage">
+    {% if flash_ok %}<div class="flash ok" role="status">{{ flash_ok }}</div>{% endif %}
+    {% if flash_err %}<div class="flash err" role="alert">{{ flash_err }}</div>{% endif %}
 
-<section class="panel">
-  <h2>収集パラメータ</h2>
-  <form method="post" action="/manage/collect" class="grid-form">
-    {% for c in collect %}
-    <label>{{ c.label }}<input type="number" step="any" min="{{ c.min }}" name="{{ c.env }}" value="{{ c.value }}"></label>
-    {% endfor %}
-    <button type="submit">保存</button>
-  </form>
-</section>
+    <section class="panel">
+      <h2>今すぐ</h2>
+      <p class="hint">定刻を待たず、いま最新ニュースを収集して要約します。バックグラウンドで動き、終わるまで約20分かかります。</p>
+      <div class="run-actions">
+        <form method="post" action="/manage/run">
+          <input type="hidden" name="mode" value="refresh">
+          <button type="submit" class="btn">今すぐ更新（配信しない・無料）</button>
+        </form>
+        <form method="post" action="/manage/run" class="needs-confirm"
+              data-confirm="今すぐ全購読者へ配信します。&#10;最新ニュースを収集・要約し、LINE で購読者全員に送信します。&#10;これは無料枠(200通/月)を消費する取り消せない操作です。&#10;&#10;本当に配信しますか？">
+          <input type="hidden" name="mode" value="now">
+          <button type="submit" class="btn btn-warn">今すぐ配信（全購読者へ）</button>
+        </form>
+      </div>
+      <p class="hint small">「今すぐ配信」は LINE の通数を消費します。残りは右の「残り使用量」で確認できます。</p>
+    </section>
 
-<section class="panel">
-  <h2>配信時刻</h2>
-  <p class="hint">変更すると配信ジョブ(launchd)を再登録します。launchd は定刻の15分前に起動し、収集→送信します。</p>
-  <div class="delivery">
-    {% for slot, label in [("morning", "朝"), ("evening", "夜")] %}
-    <form method="post" action="/manage/delivery" class="needs-confirm"
-          data-confirm="{{ label }}の配信時刻を変更し、配信ジョブを再登録します。よろしいですか？">
-      <input type="hidden" name="slot" value="{{ slot }}">
-      <label>{{ label }}の配信時刻
-        <input type="time" name="hhmm" required
-               value="{% if delivery[slot] %}{{ delivery[slot][:2] }}:{{ delivery[slot][2:] }}{% endif %}">
-      </label>
-      <button type="submit">変更</button>
-    </form>
-    {% endfor %}
-  </div>
-</section>
+    <section class="panel">
+      <h2>配信時刻</h2>
+      <p class="hint">変更すると配信ジョブ（launchd）を登録し直します。</p>
+      <div class="delivery">
+        {% for slot, label in [("morning", "朝"), ("evening", "夜")] %}
+        <form method="post" action="/manage/delivery" class="needs-confirm inline-form"
+              data-confirm="{{ label }}の配信時刻を変更し、配信ジョブを再登録します。よろしいですか？">
+          <input type="hidden" name="slot" value="{{ slot }}">
+          <label>{{ label }}の配信時刻
+            <input type="time" name="hhmm" required
+                   value="{% if delivery[slot] %}{{ delivery[slot][:2] }}:{{ delivery[slot][2:] }}{% endif %}">
+          </label>
+          <button type="submit" class="btn">変更</button>
+        </form>
+        {% endfor %}
+      </div>
+    </section>
 
-<section class="panel">
-  <h2>ジャンル(genres.toml)</h2>
-  <p class="hint">TOML 全文を編集して保存します。保存時に構文・必須項目(key 重複など)を検証します。</p>
-  <form method="post" action="/manage/genres" class="needs-confirm"
-        data-confirm="genres.toml を上書き保存します。よろしいですか？">
-    <textarea name="toml_text" spellcheck="false" rows="22">{{ genres_text }}</textarea>
-    <button type="submit">保存</button>
-  </form>
-</section>
+    <section class="panel">
+      <h2>収集パラメータ</h2>
+      <form method="post" action="/manage/collect" class="grid-form">
+        {% for c in collect %}
+        <label>{{ c.label }}<input type="number" step="any" min="{{ c.min }}" name="{{ c.env }}" value="{{ c.value }}"></label>
+        {% endfor %}
+        <div class="form-end"><button type="submit" class="btn btn-primary">保存</button></div>
+      </form>
+    </section>
 
+    <section class="panel">
+      <h2>APIキー（twitterapi.io）</h2>
+      <p class="hint">上から順に使い、失敗やレート制限（429）のときは下のキーへ切り替えます。値は伏せて表示します。
+        ここで扱うのは <code>.key</code> ファイルのキーだけです（Keychain や .env のキーも収集には使われます）。</p>
+      {% if keys %}
+      <ol class="keys">
+        {% for k in keys %}
+        <li>
+          <span class="key-no">{{ loop.index }}</span>
+          <code class="masked">{{ k.masked }}</code>
+          <span class="key-actions">
+            <form method="post" action="/manage/keys"><input type="hidden" name="action" value="up"><input type="hidden" name="index" value="{{ k.index }}"><button class="icon-btn" {% if loop.first %}disabled{% endif %} aria-label="上へ" title="上へ">↑</button></form>
+            <form method="post" action="/manage/keys"><input type="hidden" name="action" value="down"><input type="hidden" name="index" value="{{ k.index }}"><button class="icon-btn" {% if loop.last %}disabled{% endif %} aria-label="下へ" title="下へ">↓</button></form>
+            <form method="post" action="/manage/keys" class="needs-confirm" data-confirm="このAPIキーを削除しますか？"><input type="hidden" name="action" value="delete"><input type="hidden" name="index" value="{{ k.index }}"><button class="icon-btn danger" aria-label="削除" title="削除">削除</button></form>
+          </span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="hint"><code>.key</code> にキーはありません。Keychain や .env に設定済みなら収集は動きます。ここで追加すると最優先で使われます。</p>
+      {% endif %}
+      <form method="post" action="/manage/keys" class="add-key">
+        <input type="hidden" name="action" value="add">
+        <input type="password" name="value" placeholder="新しい APIキーを貼り付け" autocomplete="off" required aria-label="新しい APIキー">
+        <button type="submit" class="btn">追加</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <h2>ジャンル（genres.toml）</h2>
+      <p class="hint">TOML 全文を編集して保存します。保存のときに書き方と必須項目（key の重複など）を確かめます。</p>
+      <form method="post" action="/manage/genres" class="needs-confirm"
+            data-confirm="genres.toml を上書き保存します。よろしいですか？">
+        <textarea name="toml_text" spellcheck="false" rows="24" aria-label="genres.toml">{{ genres_text }}</textarea>
+        <div class="form-end"><button type="submit" class="btn btn-primary">保存</button></div>
+      </form>
+    </section>
+  </main>
+
+  <aside class="rail">
+    {% include "_usage.html" %}
+  </aside>
+</div>
 {% endblock %}

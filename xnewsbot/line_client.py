@@ -805,9 +805,12 @@ def digest_specs(
 DETAIL_MAX_CHARS = 4800
 
 
-def detail_spec(item: NewsItem) -> dict:
+def detail_spec(item: NewsItem, payload: str | None = None) -> dict:
     """「詳細を読む」タップで返す本文。見出しの再掲で終わらせず長め解説(detail。
-    無ければ summary)を載せる。出典は本文を載せず、媒体名/@ハンドルと URL だけ残す。"""
+    無ければ summary)を載せる。出典は本文を載せず、媒体名/@ハンドルと URL だけ残す。
+
+    下に「AI解説」のクイックリプライを付ける。payload は詳細タップと同じ記事キー
+    (無ければ id)で、押すと postback `explain:<payload>` が来る(onboarding._handle_explain)。"""
     lines = [f"【{_tag_text(item)}】{item.title}"]
 
     body = item.detail or item.summary
@@ -829,7 +832,8 @@ def detail_spec(item: NewsItem) -> dict:
     text = "\n".join(lines)
     if len(text) > DETAIL_MAX_CHARS:
         text = text[:DETAIL_MAX_CHARS] + "…"
-    return text_spec(text)
+    key = payload if payload is not None else str(item.id)
+    return text_spec(text, [_qr("AI解説", f"explain:{key}")])
 
 
 # ---------------------------------------------------------------- SDK 送信
@@ -899,6 +903,36 @@ class LineMessenger:
             return {"limit": int(quota.value), "used": int(used), "cost": int(cost)}
         except Exception:  # noqa: BLE001 — 残量表示のために配信を止めない
             log.warning("LINE の残り通数を取得できませんでした", exc_info=True)
+            return None
+
+    # 以下2つは AI解説の通数ガード用。fetch_quota を宛先ごとに呼ぶと上限・使用数を宛先の数だけ
+    # 取り直すので、上限・使用数(1回)と人数(宛先ごと)を分けて取れるようにする。
+    def fetch_limit_used(self) -> dict | None:
+        """今月の上限と使用数 {"limit", "used"}。上限なし・取得失敗は None。"""
+        t = _QUOTA_TIMEOUT
+        try:
+            api = self._api()
+            quota = api.get_message_quota(_request_timeout=t)
+            if str(getattr(quota.type, "value", quota.type)) != "limited":
+                return None
+            used = api.get_message_quota_consumption(_request_timeout=t).total_usage
+            return {"limit": int(quota.value), "used": int(used)}
+        except Exception:  # noqa: BLE001 — 取れなければ呼び出し側が安全側(送らない)に倒す
+            log.warning("LINE の上限・使用数を取得できませんでした", exc_info=True)
+            return None
+
+    def fetch_member_count(self, to: str) -> int | None:
+        """to へ push 1回で消費する通数(グループ/ルームは人数、ユーザーは1)。取得失敗は None。"""
+        if not (to.startswith("C") or to.startswith("R")):
+            return 1
+        t = _QUOTA_TIMEOUT
+        try:
+            api = self._api()
+            if to.startswith("C"):
+                return int(api.get_group_member_count(to, _request_timeout=t).count)
+            return int(api.get_room_member_count(to, _request_timeout=t).count)
+        except Exception:  # noqa: BLE001
+            log.warning("LINE の人数を取得できませんでした to=%s", to, exc_info=True)
             return None
 
     def reply(self, reply_token: str, specs: list[dict]) -> None:

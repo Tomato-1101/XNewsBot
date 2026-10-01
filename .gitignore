@@ -8,3 +8,4 @@ __pycache__/
 .DS_Store
 xnewsbot.db-wal
 xnewsbot.db-shm
+seen_models.json

@@ -9,6 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from ..config import get_settings
 from ..db import get_session
+from ..explain import make_line_starter
 from ..line_client import LineMessenger
 from ..onboarding import handle_event
 from ..scheduler import make_deliver_now
@@ -67,13 +68,15 @@ def _process(body: str, signature: str) -> None:
 
     messenger = LineMessenger(settings.line_channel_access_token)
     deliver_now = make_deliver_now(settings)
+    explain_start = make_line_starter(messenger)
     with get_session() as session:
         for ev in events:
             norm = _normalize(ev)
             if not norm:
                 continue
             try:
-                handle_event(session, messenger, norm, deliver_now=deliver_now)
+                handle_event(session, messenger, norm, deliver_now=deliver_now,
+                             explain_start=explain_start)
             except Exception:
                 log.exception("イベント処理に失敗: %s", norm.get("kind"))
 

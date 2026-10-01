@@ -1,67 +1,164 @@
 {% extends "base.html" %}
-{% block title %}ニュース — XNewsBot{% endblock %}
+{% block title %}{{ cur_date_jp }} {{ edition }} — XNewsBot{% endblock %}
 
-{% macro tags(item) %}
-  {% if item.tags %}<span class="tags">{% for t in item.tags %}<span class="chip">{{ t }}</span>{% endfor %}</span>{% endif %}
+{% macro meta(item) %}
+  {% if item.sources or item.ago or item.tags %}
+  <p class="story-meta">
+    {% if item.sources %}<span class="srcs">{% for s in item.sources[:4] %}{% if s.url %}<a href="{{ s.url }}" target="_blank" rel="noopener noreferrer">{{ s.name }}</a>{% else %}<span>{{ s.name }}</span>{% endif %}{% endfor %}{% if item.sources|length > 4 %}<span>ほか{{ item.sources|length - 4 }}件</span>{% endif %}</span>{% endif %}
+    {% if item.ago %}<span>{{ item.ago }}</span>{% endif %}
+    {% for t in item.tags %}<span class="also">{{ t }}</span>{% endfor %}
+  </p>
+  {% endif %}
 {% endmacro %}
 
-{% macro sources(item) %}
-  {% if item.source_urls %}
-    <div class="sources">
-      {% if item.top_view_count %}<span class="views">👁 {{ "{:,}".format(item.top_view_count) }}</span>{% endif %}
-      {% for url in item.source_urls %}<a href="{{ url }}" target="_blank" rel="noopener noreferrer">元投稿{{ loop.index }}</a>{% endfor %}
+{% macro more(item, label="続きを読む") %}
+  <div class="story-actions">
+    {% if item.detail %}
+    <details class="story-more"><summary>{{ label }}</summary><div class="story-detail">{{ item.detail }}</div></details>
+    {% endif %}
+    {# AI解説: 押されたときだけ生成する。作成済みなら最初から出す(app.js が data-explain-id で取得・表示) #}
+    <div class="explain" data-explain-id="{{ item.id }}">
+      <button type="button" class="explain-btn" {% if item.explanation %}hidden{% endif %}>AI解説</button>
+      <p class="explain-status" role="status" hidden></p>
+      <div class="explain-out" {% if not item.explanation %}hidden{% endif %}>{{ item.explanation or "" }}</div>
     </div>
-  {% endif %}
+  </div>
 {% endmacro %}
 
 {% block content %}
-<div class="toolbar">
-  <form class="filters" method="get" action="/">
-    <select name="date_str" onchange="this.form.submit()" aria-label="日付">
-      {% if not avail_dates %}<option value="{{ cur_date }}">{{ cur_date }}</option>{% endif %}
-      {% for d in avail_dates %}<option value="{{ d }}" {% if d == cur_date %}selected{% endif %}>{{ d }}</option>{% endfor %}
-    </select>
-    <div class="slot-tabs">
-      {% for s, label in slot_labels.items() %}
-      <a class="slot-tab {% if s == cur_slot %}active{% endif %}" href="/?date_str={{ cur_date }}&slot={{ s }}">{{ label }}</a>
-      {% endfor %}
+<div class="edition-bar">
+  <div class="wrap edition-inner">
+    <div class="edition">
+      <h1 class="edition-date">{{ cur_date_jp }}</h1>
+      <p class="edition-sub"><span class="edition-name">{{ edition }}</span>{% if total %}{{ total }}本のニュース{% endif %}{% if not is_latest and avail_dates %}<a class="to-latest" href="/">最新号へ</a>{% endif %}</p>
     </div>
-  </form>
-  <span class="count">{{ total }} 件</span>
+    <form class="edition-nav" method="get" action="/">
+      {% if older %}<a class="step" href="/?date_str={{ older }}" aria-label="前の日">前の日</a>{% else %}<span class="step is-off">前の日</span>{% endif %}
+      <select name="date_str" onchange="this.form.submit()" aria-label="日付を選ぶ">
+        {% if cur_date not in avail_dates %}<option value="{{ cur_date }}" selected>{{ cur_date }}</option>{% endif %}
+        {% for d in avail_dates %}<option value="{{ d }}" {% if d == cur_date %}selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+      {% if newer %}<a class="step" href="/?date_str={{ newer }}" aria-label="次の日">次の日</a>{% else %}<span class="step is-off">次の日</span>{% endif %}
+      {% if avail_slots|length > 1 %}
+      <span class="slot-switch">
+        {% for s in avail_slots %}<a href="/?date_str={{ cur_date }}&slot={{ s }}" {% if s == cur_slot %}aria-current="true"{% endif %}>{{ slot_labels[s] }}</a>{% endfor %}
+      </span>
+      {% endif %}
+    </form>
+    <a class="quick-usage" href="#usage" aria-label="残り使用量へ">
+      <span class="qu {% if usage.x and usage.x.low %}is-low{% endif %}"><i>X</i>{% if usage.x and usage.x.days_left is not none %}あと約{{ "{:,}".format(usage.x.days_left) }}日{% elif usage.x %}{{ "{:,}".format(usage.x.remaining) }}{% else %}—{% endif %}</span>
+      <span class="qu {% if usage.line and (usage.line.low or not usage.line.enough) %}is-low{% endif %}"><i>LINE</i>{% if usage.line %}残り{{ usage.line.remaining }}通{% else %}—{% endif %}</span>
+    </a>
+  </div>
 </div>
 
-{% if not sections %}
-  <p class="empty">この日付・スロットのニュースはまだありません。</p>
+{% if market %}
+<div class="ticker" aria-label="市況（前日終値）">
+  <div class="wrap ticker-inner">
+    {% for m in market %}
+    <span class="tick"><span class="tick-label">{{ m.label }}</span><span class="tick-value">{{ m.value }}</span><span class="tick-chg {{ m.trend }}">{{ m.change }}</span></span>
+    {% endfor %}
+  </div>
+</div>
 {% endif %}
 
-{% for sec in sections %}
-<section class="genre">
-  <h2 class="genre-title">{{ sec.label }}</h2>
+{% if sections %}
+<nav class="genre-nav" aria-label="ジャンル">
+  <div class="wrap genre-nav-inner">
+    {% if points %}<a href="#points">要点</a>{% endif %}
+    {% for sec in sections %}<a href="#g-{{ loop.index }}" style="--g: {{ sec.color }}">{{ sec.label }}</a>{% endfor %}
+    {% if schedule %}<a href="#schedule">今日の予定</a>{% endif %}
+    <a href="#usage">残り使用量</a>
+  </div>
+</nav>
+{% endif %}
 
-  {% for item in sec.big %}
-  <article class="card big">
-    <h3>{{ item.title }}</h3>
-    {{ tags(item) }}
-    <p class="summary">{{ item.summary }}</p>
-    {% if item.detail %}<details><summary>詳しく読む</summary><p class="detail">{{ item.detail }}</p></details>{% endif %}
-    {{ sources(item) }}
-  </article>
-  {% endfor %}
+<div class="wrap layout">
+  <main class="main-col">
+    {% if not sections %}
+    <div class="empty">
+      <p class="empty-h">{{ cur_date_jp }}の{{ edition }}はまだありません。</p>
+      <p>朝の配信（8:00）の準備が終わると、ここに並びます。{% if avail_dates %}<a href="/">最新号を開く</a>{% endif %}</p>
+    </div>
+    {% endif %}
 
-  {% if sec.small %}
-  <ul class="small-list">
-    {% for item in sec.small %}
-    <li class="card small">
-      <details>
-        <summary><span class="small-title">{{ item.title }}</span> {{ tags(item) }}</summary>
-        <p class="summary">{{ item.summary }}</p>
-        {% if item.detail %}<p class="detail">{{ item.detail }}</p>{% endif %}
-        {{ sources(item) }}
-      </details>
-    </li>
+    {% if points %}
+    <section class="points" id="points" aria-labelledby="points-h">
+      <h2 class="points-h" id="points-h">今日の要点</h2>
+      <ol>
+        {% for p in points %}
+        <li><a href="#n-{{ p.id }}"><span class="pt-genre" style="--g: {{ p.color }}">{{ p.genre }}</span><span class="pt-title">{{ p.title }}</span></a></li>
+        {% endfor %}
+      </ol>
+    </section>
+    {% endif %}
+
+    {% for sec in sections %}
+    <section class="genre" id="g-{{ loop.index }}" style="--g: {{ sec.color }}" aria-labelledby="gh-{{ loop.index }}">
+      <header class="genre-head">
+        <h2 id="gh-{{ loop.index }}">{{ sec.label }}</h2>
+        <span class="genre-count">{{ sec.main|length + sec.others|length }}本</span>
+      </header>
+
+      {% set lead = sec.main[0] %}
+      <article class="story lead" id="n-{{ lead.id }}">
+        <h3 class="story-title">{{ lead.title }}</h3>
+        {% if lead.summary %}<p class="story-summary">{{ lead.summary }}</p>{% endif %}
+        {{ meta(lead) }}
+        {{ more(lead) }}
+      </article>
+
+      {% if sec.main|length > 1 %}
+      <div class="seconds">
+        {% for item in sec.main[1:] %}
+        <article class="story second" id="n-{{ item.id }}">
+          <h3 class="story-title">{{ item.title }}</h3>
+          {% if item.summary %}<p class="story-summary">{{ item.summary }}</p>{% endif %}
+          {{ meta(item) }}
+          {{ more(item) }}
+        </article>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if sec.others %}
+      <h3 class="others-h">ほかのニュース</h3>
+      <ul class="briefs">
+        {% for item in sec.others %}
+        <li class="brief" id="n-{{ item.id }}">
+          <h4 class="brief-title">{{ item.title }}</h4>
+          {% if item.summary %}<p class="brief-summary">{{ item.summary }}</p>{% endif %}
+          {{ meta(item) }}
+          {{ more(item, "詳しく") }}
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
     {% endfor %}
-  </ul>
-  {% endif %}
-</section>
-{% endfor %}
+  </main>
+
+  <aside class="rail">
+    {% include "_usage.html" %}
+
+    {% if schedule %}
+    <section class="schedule" id="schedule" aria-labelledby="schedule-h">
+      <h2 class="rail-h" id="schedule-h">今日の予定</h2>
+      <ul>
+        {% for ev in schedule %}
+        <li class="{% if ev.past %}is-past{% endif %}">
+          <span class="ev-time">{{ ev.time }}</span>
+          <span class="ev-body">
+            <span class="ev-name">{% if ev.major %}<em class="ev-major">重要</em>{% endif %}{{ ev.name }}</span>
+            {% if ev.result or ev.forecast or ev.previous %}
+            <span class="ev-figs">{% if ev.result %}<b>結果 {{ ev.result }}</b>{% endif %}{% if ev.forecast %}<span>予想 {{ ev.forecast }}</span>{% endif %}{% if ev.previous %}<span>前回 {{ ev.previous }}</span>{% endif %}</span>
+            {% endif %}
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+  </aside>
+</div>
 {% endblock %}

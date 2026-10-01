@@ -12,17 +12,20 @@
 
 from __future__ import annotations
 
+import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
-from . import digest
+from . import digest, explain, mockdata, quota
 from . import line_client as lc
-from . import mockdata
 from .genres import GENRE_KEYS, SELECTABLE_KEYS
-from .models import SLOT_LABEL, NewsItem, Subscriber
+from .models import SLOT_LABEL, GenreDigest, NewsItem, Subscriber
+
+log = logging.getLogger("xnewsbot.onboarding")
 
 # deliver_now(sub) : その購読者へ「今すぐ」配信する(非同期/別セッションで実行する想定)
 DeliverNow = Callable[[Subscriber], None]
@@ -76,6 +79,7 @@ def handle_event(
     ev: dict,
     *,
     deliver_now: DeliverNow | None = None,
+    explain_start: explain.ExplainStart | None = None,
 ) -> None:
     kind = ev.get("kind")
     reply_token = ev.get("reply_token", "")
@@ -99,7 +103,8 @@ def handle_event(
         _handle_message(session, messenger, sub, ev.get("text", ""), reply_token,
                         deliver_now, target_id)
     elif kind == "postback":
-        _handle_postback(session, messenger, sub, ev.get("data", ""), reply_token, deliver_now)
+        _handle_postback(session, messenger, sub, ev.get("data", ""), reply_token, deliver_now,
+                         explain_start, target_id)
 
 
 # ----------------------------------------------------------------- handlers
@@ -222,7 +227,9 @@ def _handle_message(session, messenger, sub: Subscriber, text: str, reply_token:
 
 
 def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token: str,
-                     deliver_now: DeliverNow | None) -> None:
+                     deliver_now: DeliverNow | None,
+                     explain_start: explain.ExplainStart | None = None,
+                     target_id: str | None = None) -> None:
     if data.startswith("genre:"):
         key = data.split(":", 1)[1]
         if key in SELECTABLE_KEYS:
@@ -315,6 +322,11 @@ def _handle_postback(session, messenger, sub: Subscriber, data: str, reply_token
         # 「そのほかの見出し」の行タップ。当該ニュースの詳細(要約+元ポスト)を返す。
         _handle_detail(session, messenger, data.split(":", 1)[1], reply_token)
 
+    elif data.startswith("explain:"):
+        # 詳細の下の「AI解説」。押されたトーク(グループならグループ)へ解説を届ける。
+        _handle_explain(session, messenger, sub, data.split(":", 1)[1], reply_token,
+                        explain_start, target_id or sub.line_user_id)
+
     else:
         messenger.reply(reply_token, [lc.menu_spec("メニュー")])
 
@@ -330,7 +342,81 @@ def _handle_detail(session, messenger, payload: str, reply_token: str) -> None:
         messenger.reply(reply_token, [lc.text_spec(
             "この記事は見つかりませんでした(配信が更新された可能性があります)。")])
         return
-    messenger.reply(reply_token, [lc.detail_spec(item)])
+    messenger.reply(reply_token, [lc.detail_spec(item, payload.strip())])
+
+
+EXPLAIN_RUNNING_MSG = "いま作成中です。届かないときは、少し後にもう一度押すとすぐ表示します。"
+EXPLAIN_BUSY_MSG = "いまほかのAI解説を作っています。少し後にもう一度押してください。"
+
+
+def _is_mock_item(session, item: NewsItem) -> bool:
+    """レイアウト確認用のモック記事(架空の内容)か。"""
+    gd = session.get(GenreDigest, item.genre_digest_id)
+    return gd is not None and gd.digest_date == mockdata.MOCK_DATE
+
+
+def _handle_explain(session, messenger, sub: Subscriber, payload: str, reply_token: str,
+                    explain_start: explain.ExplainStart | None, to: str) -> None:
+    """「AI解説」の postback。作成済みは reply(無料)で返し、無ければ裏で作って push で届ける。
+
+    push は LINE 無料枠(200通/月)を使うので、作成中の分と今回の分を引いても
+    月末までの朝の配信に要る通数を残せるときだけ受ける。断るときは reply(無料)で理由を伝える。"""
+    def say(text: str) -> None:
+        messenger.reply(reply_token, [lc.text_spec(text)])
+
+    item = _resolve_detail_item(session, payload)
+    if item is None:
+        say("この記事は見つかりませんでした(配信が更新された可能性があります)。")
+        return
+    if _is_mock_item(session, item):
+        say("この記事はレイアウト確認用のサンプル(架空の内容)なので、AI解説は作れません。")
+        return
+    row = explain.get(session, item.id, item.title)
+    st = explain.status_of(row)
+    if st == "done":
+        say(explain.line_text(item.title, row.text))
+        return
+    if st == "running":
+        say(EXPLAIN_RUNNING_MSG)
+        return
+    if explain_start is None:
+        say("いまはAI解説を使えません。")
+        return
+    now_local = datetime.now(ZoneInfo(sub.tz))
+    if explain.in_quiet_hours(now_local):
+        say("朝の配信の準備中(7:00〜8:30)はAI解説を受け付けていません。8:30以降にもう一度押してください。")
+        return
+    if explain.running_count(session) >= explain.MAX_RUNNING:  # 通数の API を叩く前に断れる分は断る
+        say(EXPLAIN_BUSY_MSG)
+        return
+
+    q = quota.fetch_extra_push(messenger, session, to, now_local)
+    if q is None:
+        say("LINEの送信枠の残りを確認できなかったため、朝の配信を守るためにAI解説は使えません。"
+            "時間をおいてもう一度お試しください。")
+        return
+
+    # 判定と確保の間に別の押下が確保すると、その分を数え漏らす。webhook 内は1区間にする
+    with explain.LINE_CLAIM_LOCK:
+        reserved = explain.reserved_push_cost(session)
+        token = None
+        if quota.push_allowed(q["remaining"], reserved, q["cost"], q["need"]):
+            token = explain.claim(session, item.id, title=item.title, push_to=to,
+                                  push_cost=q["cost"])
+    if token is None:
+        if not quota.push_allowed(q["remaining"], reserved, q["cost"], q["need"]):
+            say("今月のLINEの送信枠が残り少ないため、朝の配信を守るためにAI解説は使えません"
+                f"（残り{q['remaining'] - reserved}通・月末までの朝配信に{q['need']}通必要）。")
+        elif explain.status_of(explain.get(session, item.id, item.title)) == "running":
+            say(EXPLAIN_RUNNING_MSG)  # 確認の直後に別の押下(別プロセス含む)が先に確保した
+        else:
+            say(EXPLAIN_BUSY_MSG)     # 同時に作れる数の上限
+        return
+    try:
+        say("AI解説を作っています。1〜2分お待ちください。")
+    except Exception:  # noqa: BLE001 — 確保済みなので、受付の返信に失敗しても生成と push は進める
+        log.exception("AI解説の受付返信に失敗 item=%s", item.id)
+    explain_start(item.id, token, to)
 
 
 def _resolve_detail_item(session, payload: str) -> NewsItem | None:

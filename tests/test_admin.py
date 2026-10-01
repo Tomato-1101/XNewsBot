@@ -15,7 +15,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from xnewsbot import keychain_env
 from xnewsbot.admin import news, stores, web
 from xnewsbot.admin.main import app
-from xnewsbot.models import GenreDigest, NewsItem
+from xnewsbot.models import GenreDigest, NewsItem, Subscriber, XUsageSnapshot
 
 AUTH = ("admin", "testpw")
 
@@ -68,6 +68,9 @@ def wired(monkeypatch, tmp_path):
         yield sess
 
     monkeypatch.setattr(news, "get_session", fake_session)
+    # LINE の残り通数は実 API に取りに行かない(既定は取得できない扱い)
+    monkeypatch.setattr(news, "_fetch_line_quota", lambda session: None)
+    monkeypatch.setattr(news, "_line_cache", {"at": float("-inf"), "value": None})
     return SimpleNamespace(session=sess, tmp=tmp_path)
 
 
@@ -200,6 +203,70 @@ def test_news_view_shows_items(wired):
     assert "要約サマリDEF" in r.text
 
 
+def test_news_view_shows_usage(wired, monkeypatch):
+    for d, used, remaining in [(date(2026, 9, 30), 9000, 3_020_000), (date(2026, 10, 1), 11000, 3_009_000)]:
+        wired.session.add(XUsageSnapshot(digest_date=d, slot="morning", used=used, remaining=remaining))
+    wired.session.add(Subscriber(line_user_id="U1", enabled_genres=["AI"], is_onboarded=True,
+                                 push_to="Cgroup"))
+    wired.session.commit()
+    monkeypatch.setattr(news, "_fetch_line_quota",
+                        lambda session: {"limit": 200, "used": 150, "costs": {"Cgroup": 3}})
+
+    with TestClient(app) as c:
+        r = c.get("/", auth=AUTH)
+    assert r.status_code == 200
+    assert "残り 3,009,000 クレジット" in r.text
+    assert "あと約<b>300</b>日" in r.text          # 3,009,000 ÷ 平均10,000
+    assert "残り<b>50</b>通" in r.text
+    assert "足りません" in r.text or "足ります" in r.text
+
+
+def test_line_usage_counts_runs_to_month_end(monkeypatch, wired):
+    """今日を数えるかは時刻ではなく、購読者ごとの配信済み記録(last_morning_on)で決める。"""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    sub = Subscriber(line_user_id="U1", enabled_genres=["AI"], is_onboarded=True, push_to="Cgroup")
+    wired.session.add(sub)
+    wired.session.commit()
+    monkeypatch.setattr(news, "_fetch_line_quota",
+                        lambda session: {"limit": 200, "used": 140, "costs": {"Cgroup": 3}})
+    tz = ZoneInfo("Asia/Tokyo")
+    # 10:00 でも今日の分が未配信(遅延・自動復旧待ち)なら今日も数える
+    before = news._line_usage(wired.session, datetime(2026, 10, 30, 10, 0, tzinfo=tz))
+    assert (before["remaining"], before["days_left"], before["need"], before["enough"]) == (60, 2, 6, True)
+    assert before["cost"] == 3
+    sub.last_morning_on = date(2026, 10, 30)
+    wired.session.commit()
+    after = news._line_usage(wired.session, datetime(2026, 10, 30, 7, 0, tzinfo=tz))
+    assert (after["days_left"], after["need"]) == (1, 3)  # 今日の朝の配信は済み(キャッシュ中でも反映)
+
+
+def test_line_usage_refetches_when_new_target_appears(monkeypatch, wired):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    calls = []
+
+    def fetch(session):
+        calls.append(1)
+        return {"limit": 200, "used": 0, "costs": {"U1": 1, "U2": 1}} if len(calls) > 1 else \
+            {"limit": 200, "used": 0, "costs": {"U1": 1}}
+    monkeypatch.setattr(news, "_fetch_line_quota", fetch)
+    wired.session.add(Subscriber(line_user_id="U1", enabled_genres=["AI"], is_onboarded=True))
+    wired.session.commit()
+    now = datetime(2026, 10, 30, 10, 0, tzinfo=ZoneInfo("Asia/Tokyo"))
+    assert news._line_usage(wired.session, now)["cost"] == 1
+    wired.session.add(Subscriber(line_user_id="U2", enabled_genres=["AI"], is_onboarded=True))
+    wired.session.commit()
+    assert news._line_usage(wired.session, now)["cost"] == 2 and len(calls) == 2
+
+
+def test_manage_shows_usage_panel(wired):
+    with TestClient(app) as c:
+        r = c.get("/manage", auth=AUTH)
+    assert r.status_code == 200
+    assert "残り使用量" in r.text and "LINE から取得できませんでした" in r.text
+
+
 # --- ジャンル(genres.toml) ---
 
 def test_genres_invalid_toml_not_saved(wired):
@@ -310,3 +377,135 @@ def test_delivery_time_rejects_bad_time(wired):
         r = c.post("/manage/delivery", data={"slot": "morning", "hhmm": "99:99"}, auth=AUTH)
     assert "失敗" in r.text
     assert 'MORNING_HHMM="0800"' in stores.DELIVER_SH.read_text(encoding="utf-8")  # 変更前のまま
+
+
+# --- AI解説(管理UI) ---
+
+@pytest.fixture
+def no_quiet(monkeypatch):
+    """実行時刻が 07:00〜08:30 でもテストが揺れないよう、時間帯の制限を外す。"""
+    from xnewsbot import explain
+    monkeypatch.setattr(explain, "in_quiet_hours", lambda now: False)
+
+def _explain_item(wired) -> int:
+    gd = GenreDigest(digest_date=date(2026, 6, 15), slot="morning", genre="AI")
+    wired.session.add(gd)
+    wired.session.commit()
+    wired.session.refresh(gd)
+    it = NewsItem(genre_digest_id=gd.id, genre="AI", genres=["AI"], importance="big", rank=0,
+                  title="解説対象の見出し", summary="要約", detail="詳細",
+                  source_urls=["https://example.com/a"], source_tweets=[])
+    wired.session.add(it)
+    wired.session.commit()
+    wired.session.refresh(it)
+    return it.id
+
+
+def test_explain_post_get_flow(wired, monkeypatch, no_quiet):
+    from xnewsbot import explain
+    item_id = _explain_item(wired)
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append((i, t)))
+    with TestClient(app) as c:
+        r = c.post(f"/explain/{item_id}", auth=AUTH)
+        assert r.status_code == 200
+        assert r.json()["status"] == "running" and r.json()["elapsed"] == 0
+        assert c.get(f"/explain/{item_id}", auth=AUTH).json()["status"] == "running"
+        assert c.post(f"/explain/{item_id}", auth=AUTH).json()["status"] == "running"
+        assert len(started) == 1                     # 作成中に押し直しても二重に作らない
+
+        # 裏の生成が終わる(claude は呼ばずに差し替え)
+        monkeypatch.setattr(explain, "generate", lambda payload: "管理画面で見る解説\n2行目")
+        explain.run_job(item_id, started[0][1], session_factory=news.get_session)
+        st = c.get(f"/explain/{item_id}", auth=AUTH).json()
+        assert st == {"status": "done", "text": "管理画面で見る解説\n2行目", "error": "", "elapsed": None}
+        assert c.post(f"/explain/{item_id}", auth=AUTH).json()["status"] == "done"
+        assert len(started) == 1
+
+        page = c.get("/?date_str=2026-06-15&slot=morning", auth=AUTH).text
+    assert '<div class="explain-out" >管理画面で見る解説\n2行目</div>' in page
+    assert '<button type="button" class="explain-btn" hidden>' in page
+
+
+def test_explain_failed_can_retry(wired, monkeypatch, no_quiet):
+    from xnewsbot import explain
+    item_id = _explain_item(wired)
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append(t))
+
+    def boom(payload):
+        raise explain.ExplainError("時間切れ(300秒)")
+    monkeypatch.setattr(explain, "generate", boom)
+    with TestClient(app) as c:
+        c.post(f"/explain/{item_id}", auth=AUTH)
+        explain.run_job(item_id, started[0], session_factory=news.get_session)
+        st = c.get(f"/explain/{item_id}", auth=AUTH).json()
+        assert st["status"] == "failed" and "時間切れ" in st["error"]
+        assert c.post(f"/explain/{item_id}", auth=AUTH).json()["status"] == "running"
+    assert len(started) == 2 and started[0] != started[1]
+
+
+def test_explain_unknown_item_and_none_state(wired):
+    with TestClient(app) as c:
+        assert c.post("/explain/999", auth=AUTH).status_code == 404
+        assert c.get("/explain/999", auth=AUTH).json()["status"] == "none"
+
+
+def test_explain_requires_auth(wired, monkeypatch):
+    item_id = _explain_item(wired)
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append(t))
+    with TestClient(app) as c:
+        assert c.post(f"/explain/{item_id}").status_code == 401
+        assert c.get(f"/explain/{item_id}").status_code == 401
+        assert c.post(f"/explain/{item_id}", auth=("admin", "wrong")).status_code == 401
+    assert not started
+
+
+def test_explain_refused_in_quiet_hours(wired, monkeypatch):
+    from xnewsbot import explain
+    item_id = _explain_item(wired)
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append(t))
+    monkeypatch.setattr(explain, "in_quiet_hours", lambda now: True)
+    with TestClient(app) as c:
+        st = c.post(f"/explain/{item_id}", auth=AUTH).json()
+    assert st["status"] == "refused" and "7:00〜8:30" in st["error"]
+    assert not started and explain.get(wired.session, item_id) is None
+
+
+def test_explain_refused_when_two_running(wired, monkeypatch, no_quiet):
+    from xnewsbot import explain
+    item_id = _explain_item(wired)
+    gd = wired.session.get(NewsItem, item_id).genre_digest_id
+    others = []
+    for r in (1, 2):
+        it = NewsItem(genre_digest_id=gd, genre="AI", rank=r, title=f"別記事{r}")
+        wired.session.add(it)
+        wired.session.commit()
+        others.append(it.id)
+    for oid in others:
+        assert explain.claim(wired.session, oid, title=f"別記事{others.index(oid) + 1}")
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append(t))
+    with TestClient(app) as c:
+        st = c.post(f"/explain/{item_id}", auth=AUTH).json()
+    assert st["status"] == "refused" and "ほかのAI解説" in st["error"]
+    assert not started and explain.get(wired.session, item_id) is None
+
+
+def test_explain_reused_item_id_is_regenerated(wired, monkeypatch, no_quiet):
+    """記事 id が別の記事に使い回されたら、古い解説は出さずに作り直す。"""
+    from xnewsbot import explain
+    item_id = _explain_item(wired)
+    tok = explain.claim(wired.session, item_id, title="前の記事の見出し")
+    explain.finish(wired.session, item_id, tok, text="前の記事の解説")
+    started = []
+    monkeypatch.setattr(news, "_start_explain", lambda i, t: started.append(t))
+    with TestClient(app) as c:
+        assert c.get(f"/explain/{item_id}", auth=AUTH).json()["status"] == "none"
+        page = c.get("/?date_str=2026-06-15&slot=morning", auth=AUTH).text
+        assert "前の記事の解説" not in page
+        assert c.post(f"/explain/{item_id}", auth=AUTH).json()["status"] == "running"
+    assert len(started) == 1
+    assert explain.get(wired.session, item_id).title == "解説対象の見出し"

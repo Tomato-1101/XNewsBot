@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+
+# アプリ起動(TestClient)の init_db が本番 xnewsbot.db に CREATE/ALTER しないよう、
+# 最初の get_engine() より前に DB の場所をテスト用の一時ファイルへ向ける。
+os.environ["DB_PATH"] = os.path.join(tempfile.mkdtemp(prefix="xnewsbot-test-"), "test.db")
+
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 

@@ -66,6 +66,14 @@ def _migrate(engine) -> None:
         if ncols and "score" not in ncols:
             conn.execute(text("ALTER TABLE newsitem ADD COLUMN score INTEGER DEFAULT 0"))
 
+        ecols = {row[1] for row in conn.execute(text("PRAGMA table_info(newsexplanation)"))}
+        if ecols and "title" not in ecols:
+            conn.execute(text("ALTER TABLE newsexplanation ADD COLUMN title VARCHAR NOT NULL DEFAULT ''"))
+        if ecols and "push_to" not in ecols:
+            conn.execute(text("ALTER TABLE newsexplanation ADD COLUMN push_to VARCHAR NOT NULL DEFAULT ''"))
+        if ecols and "push_cost" not in ecols:
+            conn.execute(text("ALTER TABLE newsexplanation ADD COLUMN push_cost INTEGER NOT NULL DEFAULT 0"))
+
 
 @contextmanager
 def get_session() -> Iterator[Session]:

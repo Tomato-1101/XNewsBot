@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import stores
+from ..config import get_settings
+from . import news, stores
 from .web import require_auth, templates
 
 router = APIRouter()
@@ -21,9 +25,9 @@ _OK_MESSAGES = {
     "collect": "収集パラメータを保存しました(次回の収集から反映されます)。",
     "delivery": "配信時刻を変更し、配信ジョブを再登録しました。",
     "run_now": "今すぐ配信を開始しました。バックグラウンドで最新を収集・要約し、全購読者へ送信します"
-               "(完了まで約10分。結果は配信ログに記録されます)。",
+               "(完了まで約20分。結果は配信ログに記録されます)。",
     "run_refresh": "今すぐ更新を開始しました。バックグラウンドで最新を収集・要約します"
-                   "(完了まで約10分。LINE へは送信しません)。",
+                   "(完了まで約20分。LINE へは送信しません)。",
 }
 
 
@@ -43,6 +47,8 @@ def manage_index(
         {"env": env, "label": label, "value": stores.read_collect_params()[env], "min": minimum}
         for env, _attr, _cast, label, minimum in stores.COLLECT_FIELDS
     ]
+    with news.get_session() as session:
+        usage = news.usage_context(session, datetime.now(ZoneInfo(get_settings().default_tz)))
     return templates.TemplateResponse(
         request,
         "manage.html",
@@ -54,6 +60,7 @@ def manage_index(
             "delivery": stores.read_delivery_times(),
             "flash_ok": _OK_MESSAGES.get(ok or ""),
             "flash_err": err,
+            "usage": usage,
         },
     )
 

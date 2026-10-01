@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}XNewsBot{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <!-- Mac/iPhone はヒラギノで描く。ヒラギノの無い端末だけ Noto を使う(unicode-range で使う分だけ取得) -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Noto+Serif+JP:wght@600;700&display=swap">
   <link rel="stylesheet" href="/static/style.css">
   <script>
     // 描画前にテーマを確定(チラつき防止)。保存値が無ければ OS 設定に追従。
@@ -17,17 +21,23 @@
   </script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">📰 XNewsBot</div>
-    <nav>
-      <a href="/" {% if active == "news" %}class="active"{% endif %}>ニュース</a>
-      <a href="/manage" {% if active == "manage" %}class="active"{% endif %}>管理</a>
-    </nav>
-    <button id="theme-toggle" class="theme-btn" type="button" aria-label="テーマ切替">🌙</button>
+  <header class="masthead">
+    <div class="wrap mast-inner">
+      <a class="logo" href="/">XNewsBot</a>
+      <nav class="mast-nav" aria-label="ページ">
+        <a href="/" {% if active == "news" %}aria-current="page"{% endif %}>ニュース</a>
+        <a href="/manage" {% if active == "manage" %}aria-current="page"{% endif %}>管理</a>
+      </nav>
+      <button id="theme-toggle" class="theme-btn" type="button" aria-label="ライト/ダーク表示を切り替え">
+        <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg>
+        <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/></svg>
+      </button>
+    </div>
   </header>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
+  {% block content %}{% endblock %}
+  <footer class="site-foot">
+    <div class="wrap">X とニュースサイトから集めた記事を Claude が要約しています。相場の評価は一般的な傾向で、投資助言ではありません。</div>
+  </footer>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -139,3 +139,25 @@ class XUsageSnapshot(SQLModel, table=True):
     used: int = 0       # 今回の収集で使ったクレジット(収集前後の残高差)
     remaining: int = 0  # 収集後の残りクレジット
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class NewsExplanation(SQLModel, table=True):
+    """記事ごとの「AI解説」(ヘッドレス Claude がウェブ検索して作る)。作成済みは使い回す。
+
+    webhook(LINE)と管理UIは別プロセスなので、news_item_id の一意制約で「作る人」を1人に絞る
+    (running 行を先に入れられた方だけが生成する。xnewsbot/explain.py の claim)。"""
+    id: int | None = Field(default=None, primary_key=True)
+    news_item_id: int = Field(index=True, unique=True, foreign_key="newsitem.id")
+    status: str = "running"   # "running" | "done" | "failed"
+    text: str = ""
+    error: str = ""
+    # 確保ごとの合言葉。失効で取り直された後に古い生成が終わっても、結果の上書きと送信をさせない
+    claim_token: str = ""
+    # 作った時点の記事見出し。記事 id が使い回されたとき(今の見出しと違う)は「無い」とみなす
+    title: str = ""
+    # LINE から押されたときの送り先と、その push の通数(作成中の分を通数ガードで差し引く)。Web は ""・0
+    push_to: str = ""
+    push_cost: int = 0
+    # 時刻は naive UTC で入れる(SQLite は tz を落とすため、比較を文字列順で揃える)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC).replace(tzinfo=None))
