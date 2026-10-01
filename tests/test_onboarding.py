@@ -143,10 +143,15 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
-    # 先頭は「架空」警告、続いて現行レイアウト(縦長1枚の Flex)
+    # 先頭は「架空」警告、続いて現行レイアウト(要点バブル + ジャンル別カルーセル)
     assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
-    assert any(s["type"] == "flex" for s in specs)
+    assert specs[1]["type"] == "flex" and specs[1]["contents"]["type"] == "bubble"
+    assert specs[2]["type"] == "flex" and specs[2]["contents"]["type"] == "carousel"
     assert len(specs) <= 5  # reply 上限内
+    import json
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "市況（前日終値）" in blob  # 架空の市況も出る
+    assert "RPA" not in blob          # 配信ジャンルから廃止済み
 
 
 def test_group_command_responds_but_chatter_ignored(session, messenger):

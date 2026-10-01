@@ -9,31 +9,67 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 
 from sqlmodel import Session, select
 
 from . import xclient
 from .curator import CuratedItem
 from .genres import GENRE_KEYS
-from .models import GenreDigest, NewsItem
+from .models import GenreDigest, MarketSnapshot, NewsItem
+
+_X_CREATED_FMT = "%a %b %d %H:%M:%S %z %Y"  # 例: 'Tue Sep 30 12:34:56 +0000 2026'
+
+
+def _created_iso(raw) -> str:
+    """候補の createdAt を ISO8601(UTC) 文字列にそろえる(表示の「N時間前」に使う)。
+
+    X は 'Tue Sep 30 12:34:56 +0000 2026'、ニュースは ISO8601 や RFC2822 のことがあるので
+    順に試す。どれでも解析できなければ ""(表示側で時刻を省く)。"""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    for parse in (lambda v: datetime.strptime(v, _X_CREATED_FMT),
+                  datetime.fromisoformat, parsedate_to_datetime):
+        try:
+            dt = parse(s)
+        except (TypeError, ValueError, IndexError):
+            continue
+        if dt is None:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC).isoformat()
+    return ""
+
+
+def _source_entry(t: dict) -> dict:
+    """候補1件を NewsItem.source_tweets の1要素にする(出典名・時刻・種別つき)。"""
+    kind = "news" if t.get("source") == "news" or t.get("kind") == "news" else "x"
+    author = (t.get("author") or {}).get("userName", "?")
+    media = t.get("media") or ("" if author == "?" else (author if kind == "news" else f"@{author}"))
+    return {
+        "text": " ".join((t.get("text") or "").split()),
+        "author": author,
+        "url": t.get("url", ""),
+        "views": xclient.views(t),
+        "media": media,
+        "created_at": _created_iso(t.get("createdAt")),
+        "kind": kind,
+    }
 
 
 def _build_news_items(
     digest_id: int, genre: str, curated: list[CuratedItem], tweets: list[dict]
 ) -> list[NewsItem]:
     items: list[NewsItem] = []
-    for rank, ci in enumerate(curated):
+    # 表示順は rank。プロンプトでも「big 先・score 降順」を指示しているが、モデルの並びは
+    # 崩れることがある(試走で small の score が前後した)ので取り込み時に確定させる。同点は元の順を保つ。
+    ordered = sorted(curated, key=lambda c: (c.importance != "big", -c.score))
+    for rank, ci in enumerate(ordered):
         srcs = [tweets[i] for i in ci.source_idxs if 0 <= i < len(tweets)]
-        source_tweets = [
-            {
-                "text": " ".join((t.get("text") or "").split()),
-                "author": (t.get("author") or {}).get("userName", "?"),
-                "url": t.get("url", ""),
-                "views": xclient.views(t),
-            }
-            for t in srcs
-        ]
+        source_tweets = [_source_entry(t) for t in srcs]
         source_urls = [s["url"] for s in source_tweets if s["url"]]
         top_views = max((s["views"] for s in source_tweets), default=0)
         # 表示用ジャンルタグ: Claude が付けた関連ジャンル(既知キーのみ)に主ジャンルを足し、
@@ -53,6 +89,7 @@ def _build_news_items(
                 source_urls=source_urls,
                 source_tweets=source_tweets,
                 top_view_count=top_views,
+                score=ci.score,
             )
         )
     return items
@@ -131,3 +168,29 @@ def assemble_for_genres(
         digest = get_genre_digest(session, genre, local_date, slot)
         out[genre] = items_of_digest(session, digest.id) if digest else []
     return out
+
+
+def save_market(session: Session, d: date, slot: str, market: list[dict]) -> None:
+    """当日・当スロットの市況を保存する(同日同スロットの既存は置き換える)。
+
+    取得に失敗して空のときは既存を消さない(ダイジェストと同じく、失敗した再取得が
+    良いデータを空で上書きしないようにする)。"""
+    existing = session.exec(
+        select(MarketSnapshot).where(MarketSnapshot.digest_date == d, MarketSnapshot.slot == slot)
+    ).all()
+    if not market and existing:
+        return
+    for snap in existing:
+        session.delete(snap)
+    session.add(MarketSnapshot(digest_date=d, slot=slot, data=list(market)))
+    session.commit()
+
+
+def get_market(session: Session, d: date, slot: str) -> list[dict]:
+    """当日・当スロットの市況(無ければ空)。"""
+    snap = session.exec(
+        select(MarketSnapshot)
+        .where(MarketSnapshot.digest_date == d, MarketSnapshot.slot == slot)
+        .order_by(MarketSnapshot.id.desc())
+    ).first()
+    return list(snap.data) if snap else []

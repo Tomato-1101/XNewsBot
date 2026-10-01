@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -22,7 +23,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import Settings, get_settings
-from .genres import excludes, keywords, lang, min_faves
+from .genres import (accounts, exclude_accounts, excludes, keywords, keywords_en,
+                     min_faves, min_faves_en)
 
 BASE_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 KEY_FILE = Path(__file__).resolve().parent.parent / ".key"
@@ -33,9 +35,25 @@ REQUEST_TIMEOUT = 30
 RETRY_BASE_DELAY = 1.0
 RETRY_MAX_DELAY = 8.0
 
+# 1ジャンルの X 収集は最大3クエリ(日本語・英語・公式)。twitterapi.io は1ページ約20件なので
+# 日本語3+英語2+公式1=約6ページ/ジャンル。旧方式(1クエリ100件=5ページ+空ページ再試行)と同程度に抑える。
+JA_MAX_TWEETS = 60
+EN_MAX_TWEETS = 40
+OFFICIAL_MAX_TWEETS = 20
+# 英語圏は桁が大きく、日本語と同じ下限だと使い回しの速報アカウントや雑談が溢れるため高くする
+# (いいね OR 表示回数。ジャンルで min_faves_en を書けばいいね下限はそちらが優先)。
+EN_MIN_FAVES = 500
+EN_MIN_VIEWS_FLOOR = 100_000
+
 
 class XClientError(RuntimeError):
-    pass
+    """status/detail はキー切替ログに失敗理由を出すため(以前は型名だけで、キー#0 が毎回
+    落ちる原因=残高不足を調べるのにわざわざ再現が要った)。鍵の値は含めない。"""
+
+    def __init__(self, message: str, status: int | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.status = status
+        self.detail = detail
 
 
 class XClientRetryable(XClientError):
@@ -45,9 +63,30 @@ class XClientRetryable(XClientError):
     fetch_with_retry も「空ページ時のみ」再試行だったため、1回のタイムアウトで
     そのジャンルが0件確定し、混雑時に複数ジャンルが同時に空配信化していた。"""
 
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, retry_after: float | None = None,
+                 status: int | None = None, detail: str = "") -> None:
+        super().__init__(message, status=status, detail=detail)
         self.retry_after = retry_after
+
+
+def _error_detail(body: str) -> str:
+    """エラー応答本文から人が読む要旨を取り出す(JSON の message/msg/error。無ければ本文)。"""
+    try:
+        j = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return body.strip()
+    if isinstance(j, dict):
+        for k in ("message", "msg", "error"):
+            if j.get(k):
+                return str(j[k])
+    return body.strip()
+
+
+def _fail_reason(e: XClientError, key: str) -> str:
+    """キー切替ログ用の失敗理由「HTTP 402: Credits is not enough...」(先頭100字・鍵は伏せる)。"""
+    msg = (e.detail or str(e)).replace(key, "***") if key else (e.detail or str(e))
+    msg = " ".join(msg.split())[:100]
+    return f"HTTP {e.status}: {msg}" if e.status else f"{type(e).__name__}: {msg}"
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -164,11 +203,13 @@ def _request(query: str, query_type: str, cursor: str, key: str) -> dict:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:300]
+        detail = _error_detail(body)
         # 429(レート超過)/5xx(サーバ側一時障害)は待てば回復しうる → 再試行対象。
         if e.code == 429 or 500 <= e.code < 600:
             retry_after = _parse_retry_after(e.headers.get("Retry-After") if e.headers else None)
-            raise XClientRetryable(f"twitterapi.io HTTP {e.code}: {body}", retry_after=retry_after)
-        raise XClientError(f"twitterapi.io HTTP {e.code}: {body}")
+            raise XClientRetryable(f"twitterapi.io HTTP {e.code}: {body}", retry_after=retry_after,
+                                   status=e.code, detail=detail)
+        raise XClientError(f"twitterapi.io HTTP {e.code}: {body}", status=e.code, detail=detail)
     except (TimeoutError, ConnectionError) as e:
         # 読み取りタイムアウト(socket.timeout=TimeoutError)・接続断 → 再試行対象。
         raise XClientRetryable(f"twitterapi.io タイムアウト/接続断: {type(e).__name__}: {e}")
@@ -230,48 +271,141 @@ def fetch_with_retry(query: str, query_type: str, max_tweets: int, keys: list[st
         except XClientError as e:  # XClientRetryable(再試行尽き)も恒久4xxもここで捕捉
             last_exc = e
             if i < len(keys) - 1:
-                # 鍵の値は絶対に出さない。index のみログ(deliver.sh のログに乗る)。
-                print(f"  キー#{i} 失敗 → 次キーへ ({type(e).__name__})", file=sys.stderr)
+                # 鍵の値は絶対に出さない。index と失敗理由のみログ(deliver.sh のログに乗る)。
+                print(f"  キー#{i} 失敗 → 次キーへ ({type(e).__name__} {_fail_reason(e, key)})",
+                      file=sys.stderr)
             continue
     assert last_exc is not None  # keys は load_keys で非空保証
     raise last_exc
 
 
-def collect(genre: str, settings: Settings | None = None, keys: list[str] | None = None) -> list[dict]:
-    """指定ジャンルの直近トップ投稿を viewCount 降順で返す。
+def _term(t: str) -> str:
+    """空白を含む語はフレーズ検索にする("Claude Code" が Claude AND Code に分解されて広がらないように)。"""
+    t = t.strip()
+    return f'"{t}"' if any(c.isspace() for c in t) else t
 
-    twitterapi.io の min_faves / -filter:replies は best-effort で揺らぐため、
-    クエリは最小限(キーワード+言語+時間窓)に留め、いいね下限・返信除外・直近性は
-    クライアント側で確定的にフィルタする。空ページ対策に再試行し、キーは優先度順に
-    フォールバックする(keys 未指定なら load_keys で取得)。
+
+def build_keyword_query(terms: list[str], lang: str, hours: float | None,
+                        exclude: list[str] = ()) -> str:
+    """'(kw1 OR "kw 2") lang:ja within_time:24h -除外語' を組み立てる。"""
+    q = "(" + " OR ".join(_term(t) for t in terms) + ")"
+    if lang:
+        q += f" lang:{lang}"
+    q += _window_clause(hours)
+    # 除外語はサーバ側(best-effort)とクライアント側(確定的)の両方で効かせる
+    for term in exclude:
+        q += f" -{_term(term)}"
+    return q
+
+
+def build_official_query(handles: list[str], hours: float | None) -> str:
+    """'(from:A OR from:B) within_time:24h'。公式・一次情報は言語もいいねも問わず拾う。"""
+    return "(" + " OR ".join(f"from:{h}" for h in handles) + ")" + _window_clause(hours)
+
+
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _norm_text(text: str | None) -> str:
+    """重複判定用の正規化本文(URL と空白を除いた先頭60字)。転載・使い回しの同文を1件にする。"""
+    s = _URL_RE.sub("", text or "")
+    return "".join(s.split()).lower()[:60]
+
+
+def _is_rt(t: dict) -> bool:
+    return (t.get("text") or "").startswith("RT @")
+
+
+def _filter_engagement(tweets: list[dict], min_f: int | None, min_v: int | None) -> list[dict]:
+    """いいね下限 OR 表示回数下限。伸びる前の速報(高view・低like)を取りこぼさない。"""
+    if not min_f:
+        return tweets
+    return [t for t in tweets
+            if _int(t, "likeCount") >= min_f or (min_v and _int(t, "viewCount") >= min_v)]
+
+
+def merge_tweets(official: list[dict], others: list[dict],
+                 deny_accounts: list[str] = ()) -> list[dict]:
+    """公式を先頭→残りを viewCount 降順に並べ、RT・除外アカウント・重複(ID/正規化本文)を落とす。
+
+    各群を先に viewCount 降順にしてから重複判定するので、同文の使い回しは表示回数の多い1件が残る。
+    公式群を先に通すので、公式投稿と同じものがキーワード検索にも出たら公式扱いで残る。
+    """
+    deny = {a.lower().lstrip("@") for a in deny_accounts}
+    seen_ids: set[str] = set()
+    seen_text: set[str] = set()
+    out: list[dict] = []
+    for t in sorted(official, key=views, reverse=True) + sorted(others, key=views, reverse=True):
+        if _is_rt(t):
+            continue
+        if ((t.get("author") or {}).get("userName") or "").lower() in deny:
+            continue
+        tid = str(t.get("id") or "")
+        nt = _norm_text(t.get("text"))
+        if (tid and tid in seen_ids) or (nt and nt in seen_text):
+            continue
+        if tid:
+            seen_ids.add(tid)
+        if nt:
+            seen_text.add(nt)
+        out.append(t)
+    return out
+
+
+def collect(genre: str, settings: Settings | None = None, keys: list[str] | None = None) -> list[dict]:
+    """指定ジャンルの直近24hの投稿を「公式(_official=True)を先頭→残りを viewCount 降順」で返す。
+
+    最大3クエリ: 日本語(keywords, lang:ja)・英語(keywords_en, lang:en, いいね下限高め)・
+    公式(accounts の from:, いいね下限なし)。twitterapi.io の min_faves / -filter:replies は
+    best-effort で揺らぐため、いいね下限・返信除外・直近性はクライアント側で確定的にフィルタする。
+    1クエリの失敗では他のクエリを捨てない。全クエリ失敗のときだけ例外を投げる
+    (呼び出し側 pipeline._one がそのジャンルの X を空として扱う)。
     """
     settings = settings or get_settings()
     keys = keys or load_keys(settings)
-    kws = keywords(genre)
+    hours = settings.collect_hours
     ex = excludes(genre)
-    query = "(" + " OR ".join(kws) + ")"
-    # 言語フィルタ: "ja"=日本語のみ(既定)。"any"/"" は付けない=英語の一次情報も拾う
-    # (世界の速報を、日本語で言及されるのを待たずに取得する。要約は Claude が日本語にする)。
-    g_lang = lang(genre)
-    if g_lang and g_lang != "any":
-        query += f" lang:{g_lang}"
-    query += _window_clause(settings.collect_hours)
-    # 除外語はサーバ側(best-effort)とクライアント側(確定的)の両方で効かせる
-    for term in ex:
-        query += f" -{term}"
-
+    # 管理UIの「1ジャンルの取得上限」(collect_max_tweets)は各クエリの上限としても効かせる(費用の歯止め)。
+    cap = settings.collect_max_tweets
     gmin = min_faves(genre)
-    min_f = gmin if gmin is not None else settings.collect_min_faves
+    min_ja = gmin if gmin is not None else settings.collect_min_faves
     min_v = settings.collect_min_views_floor
+    gmin_en = min_faves_en(genre)
+    min_en = gmin_en if gmin_en is not None else max(min_ja or 0, EN_MIN_FAVES)
+    min_v_en = max(min_v or 0, EN_MIN_VIEWS_FLOOR)
 
-    tweets = fetch_with_retry(query, "Top", settings.collect_max_tweets, keys)
-    tweets = [t for t in tweets if not t.get("isReply")]
-    if ex:
-        tweets = [t for t in tweets if not any(term in (t.get("text") or "") for term in ex)]
-    if min_f:
-        # いいね下限 OR 表示回数下限。伸びる前の速報(高view・低like)を取りこぼさない。
-        tweets = [t for t in tweets
-                  if _int(t, "likeCount") >= min_f or (min_v and _int(t, "viewCount") >= min_v)]
-    tweets = _filter_recent(tweets, settings.collect_hours)
-    tweets.sort(key=views, reverse=True)
-    return tweets
+    # (名前, クエリ, 取得上限, 公式か, いいね下限, 表示回数下限)
+    plans: list[tuple[str, str, int, bool, int | None, int | None]] = []
+    if keywords(genre):
+        plans.append(("日本語", build_keyword_query(keywords(genre), "ja", hours, ex),
+                      min(JA_MAX_TWEETS, cap), False, min_ja, min_v))
+    if keywords_en(genre):
+        plans.append(("英語", build_keyword_query(keywords_en(genre), "en", hours, ex),
+                      min(EN_MAX_TWEETS, cap), False, min_en, min_v_en))
+    if accounts(genre):
+        plans.append(("公式", build_official_query(accounts(genre), hours),
+                      min(OFFICIAL_MAX_TWEETS, cap), True, None, None))
+
+    official: list[dict] = []
+    others: list[dict] = []
+    errors: list[XClientError] = []
+    for name, query, mx, is_official, min_f, mv in plans:
+        try:
+            tweets = fetch_with_retry(query, "Top", mx, keys)
+        except XClientError as e:
+            errors.append(e)
+            print(f"  {genre}: X {name}クエリ失敗 ({_fail_reason(e, '')})", file=sys.stderr)
+            continue
+        tweets = [t for t in tweets if not t.get("isReply")]
+        if is_official:
+            for t in tweets:
+                t["_official"] = True
+            official += _filter_recent(tweets, hours)
+            continue
+        if ex:
+            tweets = [t for t in tweets if not any(term in (t.get("text") or "") for term in ex)]
+        tweets = _filter_engagement(tweets, min_f, mv)
+        others += _filter_recent(tweets, hours)
+    if plans and len(errors) == len(plans):
+        raise errors[-1]
+    return merge_tweets(official, others, exclude_accounts(genre))

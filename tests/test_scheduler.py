@@ -119,3 +119,75 @@ def test_due_subscribers_returns_slot_pairs(session):
     due = scheduler.due_subscribers(session, now_provider=lambda tz: fixed)
     assert due == [(due[0][0], "morning")]
     assert due[0][0].line_user_id == "A"
+
+
+def test_build_news_items_keeps_media_time_kind_and_score():
+    from xnewsbot.curator import CuratedItem
+
+    tweets = [
+        {"text": "X の投稿", "viewCount": 500, "url": "https://x.com/a/status/1",
+         "createdAt": "Tue Sep 30 12:34:56 +0000 2026",
+         "author": {"userName": "alice", "followers": 10}, "media": "@alice", "kind": "x"},
+        {"source": "news", "text": "見出し", "summary": "s", "body": "b", "url": "https://n/1",
+         "createdAt": "2026-09-30T21:00:00+09:00", "author": {"userName": "日経"}, "media": "日経",
+         "viewCount": 0, "likeCount": 0},
+        {"text": "旧形式", "viewCount": 1, "url": "https://x.com/b/status/2", "createdAt": "壊れた日時",
+         "author": {"userName": "bob"}},                       # media/kind 無し・日時解析不能
+        {"source": "news", "text": "RSS", "url": "https://n/2",
+         "createdAt": "Tue, 30 Sep 2026 03:00:00 GMT", "author": {"userName": "ロイター"}},
+    ]
+    ci = CuratedItem(title="t", summary="s", importance="big", score=87, source_idxs=[0, 1, 2, 3])
+    [item] = digest._build_news_items(1, "AI", [ci], tweets)
+    assert item.score == 87
+    st = item.source_tweets
+    assert [s["media"] for s in st] == ["@alice", "日経", "@bob", "ロイター"]
+    assert [s["kind"] for s in st] == ["x", "news", "x", "news"]
+    assert [s["created_at"] for s in st] == [
+        "2026-09-30T12:34:56+00:00", "2026-09-30T12:00:00+00:00", "", "2026-09-30T03:00:00+00:00"]
+    assert st[0]["author"] == "alice" and st[0]["url"] == "https://x.com/a/status/1"
+
+
+def test_build_news_items_orders_big_first_then_score():
+    from xnewsbot.curator import CuratedItem
+
+    def ci(title, imp, score):
+        return CuratedItem(title=title, summary="s", importance=imp, score=score, source_idxs=[])
+
+    curated = [ci("s40", "small", 40), ci("b70", "big", 70), ci("s60", "small", 60),
+               ci("b90", "big", 90), ci("s60b", "small", 60)]
+    items = digest._build_news_items(1, "AI", curated, [])
+    assert [i.title for i in items] == ["b90", "b70", "s60", "s60b", "s40"]   # 同点は元の順
+    assert [i.rank for i in items] == [0, 1, 2, 3, 4]
+
+
+def test_save_and_get_market_replaces_same_slot(session):
+    m1 = [{"key": "nikkei", "label": "日経平均", "close": 1.0, "change": 0.0, "change_pct": 0.0,
+           "asof": "2026-06-05", "kind": "index"}]
+    m2 = [dict(m1[0], close=2.0)]
+    assert digest.get_market(session, D, "morning") == []
+    digest.save_market(session, D, "morning", m1)
+    digest.save_market(session, D, "morning", m2)  # 同日同スロットは置換
+    assert digest.get_market(session, D, "morning") == m2
+    assert digest.get_market(session, D, "evening") == []  # 別スロットは別
+    digest.save_market(session, D, "morning", [])  # 取得失敗(空)で既存を消さない
+    assert digest.get_market(session, D, "morning") == m2
+
+
+def test_deliver_to_subscriber_includes_market(session, messenger):
+    import json
+
+    digest.ingest_curated(session, "AI", D, "morning",
+                          parse_curated(curated_items(1, 1)), make_tweets(3))
+    digest.save_market(session, D, "morning", [
+        {"key": "nikkei", "label": "日経平均", "close": 45000.0, "change": 100.0,
+         "change_pct": 0.22, "asof": "2026-06-05", "kind": "index"}])
+    sub = _onboarded(line_user_id="U11")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger,
+                                            now_local=now, mark_delivered=False)
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "市況（前日終値）" in blob and "45,000" in blob and "+0.22%" in blob
+    assert specs[0]["alt"].startswith("朝のニュース｜大ニュース0")

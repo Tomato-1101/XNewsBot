@@ -1,86 +1,157 @@
 # XNewsBot 配信ジャンル定義
 #
-# このファイルを編集すると、収集対象ジャンルと X 検索キーワードが変わります。
+# このファイルを編集すると、収集対象ジャンルと X 検索キーワード・直取り RSS が変わります。
 # - [[genre]] ブロック1つが1ジャンル。ファイル内の並び順がそのまま表示順になります。
 # - key       : ジャンル識別子(LINEのボタン表示・DBに使用)。重複不可・必須。
 # - label     : 任意。LINE表示名(省略時は key を表示)。key を変えずに表示名だけ変えたいとき用。
-# - keywords  : X検索キーワード。収集時に "(kw1 OR kw2 ...)" の OR 検索になります。
-# - lang      : 任意(既定 "ja")。"ja"=日本語のみ。"any"=言語指定なし(英語の一次情報も拾う)。
-#               海外の速報を、日本語で言及されるのを待たずに取得したいジャンルは "any" にし、
-#               英語キーワードも併記します。見出し・要約はキュレーション側が日本語にします。
-# - exclude   : 任意。この語を含む投稿を除外(AI/暗号資産のスパム対策など)。省略可。
-# - min_faves : 任意。このジャンルだけ最低いいね数を上書き(ニッチは下げ、特大は上げる)。省略可。
+# - keywords  : 日本語の X 検索キーワード。"(kw1 OR kw2 ...) lang:ja" の OR 検索になります。
+#               Google ニュース(日本語)の検索にも先頭数語を使います。
+#               ★曖昧語は入れない(「IT」は英語の it に、「DX」は無関係語に、単独の「Copilot」は操縦士に一致した)。
+# - keywords_en: 任意。英語の X 検索キーワード("... lang:en" の別クエリ。いいね下限は日本語より高い)。
+#               Google ニュース(英語・米国)の検索にも先頭数語を使います。空なら英語は集めない。
+# - accounts  : 任意。公式・一次情報の X ハンドル(@ なし)。"(from:A OR from:B ...)" で直近24hを
+#               いいね下限なしで集め、候補の先頭に置く(official=true)。
+# - feeds     : 任意。直取り RSS/Atom/RDF。{ url, name, filter } の配列。
+#               filter=true は keywords/keywords_en のどれかを見出し・概要に含む項目だけ採用(総合媒体用)。
+# - exclude   : 任意。この語を含む投稿を除外(スパム・別話題対策)。
+# - exclude_accounts: 任意。使い回し・煽り系アカウントの denylist(@ なし・大文字小文字は無視)。
+# - min_faves : 任意。日本語クエリの最低いいね数(ニッチは下げ、特大は上げる)。省略時は設定の既定値。
 #               ※いいね下限を満たさなくても表示回数が多い速報は採用します(config の collect_min_views_floor)。
+# - min_faves_en: 任意。英語クエリの最低いいね数(省略時は max(min_faves, 500))。
 # - selectable: 任意(既定 true)。false にするとオンボーディングの選択肢に出さず、
 #               全員に常時収集・常時配信する「常時ジャンル」になる(例: 特大ニュース)。
 # - note      : 任意のメモ(動作には影響しません)。
+# - lang      : 廃止(2026-10-01)。英語は keywords_en の別クエリで集めるため不要。書いても無視されます。
 #
 # 変更後はキュレーションの定期実行(または scripts/pipeline.py collect)から反映されます。
-# 文字コードは UTF-8。日本語キーワード可。並び順は配信時の表示順(先頭ほど上に出る)。
+# 文字コードは UTF-8。並び順は配信時の表示順(先頭ほど上に出る)。
 #
-# ★各ジャンルは「日本だけでなく世界のニュースも」拾うよう、海外・国際系のキーワードを併記しています。
-#   グローバル系(特大/AI/株/テクノロジー)は lang="any" にして英語の一次情報も直接拾います。
-#   他ジャンルも世界の速報を速く拾いたい場合は、同様に lang="any" と英語キーワードを足してください。
-#
-# ※2026-08-10 読者の関心に合わせ「政治」「経済」「世界情勢」を廃止(AI/テクノロジー/株/RPA 中心へ)。
+# ※2026-08-10 読者の関心に合わせ「政治」「経済」「世界情勢」を廃止(AI/テクノロジー/株中心へ)。
 #   金融政策・為替など市場に直結するマクロ要因は「株」ジャンルが吸収。
+# ※2026-10-01 「RPA」を廃止(本人の決定)。取得を「日本語/英語/公式アカウント」の3クエリ＋直取り RSS に刷新。
 
 [[genre]]
 key = "特大"
 selectable = false
 min_faves = 300
-lang = "any"
-note = "ジャンル横断の特大ニュース。選択ジャンルに関わらず常に収集。本当に速報級・大事件のときだけ出す(無ければ0件)。英語の一次速報も拾う。"
+min_faves_en = 3000
+note = "ジャンル横断の特大ニュース。選択ジャンルに関わらず常に収集。本当に速報級・大事件のときだけ出す(無ければ0件)。芸能・スポーツの速報は exclude で落とす。"
 keywords = [
-  "速報", "ニュース速報", "緊急", "号外", "会見", "発表",
-  "地震", "事故", "死去", "選挙", "国際", "世界",
-  "breaking", "BREAKING", "breaking news", "just in", "live updates",
+  "ニュース速報", "号外", "緊急地震速報", "震度5強", "震度6弱", "震度6強", "震度7", "大地震", "津波", "噴火",
+  "特別警報", "死去", "訃報", "首相", "総選挙", "辞任表明",
+  "テロ", "墜落", "脱線", "大規模停電", "緊急事態宣言",
+]
+# 「BREAKING」「breaking news」「just in」「earthquake」は外した(スポーツ速報・小さな地震・
+# 「Late-Breaking」などに一致して特大の英語候補の大半がノイズだった。2026-10-01 試走で確認)。
+# 英語の速報は accounts の Reuters/AP/BBCBreaking と Google News(US) のトップで拾う。
+keywords_en = [
+  "tsunami", "major earthquake", "plane crash", "assassinated",
+  "state of emergency", "martial law", "coup",
+]
+exclude = ["スタメン", "試合速報", "号ホームラン", "本塁打", "熱愛", "主演", "ガチャ", "プレゼント企画",
+           "選手", "球団", "ドラフト", "試合"]
+accounts = ["nhk_news", "Reuters", "AP", "BBCBreaking", "kyodo_official", "jijicom"]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "nicksortor", "MarioNawfal", "Breaking911",
+  "visegrad24", "DiscloseTV", "PopBase", "PopCrave", "dom_lucre", "AutismCapital",
+  "Osint613", "TheBabylonBee", "BRICSinfo", "WatcherGuru", "unusual_whales",
+  "Polymarket", "Kalshi",
+  # スポーツ速報(「BREAKING」「訃報」で一致していた。2026-10-01 試走で 特大 X 一般の大半)
+  "FabrizioRomano", "TouchlineX", "433", "SkySportsNews", "gnomotoke",
+]
+feeds = [
+  { url = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja", name = "Google ニュース(日本)" },
+  { url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", name = "Google News(US)" },
 ]
 
 [[genre]]
 key = "AI"
-lang = "any"
 note = "最新のAIニュース・プロダクト・研究・開発ツール(国内/海外問わず)。読者の最重要ジャンルで厚めに拾う。株/投資の宣伝が混ざりやすいので exclude で除外。"
 keywords = [
   "生成AI", "ChatGPT", "OpenAI", "Claude", "Anthropic", "Gemini",
-  "LLM", "AIエージェント", "Copilot", "AI開発",
-  "AI規制", "海外AI", "NVIDIA", "シリコンバレー",
-  "GPT-5", "frontier model", "AI safety", "open source LLM",
-  "Claude Code", "Cursor", "AIコーディング", "DeepSeek", "Grok",
+  "LLM", "大規模言語モデル", "AIエージェント", "GitHub Copilot", "Microsoft Copilot",
+  "Claude Code", "Cursor", "AIコーディング", "DeepSeek", "Grok", "AI規制",
+]
+keywords_en = [
+  "OpenAI", "ChatGPT", "Anthropic", "Claude Code", "Claude AI", "Google Gemini",
+  "DeepMind", "LLM", "AI agent", "frontier model", "AI safety", "DeepSeek",
+  "Hugging Face", "GitHub Copilot", "Microsoft Copilot", "AI regulation",
 ]
 exclude = ["必ず買い", "銘柄", "株主優待", "100株", "上場来高値"]
+accounts = [
+  "OpenAI", "AnthropicAI", "claudeai", "GoogleDeepMind", "GoogleAI", "GeminiApp",
+  "AIatMeta", "MistralAI", "xai", "nvidia", "huggingface", "OpenAIDevs",
+  "cursor_ai", "deepseek_ai", "Alibaba_Qwen", "sama",
+]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
+  "unusual_whales", "Polymarket", "Kalshi",
+]
+feeds = [
+  { url = "https://openai.com/news/rss.xml", name = "OpenAI" },
+  { url = "https://deepmind.google/blog/rss.xml", name = "Google DeepMind" },
+  { url = "https://blog.google/technology/ai/rss/", name = "Google AI" },
+  { url = "https://blogs.nvidia.com/feed/", name = "NVIDIA", filter = true },
+  { url = "https://huggingface.co/blog/feed.xml", name = "Hugging Face" },
+  { url = "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml", name = "Anthropic" },
+  { url = "https://rss.itmedia.co.jp/rss/2.0/aiplus.xml", name = "ITmedia AI+" },
+]
 
 [[genre]]
 key = "株"
-lang = "any"
-note = "国内株+米国・世界の株式市場。金融政策・為替など市場に直結するマクロ要因もここで拾う(旧「経済」を統合 2026-08-10)。英語の一次情報(決算速報・市況)も拾う。"
+note = "国内株+米国・世界の株式市場。金融政策・為替など市場に直結するマクロ要因もここで拾う(旧「経済」を統合 2026-08-10)。個人の相場観より市況・決算・政策の一次情報を優先。"
 keywords = [
-  "株価", "日経平均", "決算", "米株", "S&P500", "半導体株",
-  "東証", "個別株", "新NISA", "グロース株",
-  "NYダウ", "ナスダック", "米国株", "中国株", "世界同時株安",
-  "日銀", "FRB", "金利", "為替", "円安",
-  "stock market", "earnings", "Nasdaq", "S&P 500", "Wall Street",
+  "日経平均", "TOPIX", "東証", "株価", "決算発表", "半導体株",
+  "NYダウ", "ナスダック", "S&P500", "米国株", "世界同時株安",
+  "日銀", "利上げ", "利下げ", "FRB", "FOMC", "米雇用統計", "長期金利", "円安", "円高",
+]
+keywords_en = [
+  "stock market", "Wall Street", "S&P 500", "Nasdaq", "Dow Jones", "earnings",
+  "Federal Reserve", "FOMC", "Treasury yields", "Bank of Japan", "Nikkei", "CPI",
+]
+exclude = ["必ず儲かる", "LINE登録", "無料公開", "推奨銘柄", "爆上げ", "プレゼント企画"]
+accounts = ["nikkei", "BloombergJapan", "ReutersJapan", "markets", "WSJmarkets", "NikkeiAsia"]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "unusual_whales", "WatcherGuru", "WallStreetSilv",
+  "Polymarket", "Kalshi",
+]
+feeds = [
+  { url = "https://www.bloomberg.com/feeds/markets/news.rss", name = "Bloomberg" },
+  { url = "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114", name = "CNBC" },
+  { url = "https://www.boj.or.jp/rss/whatsnew.xml", name = "日本銀行" },
+  { url = "https://www.federalreserve.gov/feeds/press_all.xml", name = "FRB" },
+  { url = "https://news.yahoo.co.jp/rss/topics/business.xml", name = "Yahoo!ニュース", filter = true },
 ]
 
 [[genre]]
 key = "テクノロジー"
-lang = "any"
-note = "AI以外の技術全般(スマホ/半導体/宇宙開発/EV/ロボット/セキュリティ等)。英語の一次情報も拾う。"
+note = "AI以外の技術全般(スマホ/半導体/宇宙開発/EV/ロボット/セキュリティ等)。"
 keywords = [
-  "テクノロジー", "IT", "スマホ", "iPhone", "半導体", "宇宙開発",
-  "ロケット", "EV", "サイバーセキュリティ", "ガジェット", "量子コンピュータ",
-  "ヒューマノイド", "ロボット", "SpaceX", "robotics", "quantum computing",
+  "iPhone", "iOS", "Android", "半導体", "TSMC", "ラピダス",
+  "宇宙開発", "ロケット打ち上げ", "H3ロケット", "SpaceX", "スターシップ",
+  "電気自動車", "サイバー攻撃", "ランサムウェア", "脆弱性", "情報漏えい",
+  "量子コンピュータ", "ヒューマノイド", "人型ロボット",
 ]
-exclude = ["必ず買い", "銘柄"]
-
-[[genre]]
-key = "RPA"
-note = "RPA・業務自動化・DXの最新情報＋エンジニア/現場の声(海外ベンダー含む)。ニッチで高いいねが付きにくいので min_faves を下げる。"
-min_faves = 10
-keywords = [
-  "RPA", "UiPath", "Power Automate", "WinActor", "業務自動化",
-  "RPAエンジニア", "Automation Anywhere", "ノーコード", "自動化ツール",
-  "DX", "業務効率化", "海外DX",
+keywords_en = [
+  "iPhone", "Android", "semiconductor", "TSMC", "SpaceX", "Starship", "Starlink",
+  "electric vehicle", "cybersecurity", "ransomware", "data breach", "zero-day",
+  "quantum computing", "humanoid robot",
+]
+exclude = ["必ず買い", "銘柄", "プレゼント企画", "ガチャ"]
+accounts = ["verge", "TechCrunch", "arstechnica", "SpaceX", "itmedia_news", "gigazine"]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
+  "unusual_whales", "Polymarket", "Kalshi",
+]
+feeds = [
+  { url = "https://techmeme.com/feed.xml", name = "Techmeme" },
+  { url = "https://hnrss.org/frontpage?points=300", name = "Hacker News" },
+  { url = "https://rss.itmedia.co.jp/rss/2.0/news_bursts.xml", name = "ITmedia NEWS" },
+  { url = "https://www.publickey1.jp/atom.xml", name = "Publickey" },
+  { url = "https://gigazine.net/news/rss_2.0/", name = "GIGAZINE", filter = true },
+  { url = "https://pc.watch.impress.co.jp/data/rss/1.0/pcw/feed.rdf", name = "PC Watch" },
+  { url = "https://xtech.nikkei.com/rss/index.rdf", name = "日経クロステック" },
+  { url = "https://techcrunch.com/feed/", name = "TechCrunch" },
 ]
 
 [[genre]]

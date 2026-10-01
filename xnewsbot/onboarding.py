@@ -135,7 +135,8 @@ def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: st
         # レイアウト確認用。収集せず DB のモック(架空)を現行レイアウトで即返す(API/時間を使わない)。
         grouped = mockdata.get_or_seed(session)
         messenger.reply(reply_token,
-                        [lc.text_spec(mockdata.WARNING)] + lc.digest_specs(grouped, greeting=False))
+                        [lc.text_spec(mockdata.WARNING)]
+                        + lc.digest_specs(grouped, greeting=False, market=mockdata.MOCK_MARKET))
         return True
     if text in _DELIVER_WORDS:
         # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。

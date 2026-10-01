@@ -14,20 +14,24 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import date
+import re
+import urllib.parse
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
-# 1バブルあたりの目安サイズ(LINEのバブル上限~10KBに対し余裕を持たせる)。
-# 日本語はUTF-8で1文字3バイトのため、文字数でなくバイト数で測る(文字数だと実サイズを
-# 約1/3に過小評価し、7000「文字」のバブルが実際は~21KBになり上限を超えていた)。
-# これを超えそうなら次のバブル(=次メッセージ)に送り、件数は削らず全部出す。
-BUBBLE_MAX_BYTES = 7000
+# Flex の上限(バブル 30KB / カルーセル 50KB・12枚)に余裕を持たせた値。
+# 日本語はUTF-8で1文字3バイトのため、文字数でなくバイト数で測る。
+# 1ジャンルがバブル上限を超えそうなら記事単位で次のバブルに送り、件数は削らず全部出す。
+BUBBLE_MAX_BYTES = 28000
+CAROUSEL_MAX_BYTES = 48000
+CAROUSEL_MAX_BUBBLES = 12
 MAX_MESSAGES = 5       # LINE は1回の push/reply で最大5メッセージ
-ACCENT = "#1565C0"
+URI_MAX_CHARS = 1000   # URI action の uri の上限
 
 
 # ---------------------------------------------------------------- spec builders
@@ -93,7 +97,25 @@ def settings_summary_text(sub: Subscriber) -> str:
     return f"現在の設定\n・ジャンル: {g}\n・朝の配信: {m}\n・夜の配信: {e}"
 
 
-# ---- ニュース配信 ----
+# ---- ニュース配信(要点バブル + ジャンル別カルーセル) ----
+#
+# 1回の push は「要点バブル1通 + ジャンル別カルーセル」で最大5メッセージ。
+# LINE の通数は宛先人数で数えるので、5メッセージ以内なら通数は増えない。
+
+GENRE_COLORS = {"特大": "#D32F2F", "AI": "#4F46E5", "株": "#0F766E", "テクノロジー": "#0369A1"}
+OTHER_COLOR = "#475569"   # 上記以外のジャンル
+TITLE_COLOR = "#111111"
+TEXT_COLOR = "#222222"
+SUB_COLOR = "#888888"
+META_COLOR = "#999999"
+RULE_COLOR = "#EEEEEE"
+UP_COLOR = "#C62828"
+DOWN_COLOR = "#1565C0"
+POINTS_MAX = 5
+ALT_MAX_CHARS = 400
+DEFAULT_TZ = "Asia/Tokyo"
+_WEEKDAYS = "月火水木金土日"
+
 
 def _tag_labels(item: NewsItem) -> list[str]:
     """表示するジャンルタグの label 列。item.genres(複数)が無ければ主ジャンルのみ。"""
@@ -104,6 +126,14 @@ def _tag_labels(item: NewsItem) -> list[str]:
 def _tag_text(item: NewsItem) -> str:
     """ジャンルタグを「経済/株/政治」の形に。横断話題がどのジャンルに関わるかを示す。"""
     return "/".join(_tag_labels(item))
+
+
+def _genre_label(genre: str) -> str:
+    return GENRES.get(genre, {}).get("label", genre)
+
+
+def _genre_color(genre: str) -> str:
+    return GENRE_COLORS.get(genre, OTHER_COLOR)
 
 
 def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> str:
@@ -118,65 +148,105 @@ def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> 
     return f"detail:{digest_date:%Y%m%d}:{slot}:{item.genre}:{item.rank}"
 
 
-def _big_item_block(item: NewsItem, detail_data: str) -> dict:
-    """大ニュース1件分の縦ブロック(見出し+タイトル+要約+元ポストリンク)。
-    複数件を1枚の縦長バブルに積み上げるための部品(スマホで横スクロール不要にする)。"""
-    # 常時ジャンル(特大)は専用見出し・赤系アクセントで目立たせる。関連ジャンルがあれば併記。
-    if item.genre in ALWAYS_KEYS:
-        related = [GENRES.get(k, {}).get("label", k) for k in (item.genres or []) if k not in ALWAYS_KEYS]
-        extra = ("  " + " / ".join(related)) if related else ""
-        heading, accent = f"🚨 特大ニュース{extra}", "#D32F2F"
-    else:
-        heading, accent = f"【{_tag_text(item)}】大ニュース", ACCENT
-    contents = [
-        {"type": "text", "text": heading, "size": "sm",
-         "color": accent, "weight": "bold"},
-        {"type": "text", "text": item.title, "weight": "bold", "size": "lg",
-         "wrap": True, "margin": "sm"},
-    ]
-    if item.summary:
-        contents.append(
-            {"type": "text", "text": item.summary, "size": "sm",
-             "color": "#555555", "wrap": True, "margin": "md"}
-        )
-    # 大ニュースもタップで長文の詳細(detail)を開ける(小ニュースと同じ導線)。
-    # 一覧では見出し+要約までにとどめ、詳しく読みたい人だけ詳細を開く。
-    contents.append(
-        {"type": "text", "text": "▶ 詳細を見る", "size": "xs",
-         "color": accent, "weight": "bold", "margin": "md",
-         "action": {"type": "postback", "data": detail_data, "displayText": "詳細を見る"}}
-    )
-    url = item.source_urls[0] if item.source_urls else ""
-    if url:
-        # 元ポストへのリンクは残す(リンクテキストにして縦に詰め、高さを抑える)
-        contents.append(
-            {"type": "text", "text": "▶ 元ポストを見る", "size": "xs",
-             "color": "#888888", "margin": "sm",
-             "action": {"type": "uri", "label": "元ポストを見る", "uri": url}}
-        )
-    return {"type": "box", "layout": "vertical", "contents": contents}
+def _detail_action(item: NewsItem, digest_date: date | None, slot: str | None) -> dict:
+    return {"type": "postback", "data": _detail_data(item, digest_date, slot),
+            "displayText": f"詳細: {item.title[:30]}"}
 
 
-def _small_row(item: NewsItem, detail_data: str) -> dict:
-    """小ニュース1件分のコンパクトな縦行(タップで詳細 postback)。
-    横カルーセルをやめ縦1枚に同居させることで、配信を1メッセージに収めて通数を節約する。"""
-    return {
-        "type": "text", "text": f"▷ 【{_tag_text(item)}】{item.title}",
-        "size": "sm", "color": "#333333", "wrap": True, "margin": "md",
-        "action": {"type": "postback", "data": detail_data, "displayText": "詳細を見る"},
-    }
-
-
-def _sep(margin: str = "md", color: str = "#E5E5E5") -> dict:
+def _sep(margin: str = "md", color: str = RULE_COLOR) -> dict:
     return {"type": "separator", "margin": margin, "color": color}
 
 
-_GREETING = {"morning": "おはようございます。今朝のニュースです", "evening": "こんばんは。今夜のニュースです"}
+def _source_name(s: dict) -> str:
+    """出典の表示名。media が無い旧データは X なら @author、ニュースなら媒体名(author)。"""
+    if s.get("media"):
+        return str(s["media"])
+    author = s.get("author") or ""
+    if not author or author == "?":
+        return ""
+    return author if s.get("kind") == "news" else f"@{author}"
 
 
-def _byte_size(contents: list[dict]) -> int:
+def _parse_time(raw) -> datetime | None:
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _ago(item: NewsItem, now: datetime) -> str:
+    """出典の最新時刻から now までを「N分前/N時間前/N日前」に。時刻が無ければ ""。"""
+    times = [t for t in (_parse_time(s.get("created_at")) for s in item.source_tweets or []
+                         if s.get("created_at")) if t]
+    if not times:
+        return ""
+    minutes = int(max(0.0, (now - max(times)).total_seconds()) // 60)
+    if minutes < 60:
+        return f"{max(minutes, 1)}分前"
+    if minutes < 60 * 24:
+        return f"{minutes // 60}時間前"
+    return f"{minutes // (60 * 24)}日前"
+
+
+def _meta_text(item: NewsItem, now: datetime) -> str:
+    """「日経・Bloomberg ほか2件・3時間前」。出典も時刻も無ければ ""。"""
+    names = list(dict.fromkeys(n for n in (_source_name(s) for s in item.source_tweets or []) if n))
+    parts: list[str] = []
+    if names:
+        src = "・".join(names[:2])
+        if len(names) > 2:
+            src += f" ほか{len(names) - 2}件"
+        parts.append(src)
+    ago = _ago(item, now)
+    if ago:
+        parts.append(ago)
+    return "・".join(parts)
+
+
+# RFC 3986 でパス・クエリにそのまま置ける記号。[] はホスト(IPv6)専用で、クエリにあると LINE が拒否する
+_URI_SAFE = ":/?@!$&'()*+,;=%-._~"
+_BAD_PCT = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_HOST_RE = re.compile(r"[A-Za-z0-9.-]+")
+
+
+def _safe_uri(url) -> str | None:
+    """URI action に渡してよい形にして返す。直せなければ None(http/https・1000字以下・空白や制御文字なし)。
+
+    元記事 URL は外部 RSS や X 由来で形が保証されない。LINE は uri が1つでも不正だと
+    同じ push の全メッセージを 400 で拒否する(=その回のダイジェストが全滅する)ので、渡す前に直すか弾く。
+    日本語や | [] を含む URL も拒否されることを validate API で確認済み(2026-10-01)なので、
+    パス・クエリ・フラグメントだけをパーセントエンコードする(ホスト部はエンコードすると壊れる)。
+    ホストは英数字・ドット・ハイフンの名前だけを通す(IPv6 リテラルは LINE が拒否するので省く。validate API で確認)。
+    """
+    if not isinstance(url, str) or not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        return None
+    if any(ch.isspace() or not ch.isprintable() for ch in url):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host, _port = parts.hostname, parts.port  # port は不正な値(:bad・範囲外)で ValueError
+    except ValueError:  # 壊れた IPv6 表記・不正ポートなど
+        return None
+    if not host or "@" in parts.netloc:
+        return None
+    # hostname は小文字化された値なので、K(U+212A)のように小文字化で ASCII になる文字が検査を素通りする。
+    # 返すのは元の netloc なので、そちらも ASCII であることを確かめる。
+    if not parts.netloc.isascii() or not _HOST_RE.fullmatch(host):
+        return None
+    path, query, frag = (urllib.parse.quote(p, safe=_URI_SAFE)
+                         for p in (parts.path, parts.query, parts.fragment))
+    url = urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, query, frag))
+    if _BAD_PCT.search(url) or len(url) > URI_MAX_CHARS:
+        return None
+    return url
+
+
+def _byte_size(obj) -> int:
     """LINE が数えるのと同じ「JSON のバイト数」。日本語は1文字3バイトなので文字数では測れない。"""
-    return len(json.dumps(contents, ensure_ascii=False).encode("utf-8"))
+    return len(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
 
 def _text_nodes(node) -> list[dict]:
@@ -193,14 +263,14 @@ def _text_nodes(node) -> list[dict]:
     return found
 
 
-def _fit_component(comp: dict) -> dict:
-    """単体で BUBBLE_MAX_BYTES を超えるコンポーネントを、収まるまで長い本文から切り詰める。
+def _fit_component(comp, limit: int):
+    """単体で limit を超えるコンポーネント(dict か list)を、収まるまで長い本文から切り詰める。
 
-    バブル分割はコンポーネント単位なので、1件が単体で上限を超えると分割しても収まらず、
+    バブル分割は記事単位なので、1件が単体で上限を超えると分割しても収まらず、
     LINE が 400 を返してその回の push が丸ごと失敗する(=その日のダイジェストが全滅する)。
     要約の質を変える処理ではなく、異常に長い出力が来たときだけ働く最後の安全網。
     """
-    if _byte_size([comp]) <= BUBBLE_MAX_BYTES:
+    if _byte_size(comp) <= limit:
         return comp
     comp = copy.deepcopy(comp)
     nodes = _text_nodes(comp)
@@ -210,98 +280,322 @@ def _fit_component(comp: dict) -> dict:
         if target is None or len(target["text"]) <= 20:
             break
         target["text"] = target["text"][: max(20, len(target["text"]) // 2)].rstrip() + "…"
-        if _byte_size([comp]) <= BUBBLE_MAX_BYTES:
+        if _byte_size(comp) <= limit:
             break
     return comp
 
 
-def _pack_bubbles(components: list[dict], alt_first: str, alt_rest: str) -> list[dict]:
-    """縦に並ぶ components を、1バブルが大きくなり過ぎない範囲で複数バブルに詰める。
-    件数は削らず(=全部出す)、サイズ超過時のみ次のバブル(=次メッセージ)へ送る。"""
-    bubbles: list[list[dict]] = []
-    cur: list[dict] = []
-    for comp in components:
-        comp = _fit_component(comp)  # 単体で上限超過なら切り詰める(push 全滅の防止)
-        if cur and _byte_size(cur + [comp]) > BUBBLE_MAX_BYTES:
-            bubbles.append(cur)
-            cur = [comp]
+# -- 要点バブル --
+
+def _pick_points(grouped: dict[str, list[NewsItem]]) -> list[NewsItem]:
+    """今日の要点(最大5本): 特大の big をすべて先頭 → 他ジャンルの big を score 降順
+    → 足りなければ small を score 降順。同点はジャンル順・rank 順。"""
+    pairs = [(gi, g, it) for gi, (g, items) in enumerate(grouped.items()) for it in items]
+
+    def by_score(rows):
+        return [it for _gi, _g, it in sorted(rows, key=lambda r: (-(r[2].score or 0), r[0], r[2].rank))]
+
+    always = [it for _gi, g, it in pairs if g in ALWAYS_KEYS and it.importance == "big"]
+    bigs = by_score([r for r in pairs if r[1] not in ALWAYS_KEYS and r[2].importance == "big"])
+    smalls = by_score([r for r in pairs if r[2].importance != "big"])
+    return (always + bigs + smalls)[:POINTS_MAX]
+
+
+def _signed(v: float, unit: str) -> tuple[str, str]:
+    """前日比を符号つき文字列と色に(▲▼は会計で負号の意味があるので使わない)。"""
+    v = round(v, 2)
+    if v == 0:
+        v = 0.0  # -0.00 を出さない
+    color = UP_COLOR if v > 0 else DOWN_COLOR if v < 0 else SUB_COLOR
+    return f"{v:+.2f}{unit}", color
+
+
+def _market_row(m: dict) -> dict | None:
+    """市況1行(ラベル/終値/前日比)。終値やラベルが無い行は出さない。"""
+    label = str(m.get("label") or m.get("key") or "")
+    try:
+        close = float(m.get("close"))
+    except (TypeError, ValueError):
+        return None
+    if not label:
+        return None
+    kind = m.get("kind")
+    if kind == "fx":
+        close_s = f"{close:,.2f}円"
+    elif kind == "yield":
+        close_s = f"{close:.2f}%"
+    else:
+        close_s = f"{close:,.0f}"
+    raw, unit = (m.get("change"), "pt") if kind == "yield" else (m.get("change_pct"), "%")
+    try:
+        chg_s, chg_color = _signed(float(raw), unit)
+    except (TypeError, ValueError):
+        chg_s, chg_color = "—", SUB_COLOR
+    return {"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
+        {"type": "text", "text": label, "size": "xs", "color": "#555555", "flex": 5},
+        {"type": "text", "text": close_s, "size": "xs", "color": TEXT_COLOR, "align": "end", "flex": 4},
+        {"type": "text", "text": chg_s, "size": "xs", "weight": "bold", "color": chg_color,
+         "align": "end", "flex": 3},
+    ]}
+
+
+def _point_row(no: int, item: NewsItem, digest_date: date | None, slot: str | None) -> dict:
+    color = _genre_color(item.genre)
+    return {
+        "type": "box", "layout": "horizontal", "margin": "md", "spacing": "md",
+        "action": _detail_action(item, digest_date, slot),
+        "contents": [
+            {"type": "text", "text": str(no), "size": "sm", "weight": "bold", "color": color, "flex": 0},
+            {"type": "box", "layout": "vertical", "contents": [
+                {"type": "text", "text": _genre_label(item.genre), "size": "xxs", "weight": "bold",
+                 "color": color},
+                {"type": "text", "text": item.title, "size": "sm", "color": TEXT_COLOR, "wrap": True},
+            ]},
+        ],
+    }
+
+
+def _summary_bubble(grouped, points, market, heading: str, digest_date, slot,
+                    has_carousel: bool) -> dict:
+    total = sum(len(items) for items in grouped.values())
+    counts = "・".join(f"{_genre_label(g)} {len(items)}" for g, items in grouped.items() if items)
+    contents: list[dict] = [
+        {"type": "text", "text": heading, "size": "lg", "weight": "bold", "color": TITLE_COLOR},
+        {"type": "text", "text": f"{counts}（計{total}件）", "size": "xs", "color": SUB_COLOR,
+         "wrap": True},
+        {"type": "text", "text": "今日の要点", "size": "sm", "weight": "bold", "color": TITLE_COLOR,
+         "margin": "xl"},
+    ]
+    contents += [_point_row(i, it, digest_date, slot) for i, it in enumerate(points, 1)]
+
+    rows = [r for r in (_market_row(m) for m in market or []) if r]
+    if rows:
+        contents.append(_sep("xl"))
+        contents.append({"type": "text", "text": "市況（前日終値）", "size": "sm", "weight": "bold",
+                         "color": TITLE_COLOR, "margin": "lg"})
+        contents += rows
+
+    if has_carousel:
+        contents.append({"type": "text", "text": "ジャンル別の記事は次のカードを横にスワイプ →",
+                         "size": "xxs", "color": META_COLOR, "margin": "xl", "wrap": True})
+    bubble = {"type": "bubble", "size": "giga",
+              "body": {"type": "box", "layout": "vertical", "paddingAll": "20px", "contents": contents}}
+    return _fit_component(bubble, BUBBLE_MAX_BYTES)
+
+
+# -- ジャンル別カルーセル --
+
+def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
+    """大ニュース1件: 見出し → 要約 → 出典・時刻 → [詳細を読む][元記事]。"""
+    contents: list[dict] = [
+        {"type": "text", "text": item.title, "size": "md", "weight": "bold", "color": TITLE_COLOR,
+         "wrap": True},
+    ]
+    if item.summary:
+        contents.append({"type": "text", "text": item.summary, "size": "sm", "color": "#444444",
+                         "wrap": True, "margin": "sm"})
+    meta = _meta_text(item, now)
+    if meta:
+        contents.append({"type": "text", "text": meta, "size": "xxs", "color": META_COLOR,
+                         "margin": "sm", "wrap": True})
+    # 2つのリンクを左に寄せて並べる(flex 0。既定の flex 1 だと「元記事」が中央から始まる)
+    links = [{"type": "text", "text": "詳細を読む", "size": "xs", "weight": "bold", "color": color,
+              "flex": 0, "action": action}]
+    # 不正な URL だけなら「元記事」リンクを省く(記事本体は出す)。先頭が不正でも他に使える URL があればそれを使う
+    url = next((u for u in map(_safe_uri, item.source_urls or []) if u), None)
+    if url:
+        links.append({"type": "text", "text": "元記事", "size": "xs", "color": SUB_COLOR, "flex": 0,
+                      "action": {"type": "uri", "label": "元記事", "uri": url}})
+    contents.append({"type": "box", "layout": "horizontal", "margin": "md", "spacing": "xl",
+                     "contents": links})
+    return {"type": "box", "layout": "vertical", "contents": contents}
+
+
+def _small_block(item: NewsItem, action: dict, now: datetime) -> dict:
+    """見出し一覧の1行(タップで詳細)。出典・時刻を小さく添える。"""
+    contents: list[dict] = [
+        {"type": "text", "text": item.title, "size": "sm", "color": TEXT_COLOR, "wrap": True},
+    ]
+    meta = _meta_text(item, now)
+    if meta:
+        contents.append({"type": "text", "text": meta, "size": "xxs", "color": "#AAAAAA"})
+    return {"type": "box", "layout": "vertical", "margin": "md", "action": action,
+            "contents": contents}
+
+
+def _genre_units(items: list[NewsItem], color: str, digest_date, slot, now) -> list[tuple[list, list]]:
+    """記事1件ごとの (先頭の区切り線, 本体) の列。バブルを分けるときは記事単位で分け、
+    新しいバブルの先頭には区切り線を置かない。"""
+    ordered = sorted(items, key=lambda it: it.rank)
+    bigs = [it for it in ordered if it.importance == "big"]
+    smalls = [it for it in ordered if it.importance != "big"]
+    units: list[tuple[list, list]] = []
+    for i, it in enumerate(bigs):
+        units.append(([_sep("lg")] if i else [],
+                      [_big_block(it, color, _detail_action(it, digest_date, slot), now)]))
+    for j, it in enumerate(smalls):
+        row = _small_block(it, _detail_action(it, digest_date, slot), now)
+        if j == 0 and bigs:
+            # 見出しラベルは最初の1件と同じ単位にして、ラベルだけがバブル末尾に残らないようにする
+            label = {"type": "text", "text": "ほかの見出し", "size": "xs", "weight": "bold",
+                     "color": SUB_COLOR, "margin": "lg"}
+            units.append(([_sep("xl")], [label, row]))
+        elif j == 0:
+            units.append(([], [row]))
         else:
-            cur.append(comp)
+            units.append(([_sep("md", "#F2F2F2")], [row]))
+    return units
+
+
+def _genre_bubble(genre: str, head: str, count: int, body: list[dict]) -> dict:
+    return {
+        "type": "bubble", "size": "giga",
+        "header": {"type": "box", "layout": "horizontal", "backgroundColor": _genre_color(genre),
+                   "paddingAll": "16px", "contents": [
+                       {"type": "text", "text": head, "size": "lg", "weight": "bold",
+                        "color": "#FFFFFF", "flex": 1},
+                       {"type": "text", "text": f"{count}件", "size": "sm", "color": "#FFFFFF",
+                        "align": "end", "gravity": "center"},
+                   ]},
+        "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "contents": body},
+    }
+
+
+def _genre_bubbles(genre: str, items: list[NewsItem], digest_date, slot,
+                   now: datetime) -> list[tuple[dict, int]]:
+    """1ジャンルを (バブル, 載せた記事数) の列にする。件数は削らず、28000B を超えるときだけ
+    記事単位で次のバブルへ送る(見出しは「AI (1/2)」)。"""
+    label = _genre_label(genre)
+
+    def measure(body: list[dict]) -> int:
+        return _byte_size(_genre_bubble(genre, f"{label} (00/00)", len(items), body))
+
+    budget = BUBBLE_MAX_BYTES - measure([]) - 16  # 16: 配列の区切り文字ぶんの余裕
+    pages: list[tuple[list[dict], int]] = []
+    cur: list[dict] = []
+    n = 0
+    for lead, body in _genre_units(items, _genre_color(genre), digest_date, slot, now):
+        body = _fit_component(body, budget - _byte_size(lead))  # 単体で上限超過なら切り詰める
+        if cur and measure(cur + lead + body) > BUBBLE_MAX_BYTES:
+            pages.append((cur, n))
+            cur, n = list(body), 1
+        else:
+            cur = (cur + lead + body) if cur else list(body)
+            n += 1
     if cur:
-        bubbles.append(cur)
+        pages.append((cur, n))
 
-    # LINE は1回の push/reply で最大5メッセージ。超過分のバブルは送れないが、黙って捨てると
-    # 後半ジャンルの見出しが無言で消える。最後のバブルに省略を明示する(件数=タップ可能な見出し数)。
-    kept = bubbles[:MAX_MESSAGES]
-    dropped = bubbles[MAX_MESSAGES:]
+    if len(pages) == 1:
+        return [(_genre_bubble(genre, label, len(items), pages[0][0]), pages[0][1])]
+    return [(_genre_bubble(genre, f"{label} ({k}/{len(pages)})", len(items), body), cnt)
+            for k, (body, cnt) in enumerate(pages, 1)]
+
+
+def _note_bubble(text: str) -> dict:
+    return {"type": "bubble", "size": "giga",
+            "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "contents": [
+                {"type": "text", "text": text, "size": "sm", "color": META_COLOR, "wrap": True}]}}
+
+
+def _carousel(bubbles: list[dict]) -> dict:
+    return {"type": "carousel", "contents": bubbles}
+
+
+TOO_LARGE_NOTE = "長すぎるため表示できない記事がありました"
+
+
+def _guard_flex(contents: dict) -> dict:
+    """最後の安全網: 上限を超えたバブルだけ注記に差し替える。
+
+    1通でも上限を超えると LINE は push 全体を 400 で拒否し、その回の全メッセージが届かない。
+    通常は _fit_component の切り詰めで収まりここでは何も変わらない。切り詰めきれなかった
+    異常な出力が来たときに、その1枚だけを諦めて残りを届けるためのもの。
+    """
+    if contents["type"] == "bubble":
+        return contents if _byte_size(contents) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)
+    bubbles = [b if _byte_size(b) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)
+               for b in contents["contents"]]
+    # 各バブルが上限内なら _pack_carousels の詰め方で 48000B 以内に収まる(差し替えは小さくなる方向のみ)
+    return _carousel(bubbles)
+
+
+def _pack_carousels(bubbles: list[tuple[dict, int, str]],
+                    max_messages: int) -> list[tuple[list[dict], list[str]]]:
+    """バブルを 12枚・48000B 以内のカルーセルに順に詰める。max_messages を超える分は送れないので、
+    最後のカルーセル末尾に「ほか N 件は省略」を出す(黙って消さない)。"""
+    cars: list[list[tuple[dict, int, str]]] = []
+    cur: list[tuple[dict, int, str]] = []
+    for entry in bubbles:
+        if cur and (len(cur) >= CAROUSEL_MAX_BUBBLES
+                    or _byte_size(_carousel([b for b, _, _ in cur + [entry]])) > CAROUSEL_MAX_BYTES):
+            cars.append(cur)
+            cur = []
+        cur.append(entry)
+    if cur:
+        cars.append(cur)
+
+    kept = cars[:max_messages]
+    dropped = sum(n for car in cars[max_messages:] for _, n, _ in car)
     if dropped and kept:
-        n = sum(1 for b in dropped for c in b
-                if isinstance(c, dict) and str(c.get("action", {}).get("data", "")).startswith("detail:"))
-        note = (f"…ほか {n} 件の見出しは次回の配信でお届けします。" if n
-                else "…一部の見出しは次回の配信でお届けします。")
-        kept[-1] = kept[-1] + [{"type": "text", "text": note, "size": "xs",
-                                "color": "#999999", "wrap": True, "margin": "md"}]
+        last = kept[-1]
+        while True:
+            note = (_note_bubble(f"ほか {dropped} 件は省略"), 0, "")
+            if (len(last) < CAROUSEL_MAX_BUBBLES
+                    and _byte_size(_carousel([b for b, _, _ in last + [note]])) <= CAROUSEL_MAX_BYTES):
+                last.append(note)
+                break
+            dropped += last.pop()[1]
 
-    specs: list[dict] = []
-    for idx, body in enumerate(kept):
-        specs.append({
-            "type": "flex", "alt": alt_first if idx == 0 else alt_rest,
-            "contents": {"type": "bubble", "size": "giga",
-                         "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": body}},
-        })
-    return specs
+    out: list[tuple[list[dict], list[str]]] = []
+    for car in kept:
+        genres = list(dict.fromkeys(g for _, _, g in car if g))
+        out.append(([b for b, _, _ in car], genres))
+    return out
 
 
 def digest_specs(
     grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None,
-    digest_date: date | None = None,
+    digest_date: date | None = None, market: list[dict] | None = None,
+    now: datetime | None = None,
 ) -> list[dict]:
-    """購読ジャンルの NewsItem 群を配信メッセージ(spec列)に変換する。
+    """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大5)に変換する。
 
-    - 大ニュースは **ジャンル順にすべて** 積み上げる(特大→各ジャンル。1ジャンルが多くても
-      他ジャンルが押し出されない=各ジャンル最低1件は必ず出る。無いジャンルは出さない)。
-    - 小ニュースは見出し行(タップで詳細 postback)を **すべて** 並べる(省略しない)。
-    - 見やすさ優先。1バブルが大きくなり過ぎる場合だけ複数メッセージに分割する
-      (LINE無料枠で数えるのは push 数だが、本数に余裕があるので件数は削らない)。
+    1通目は要点バブル(日付見出し・ジャンル別件数・今日の要点5本・市況)。2通目以降は
+    ジャンル別カルーセル(grouped の順=特大→各ジャンル、1ジャンル1枚)。
+    - 件数は削らない: 全記事がどれかのカルーセルに必ず出る(各ジャンル最低1件も保たれる)。
+    - 0件のジャンルは出さない。全ジャンル0件ならテキスト1通。
+    - greeting は互換のため残している(見出しは常に同じ)。
     """
-    # grouped は表示順(特大→各ジャンル)。その順序を保ったまま大/小に振り分ける
-    # (=ビューワー数の全体ソートをやめ、ジャンルごとの公平な掲載にする)。
-    bigs: list[NewsItem] = []
-    smalls: list[NewsItem] = []
-    for items in grouped.values():
-        for it in items:
-            (bigs if it.importance == "big" else smalls).append(it)
-
-    if not bigs and not smalls:
+    total = sum(len(items) for items in grouped.values())
+    if not total:
         return [text_spec("本日は対象ジャンルのニュースが見つかりませんでした。")]
 
-    components: list[dict] = []
-    if greeting:
-        head = _GREETING.get(slot or "", "今日のニュースです")
-        active = [g for g, items in grouped.items() if items]
-        components.append({"type": "text", "text": head, "weight": "bold", "size": "md",
-                           "wrap": True, "color": "#222222"})
-        components.append({"type": "text", "text": " / ".join(active),
-                           "size": "xxs", "color": "#999999", "wrap": True})
+    now = now or datetime.now(ZoneInfo(DEFAULT_TZ))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
 
-    if bigs:
-        if components:
-            components.append(_sep("lg"))
-        for i, it in enumerate(bigs):
-            if i > 0:
-                components.append(_sep("lg"))
-            components.append(_big_item_block(it, _detail_data(it, digest_date, slot)))
+    bubbles: list[tuple[dict, int, str]] = []
+    for genre, items in grouped.items():
+        if items:
+            bubbles += [(b, n, genre) for b, n in _genre_bubbles(genre, items, digest_date, slot, now)]
+    carousels = _pack_carousels(bubbles, MAX_MESSAGES - 1)
 
-    if smalls:
-        if components:
-            components.append(_sep("xl", "#CCCCCC"))
-        components.append({"type": "text", "text": "そのほかの見出し(タップで詳細)",
-                           "size": "xs", "color": "#888888", "weight": "bold"})
-        for it in smalls:
-            components.append(_small_row(it, _detail_data(it, digest_date, slot)))
+    d = digest_date or now.date()
+    slot_word = "夜" if slot == "evening" else "朝"
+    heading = f"{d.month}月{d.day}日({_WEEKDAYS[d.weekday()]}) {slot_word}のニュース"
+    points = _pick_points(grouped)
+    alt = f"{slot_word}のニュース｜{points[0].title}" + (f" ほか{total - 1}件" if total > 1 else "")
 
-    alt = _GREETING.get(slot or "", "今日のニュース")
-    return _pack_bubbles(components, alt_first=alt, alt_rest="ニュースのつづき")
+    specs: list[dict] = [{
+        "type": "flex", "alt": alt[:ALT_MAX_CHARS],
+        "contents": _guard_flex(_summary_bubble(grouped, points, market, heading, digest_date, slot,
+                                                has_carousel=bool(carousels))),
+    }]
+    for bubble_list, genres in carousels:
+        alt_c = "ジャンル別ニュース（" + "・".join(_genre_label(g) for g in genres) + "）"
+        specs.append({"type": "flex", "alt": alt_c[:ALT_MAX_CHARS],
+                      "contents": _guard_flex(_carousel(bubble_list))})
+    return specs
 
 
 # LINE のテキストメッセージ上限は5000字。余裕を持たせて切る。
@@ -309,8 +603,8 @@ DETAIL_MAX_CHARS = 4800
 
 
 def detail_spec(item: NewsItem) -> dict:
-    """「詳細を見る」タップで返す本文。見出しの再掲で終わらせず長め解説(detail。
-    無ければ summary)を載せる。元ポストは本文を載せず、見たい人向けにリンクだけ残す。"""
+    """「詳細を読む」タップで返す本文。見出しの再掲で終わらせず長め解説(detail。
+    無ければ summary)を載せる。出典は本文を載せず、媒体名/@ハンドルと URL だけ残す。"""
     lines = [f"【{_tag_text(item)}】{item.title}"]
 
     body = item.detail or item.summary
@@ -319,14 +613,15 @@ def detail_spec(item: NewsItem) -> dict:
         lines.append(body)
 
     if item.source_tweets:
+        src = [" ".join(p for p in (_source_name(s), s.get("url", "")) if p)
+               for s in item.source_tweets[:3]]
+    else:
+        src = list(item.source_urls[:3])
+    src = [s for s in src if s]
+    if src:
         lines.append("")
-        lines.append("元ポスト:")
-        for s in item.source_tweets[:3]:
-            url = s.get("url", "")
-            lines.append(f"・@{s.get('author', '?')} {url}".rstrip())
-    elif item.source_urls:
-        lines.append("")
-        lines.append("元ポスト: " + " ".join(item.source_urls[:3]))
+        lines.append("出典")
+        lines += [f"・{s}" for s in src]
 
     text = "\n".join(lines)
     if len(text) > DETAIL_MAX_CHARS:

@@ -3,6 +3,7 @@
 - Subscriber : LINE購読者。有効ジャンル・朝/夜の配信時刻・オンボーディング状態を持つ。
 - GenreDigest: 「日×スロット(朝/夜)×ジャンル」単位のキュレーション結果(複数購読者で再利用)。
 - NewsItem   : GenreDigest 配下の1ニュース(大/小、見出し・要約・元ツイート)。
+- MarketSnapshot: 「日×スロット」単位の市況(前日終値)。要点バブルの市況ブロックに出す。
 """
 
 from __future__ import annotations
@@ -102,6 +103,18 @@ class NewsItem(SQLModel, table=True):
     summary: str = ""          # 見出し一覧/大ニュース inline 用の簡潔な要約(2〜3文)
     detail: str = ""           # 「詳細を見る」タップ時に出す長め解説(背景・経緯。空なら summary で代替)
     source_urls: list[str] = Field(default_factory=list, sa_column=Column(JSON))
-    # [{"text":..., "author":..., "url":..., "views":int}, ...]
+    # [{"text":..., "author":..., "url":..., "views":int,
+    #   "media": 出典の表示名(X は "@handle"、ニュースは媒体名), "created_at": ISO8601(UTC) か "",
+    #   "kind": "x" | "news"}, ...]  ※media/created_at/kind は後から追加(旧データには無い)
     source_tweets: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     top_view_count: int = 0
+    score: int = 0             # キュレーション時の重要度(0-100)。要点の並び順に使う
+
+
+class MarketSnapshot(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    digest_date: date = Field(index=True)
+    slot: str = Field(default="morning", index=True)  # "morning" | "evening"
+    # [{"key","label","close","change","change_pct","asof","kind"("index"|"fx"|"yield")}, ...]
+    data: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -63,6 +63,8 @@ def _migrate(engine) -> None:
         if ncols and "genres" not in ncols:
             # JSON 列。既存行は空配列にしておき、表示時は主ジャンル genre で代替する。
             conn.execute(text("ALTER TABLE newsitem ADD COLUMN genres JSON DEFAULT '[]'"))
+        if ncols and "score" not in ncols:
+            conn.execute(text("ALTER TABLE newsitem ADD COLUMN score INTEGER DEFAULT 0"))
 
 
 @contextmanager

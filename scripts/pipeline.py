@@ -20,9 +20,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,12 +34,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import select  # noqa: E402
 
 from xnewsbot import digest, newsfeeds, xclient  # noqa: E402
+from xnewsbot import articles, market  # noqa: E402
 from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
-from xnewsbot.curator import CURATE_INPUT_LIMIT, parse_curated  # noqa: E402
+from xnewsbot.curator import parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
-from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords, lang  # noqa: E402
+from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords  # noqa: E402
+from xnewsbot.genres import feeds, keywords_en  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
+from xnewsbot.models import GenreDigest, NewsItem  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 
 
@@ -52,46 +58,195 @@ def _today(settings) -> date:
     return datetime.now(ZoneInfo(settings.default_tz)).date()
 
 
+X_TEXT_MAX = 1000
+
+
 def _trim(t: dict) -> dict:
     """キュレーション + 出典マッピングに必要な項目だけに絞る(raw JSON を小さく読みやすく)。"""
     a = t.get("author") or {}
+    user = a.get("userName", "?")
     return {
-        "text": " ".join((t.get("text") or "").split()),
+        # 長文ポストは打ち切る(raw は1行1候補で、Read ツールは2000字を超える行を切り捨てるため)
+        "text": " ".join((t.get("text") or "").split())[:X_TEXT_MAX],
         "viewCount": t.get("viewCount") or 0,
         "likeCount": t.get("likeCount") or 0,
         "url": t.get("url", ""),
         "createdAt": t.get("createdAt", ""),
-        "author": {"userName": a.get("userName", "?"), "followers": a.get("followers", 0)},
+        "author": {"userName": user, "followers": a.get("followers", 0)},
+        "media": f"@{user}",
+        "kind": "x",
+        # 公式・一次情報アカウントの投稿(xclient の from: クエリ)。キュレーションの信頼度判定に使う。
+        "official": bool(t.get("_official")),
     }
 
 
-def _newsfeed_candidates(genre: str, settings) -> list[dict]:
-    """無料ニュース(Google ニュースRSS)をジャンルの候補に足す(質向上・コスト度外視)。
+# X 候補の上限。公式は全部残し、それ以外を viewCount 降順で合計この数まで。
+X_PER_GENRE = 50
+# ニュース候補の上限(Google ニュース日本語+英語+直取り RSS を重複除去した後)。
+NEWS_PER_GENRE = 40
+GN_JA_MAX = 10      # Google ニュース日本語の上限(以前は ja を先に詰めて英語が押し出されていた)
+GN_EN_MAX = 8       # Google ニュース英語の上限(日本語とは別枠)
+FEED_MAX = 8        # 直取り RSS 1本あたりの上限(1媒体で枠を埋めない)
+GN_QUERY_TERMS = 6  # Google ニュース検索に使う先頭キーワード数(長すぎるクエリはヒットが痩せる)
+# Yahoo!ファイナンスの銘柄ページ(「トヨタ(株)【7203】：株価・株式情報」)はニュースではない。
+# 株ジャンルの Google ニュース枠の大半(15件中10件)を占めていたので見出しで落とす。
+# 指数ページ(「日経平均株価の指数情報・推移」)も同じく中身が無い。
+QUOTE_PAGE_MARKS = ("株価・株式情報", "指数情報・推移")
+# 再掲を避けるためキュレーションに渡す「直近の配信見出し」の範囲(raw の date の前日〜N日前)。
+RECENT_DAYS = 3
 
-    X(twitterapi.io)由来の候補に、大手報道の記事見出しを加えて Claude の選択肢を厚くする。
-    lang="any" のジャンルは英語ロケールも引いて世界の一次ニュースも拾う。失敗時は空(=Xのみ・無害)。
+
+def _cap_x(tweets: list[dict], limit: int = X_PER_GENRE) -> list[dict]:
+    """公式は全部残し、それ以外を viewCount 降順で合計 limit 件まで(公式→その他の順)。"""
+    off = [t for t in tweets if t.get("_official")]
+    rest = sorted((t for t in tweets if not t.get("_official")), key=xclient.views, reverse=True)
+    return off + rest[: max(0, limit - len(off))]
+
+
+def _gn_query(terms: list[str]) -> str:
+    """Google ニュース検索の OR クエリ。空白を含む語はフレーズにする。"""
+    ts = [f'"{t}"' if " " in t else t for t in terms[:GN_QUERY_TERMS]]
+    return "(" + " OR ".join(ts) + ")" if len(ts) > 1 else ts[0]
+
+
+def _norm_title(s: str) -> str:
+    """重複判定用の正規化見出し(全角半角・大小文字・記号・空白の差を無視)。"""
+    return re.sub(r"[\W_]+", "", unicodedata.normalize("NFKC", s or "").lower())
+
+
+def _not_quote_page(items: list) -> list:
+    return [it for it in items if not any(m in it.title for m in QUOTE_PAGE_MARKS)]
+
+
+def _mentions(item, terms: list[str]) -> bool:
+    """見出し・概要がジャンルのキーワードのどれかを含むか(総合媒体の feed を絞る filter=true 用)。"""
+    hay = f"{item.title} {item.summary}".lower()
+    return any(t.lower() in hay for t in terms)
+
+
+def _feed_items(feed: dict, terms: list[str], hours) -> list:
+    items = newsfeeds.fetch_feed(feed["url"], feed["name"], within_hours=hours)
+    if feed.get("filter"):
+        items = [it for it in items if _mentions(it, terms)]
+    items = _not_quote_page(items)
+    items.sort(key=lambda it: it.published.timestamp() if it.published else 0, reverse=True)
+    return items[:FEED_MAX]
+
+
+def merge_news(sources: list[list], limit: int = NEWS_PER_GENRE) -> list[dict]:
+    """ソースごとの記事列を1件ずつ順番に取り出し(ラウンドロビン)、URL と正規化見出しで重複を除いて
+    limit 件までの候補にする。1つのソースが枠を埋めて他の媒体・英語が押し出されないように。"""
+    seen_url: set[str] = set()
+    seen_title: set[str] = set()
+    out: list[dict] = []
+    depth = max((len(s) for s in sources), default=0)
+    for i in range(depth):
+        for src in sources:
+            if i >= len(src) or len(out) >= limit:
+                continue
+            it = src[i]
+            nt = _norm_title(it.title)
+            if it.url in seen_url or (nt and nt in seen_title):
+                continue
+            seen_url.add(it.url)
+            if nt:
+                seen_title.add(nt)
+            out.append(newsfeeds.as_candidate(it))
+    return out
+
+
+def _safe_source(fn) -> list:
+    """無料ソース1つの想定外の失敗(壊れた XML 等)で収集全体を落とさない。"""
+    try:
+        return fn()
+    except Exception as e:
+        print(f"  ニュース取得の一部が失敗(スキップ): {type(e).__name__}: {e}", file=sys.stderr)
+        return []
+
+
+def _newsfeed_candidates(genre: str, settings) -> list[dict]:
+    """無料ニュースをジャンルの候補に足す: Google ニュース 日本語(keywords)・英語(keywords_en)
+    ＋ 直取り RSS(genres.toml の feeds)。失敗したソースは空(=残りで続ける・無害)。
+    本文(body)はここでは取らず、cmd_collect が全ジャンル分まとめて articles.enrich_bodies で埋める。
     """
     if not settings.collect_use_newsfeeds:
         return []
-    kws = keywords(genre)
-    if not kws:
+    hours = settings.collect_hours
+    kws, kws_en = keywords(genre), keywords_en(genre)
+    jobs = []
+    if kws:
+        jobs.append(lambda: _not_quote_page(
+            newsfeeds.google_news(_gn_query(kws), within_hours=hours))[:GN_JA_MAX])
+    if kws_en:
+        jobs.append(lambda: _not_quote_page(
+            newsfeeds.google_news(_gn_query(kws_en), lang="en", region="US", hl="en-US",
+                                  within_hours=hours))[:GN_EN_MAX])
+    for f in feeds(genre):
+        jobs.append(lambda f=f: _feed_items(f, kws + kws_en, hours))
+    if not jobs:
         return []
-    terms = kws[:6]
-    query = "(" + " OR ".join(terms) + ")" if len(terms) > 1 else terms[0]
-    items = newsfeeds.google_news(query, within_hours=settings.collect_hours)
-    if lang(genre) == "any":
-        items += newsfeeds.google_news(query, lang="en", region="US",
-                                       within_hours=settings.collect_hours)
-    seen: set[str] = set()
-    out: list[dict] = []
-    for it in items:
-        if it.url in seen:
-            continue
-        seen.add(it.url)
-        out.append(newsfeeds.as_candidate(it))
-        if len(out) >= settings.collect_newsfeeds_per_genre:
-            break
+    with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
+        sources = list(pool.map(_safe_source, jobs))
+    return merge_news(sources)
+
+
+def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
+    """直近に配信した見出し(day の前日〜RECENT_DAYS 日前・ジャンル別)。DB は読むだけ。
+
+    日をまたいだ再掲(14日で約8%、同じ話題が6日連続も)を避けるため、キュレーションに渡して
+    「新しい進展がある続報だけ」にさせる。読めなくても収集は続ける(再掲判定なしになるだけ)。
+    """
+    out: dict[str, list[str]] = {g: [] for g in genres}
+    try:
+        init_db()
+        with get_session() as session:
+            rows = session.exec(
+                select(GenreDigest.genre, NewsItem.title)
+                .join(NewsItem, NewsItem.genre_digest_id == GenreDigest.id)
+                .where(GenreDigest.digest_date >= day - timedelta(days=RECENT_DAYS))
+                .where(GenreDigest.digest_date <= day - timedelta(days=1))
+                .where(GenreDigest.genre.in_(genres))
+                .order_by(GenreDigest.digest_date.desc(), NewsItem.rank)
+            ).all()
+    except Exception as e:
+        print(f"  直近の見出しを読めませんでした(再掲判定なしで続行): {type(e).__name__}: {e}",
+              file=sys.stderr)
+        return out
+    for g, title in rows:
+        if title and title not in out[g]:
+            out[g].append(title)
     return out
+
+
+def _dump_raw(out: dict) -> str:
+    """raw を「1行1候補」の JSON で書く。各候補の先頭に、そのジャンル内の番号 `i` を付ける。
+
+    indent=2 だと1候補が十数行になり、キュレーションが 200 行ずつ 25 回読んで約5分かかった
+    (2026-10-01 試走)。1行1候補ならインデント分のトークンが消え、読む回数も減る。
+    `i` は source_idxs に書く番号そのもの(数え間違いを防ぐ)。取り込みは配列の位置で引くので値は一致させる。
+    """
+    def d(v) -> str:
+        return json.dumps(v, ensure_ascii=False)
+
+    def block(items: list, last: bool) -> list[str]:
+        return [d(x) + ("," if j < len(items) - 1 else "") for j, x in enumerate(items)] + \
+            ["]" + ("" if last else ",")]
+
+    lines = ["{"] + [f"{d(k)}: {d(out[k])}," for k in ("date", "tz", "slot")]
+    lines += ['"market": ['] + block(out["market"], last=False)
+    lines.append('"recent_titles": {')
+    rt = list(out["recent_titles"].items())
+    for n, (g, titles) in enumerate(rt):
+        lines += [f"{d(g)}: ["] + block(titles, last=n == len(rt) - 1)
+    lines.append("},")
+    lines.append('"genres": {')
+    gs = list(out["genres"].items())
+    for n, (g, cands) in enumerate(gs):
+        lines += [f"{d(g)}: ["] + block([{"i": j, **c} for j, c in enumerate(cands)],
+                                         last=n == len(gs) - 1)
+    lines.append("}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
 def _due_genres(settings) -> list[str]:
@@ -137,8 +292,8 @@ def cmd_collect(args) -> None:
         print("対象ジャンルがありません(--due/--user なら購読者が未登録の可能性)。", file=sys.stderr)
         sys.exit(EXIT_NO_TARGET)
 
-    out = {"date": _today(settings).isoformat(), "tz": settings.default_tz,
-           "slot": args.slot, "genres": {g: [] for g in genres}}
+    day = _today(settings)
+    cands_by_genre: dict[str, list[dict]] = {g: [] for g in genres}
 
     # 鍵は不変。ジャンルごとに load_keys()→Keychain サブプロセスを叩くのは無駄かつ並列で多重に
     # security を起動するので、ここで1度だけ取得して各収集に渡す(優先度順・フォールバック用)。
@@ -146,24 +301,45 @@ def cmd_collect(args) -> None:
 
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
     # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
-    def _one(g: str) -> tuple[str, list[dict], int, int]:
+    def _one(g: str) -> tuple[str, list[dict], int, int, list[dict]]:
         # 1ジャンルの失敗(再試行しても回復しないタイムアウト/恒久エラー)で収集全体を落とさない。
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
         # X(有料)と 無料ニュース(RSS)の両方を集めて候補プールにする(質向上)。片方が空でも続ける。
         try:
-            tweets = xclient.collect(g, settings=settings, keys=keys)[:CURATE_INPUT_LIMIT]
+            tweets = _cap_x(xclient.collect(g, settings=settings, keys=keys))
         except Exception as e:
             print(f"  {g}: X収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
             tweets = []
         news = _newsfeed_candidates(g, settings)
-        return g, [_trim(t) for t in tweets] + news, len(tweets), len(news)
+        n_off = sum(1 for t in tweets if t.get("_official"))
+        return g, [_trim(t) for t in tweets] + news, len(tweets), n_off, news
 
+    stats: dict[str, tuple[int, int, list[dict]]] = {}
     with ThreadPoolExecutor(max_workers=min(3, len(genres))) as pool:
-        for g, cands, n_x, n_news in pool.map(_one, genres):  # 入力順を保つ
-            out["genres"][g] = cands
-            print(f"  {g}: {len(cands)} 件 収集 (X {n_x} + ニュース {n_news})", file=sys.stderr)
+        for g, cands, n_x, n_off, news in pool.map(_one, genres):  # 入力順を保つ
+            cands_by_genre[g] = cands
+            stats[g] = (n_x, n_off, news)
 
-    text = json.dumps(out, ensure_ascii=False, indent=2)
+    # 本文は全ジャンル分まとめて1回(同じ記事が複数ジャンルにあっても取得1回・時間上限も1つ)。
+    all_cands = [c for cs in cands_by_genre.values() for c in cs]
+    n_target = len({c["url"] for c in all_cands if articles.is_target(c)})
+    t0 = time.monotonic()
+    articles.enrich_bodies(all_cands)
+    n_bodied = len({c["url"] for c in all_cands if c.get("body")})
+    print(f"  本文取得: {n_bodied}/{n_target} 記事 ({time.monotonic() - t0:.1f} 秒)", file=sys.stderr)
+    for g in genres:
+        n_x, n_off, news = stats[g]
+        n_body = sum(1 for c in news if c.get("body"))
+        print(f"  {g}: {len(cands_by_genre[g])} 件 収集 (X {n_x}[公式 {n_off}] + "
+              f"ニュース {len(news)}[本文 {n_body}])", file=sys.stderr)
+
+    mkt = market.fetch_market()
+    print(f"  市況: {len(mkt)} 件", file=sys.stderr)
+    out = {"date": day.isoformat(), "tz": settings.default_tz, "slot": args.slot,
+           "market": mkt, "recent_titles": _recent_titles(genres, day),
+           "genres": cands_by_genre}
+
+    text = _dump_raw(out)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
         print(f"raw を書き出し: {args.out}", file=sys.stderr)
@@ -202,7 +378,8 @@ def cmd_ingest(args) -> None:
             else:
                 note = ""
             print(f"  {genre}: {len(stored)} 件 (大{n_big}){note}", file=sys.stderr)
-    print(f"ingest 完了 ({local_date} / {slot})", file=sys.stderr)
+        digest.save_market(session, local_date, slot, raw.get("market") or [])
+    print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件)", file=sys.stderr)
 
 
 def cmd_push(args) -> None:
