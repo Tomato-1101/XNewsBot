@@ -3,8 +3,8 @@
 <!--
   XNewsBot リアルタイム配信(1日1回・朝08:00 着)を macOS LaunchAgent で起動する。
   ~/Library/LaunchAgents/com.tomato.xnewsbot-deliver.plist に配置する。
-  収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため、配信時刻の【15分前】
-  (07:45)に起動して先に処理を始め、ops/deliver.sh が定刻ちょうど(08:00)まで
+  収集+キュレーション(ヘッドレスClaude)に15〜20分ほどかかるため(2026-10-01 の候補見直し後の試走で約17分)、
+  配信時刻の【45分前】(07:15)に起動して先に処理を始め、ops/deliver.sh が定刻ちょうど(08:00)まで
   待ってから LINE 送信する(=その時刻までの最新を、届く時刻を揃えて配信)。
   万一 定刻までに処理が終わらなくても、終わり次第すぐ送る(諦めて打ち切らない。deliver.sh の wait_until)。
   常駐サーバ(com.tomato.xnewsbot)は LINE Webhook の受信(オンボーディング/設定/今すぐ配信)専任。
@@ -13,7 +13,7 @@
      夜配信を再開するときは、下の StartCalendarInterval に 20:45 の dict を戻し
      (deliver.sh の EVENING_HHMM=2100 はそのまま)、bootout→bootstrap で反映する。
      夜スロットのコード/UIトグル(evening_enabled)は残してあるので、この plist だけで再開できる。
-  ※ 起動は配信時刻の15分前。配信時刻を変えたら、この plist の Hour/Minute(15分前)と
+  ※ 起動は配信時刻の45分前。配信時刻を変えたら、この plist の Hour/Minute(45分前)と
      deliver.sh の MORNING_HHMM(定刻)の両方を合わせて更新する。
   ※ Mac がスリープ等でこの時刻に起動を逃しても、launchd は次回の起床時に1回だけ遅れて実行する
      (=起床時点の最新を届ける)。
@@ -43,7 +43,7 @@
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key><integer>7</integer>
-        <key>Minute</key><integer>45</integer>
+        <key>Minute</key><integer>15</integer>
     </dict>
 
     <key>RunAtLoad</key>

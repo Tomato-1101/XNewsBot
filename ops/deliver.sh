@@ -65,12 +65,22 @@ EVENING_HHMM="2100"
 
 log() { echo "[$(date '+%F %T')] $*" >> "$LOG"; }
 
+# 収集や claude -p が稀にハングすると定刻配信が無限ブロックするので、時間で打ち切る。
+# macOS には timeout/gtimeout が無いことが多い(この Mac も未導入で、以前は無制限実行になっていた)ので、
+# 無ければ perl の alarm を使う(alarm は exec 後も残り、時間切れで子が SIGALRM で終了する。rc=142)。
+run_with_timeout() {
+  local sec="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$sec" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$sec" "$@"
+  else perl -e 'alarm shift @ARGV; exec @ARGV or die "exec: $!\n"' "$sec" "$@"; fi
+}
+
 # 多重起動の防止。「今すぐ配信」の連打や、定刻/リカバリと重なると deliver.sh が並行実行され、
 # 同じ内容が複数回 push されて LINE 無料枠(200通/月)を無駄に消費する。
 # mkdir は同名ディレクトリの同時作成に必ず1つしか成功しないのでロックとして使う
 # (macOS の bash 3.2 に flock は無い)。異常終了で残ったロックは mtime で回収する。
 LOCK_DIR="/tmp/xnewsbot-deliver.lock"
-LOCK_STALE_SEC=1800   # 最長の正常実行(15分前起動 + claude 12分 + 送信)より十分長い値
+LOCK_STALE_SEC=9000   # 最長の正常実行(収集10分 + claude 30分 + 上限解除待ち45分 + 再試行30分 + 送信)より長い値
 OWN_LOCK=0
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then OWN_LOCK=1; echo $$ > "$LOCK_DIR/pid" 2>/dev/null; return 0; fi
@@ -94,6 +104,7 @@ notify_recover_failure() {
   local rc=$?
   [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"   # 自分が取ったロックだけ返す
   [ -n "${CLAUDE_CWD:-}" ] && rm -rf "$CLAUDE_CWD"   # キュレーション用の一時 cwd(mktemp -d)を片付ける
+  [ -n "${CLAUDE_OUT:-}" ] && rm -f "$CLAUDE_OUT"
   if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
     if [ "$(date +%H)" -ge 20 ]; then
@@ -136,15 +147,15 @@ fi
 # - 定刻まで時間がある(収集・キュレーションが定刻前に終わった)場合だけ、定刻ちょうどまで待つ。
 # - 既に定刻を過ぎている(処理が定刻に間に合わなかった/スリープ復帰)場合は待たず即送信する。
 #   = 「8時に終わってなくても、終わったらすぐ送る」。8時を過ぎたら諦める、はしない。
-# 上限(1200s=20分)は、異常に大きな待ち(手動で変な時刻に起動した等)を保険で弾くだけ。
-# 15分前起動でも定刻待ちが効くよう、15分より大きく取る。
+# 上限(3600s=60分)は、異常に大きな待ち(手動で変な時刻に起動した等)を保険で弾くだけ。
+# 45分前起動(plist)でも定刻待ちが効くよう、45分より大きく取る。
 wait_until() {
   local hhmm="$1" today target_epoch now_epoch wait
   today=$(date +%Y-%m-%d)
   target_epoch=$(date -j -f "%Y-%m-%d %H%M%S" "${today} ${hhmm}00" +%s 2>/dev/null) || return 0
   now_epoch=$(date +%s)
   wait=$((target_epoch - now_epoch))
-  if [ "$wait" -gt 0 ] && [ "$wait" -le 1200 ]; then
+  if [ "$wait" -gt 0 ] && [ "$wait" -le 3600 ]; then
     log "定刻 ${hhmm} まで ${wait}s 待機してから送信"
     sleep "$wait"
   elif [ "$wait" -le 0 ]; then
@@ -161,7 +172,8 @@ fi
 # exit 64 = 対象ジャンルなし(正常スキップ)。65 = 全ジャンル収集0件(API全滅)。
 # それ以外の非0は本物の失敗。空ダイジェストを「成功」配信しないよう区別する
 # (以前は全失敗を「対象ジャンルなし」扱いで exit 0 にしており、障害が黙殺されていた)。
-"${COLLECT[@]}" >> "$LOG" 2>&1
+# 収集は通常1分前後(X・RSS・本文取得・市況)。外部サーバの応答待ちで止まっても配信が進むよう10分で打ち切る。
+run_with_timeout 600 "${COLLECT[@]}" >> "$LOG" 2>&1
 COLLECT_RC=$?
 if [ "$COLLECT_RC" -eq 64 ]; then
   log "collect をスキップ(対象ジャンルなし)"; exit 0
@@ -178,16 +190,12 @@ elif [ "$COLLECT_RC" -ne 0 ]; then
 fi
 
 # 2) キュレーション(ヘッドレス Claude Code, Read/Write のみ)
-# claude -p が稀にハングすると定刻配信が無限ブロックするため、timeout が在れば被せる
-# (GNU coreutils。macOS は未導入なら gtimeout。どちらも無ければ従来どおり無制限実行)。
-# 実測: Opus 4.8 のキュレーションは約8分(498s/300KB raw)。旧540s上限は実測の92%で、
-# ニュースが多い日に延びると打ち切られ配信失敗しうる。15分前起動(収集~2分)でも収まる720sへ。
-TIMEOUT_BIN=""
-if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout 720"
-elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout 720"; fi
+# 実測: 旧形式は約8分(498s/300KB raw)。新しい候補構成(約320件・本文つき)の試走は 975s(2026-10-01)。
+# 900s では打ち切られるので 1800s にする(plist の起動も 45分前に前倒し済み)。
+CURATE_TIMEOUT=1800
 PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 # モデルを明示する。未指定だと settings.json 既定(Fable 5・1M)を継承して 1 実行 ~12 分かかる。
-# 定刻配信は 15 分前起動で余裕が薄いので、品質を保ちつつ速い Opus 4.8 を使う。
+# 版番号で固定すると旧版の提供終了で止まるので、エイリアス opus(その時点の最新 Opus)を使う。
 # raw のツイートは信用できない外部テキスト。仕込まれた指示で任意ファイルを触られないよう権限を絞る:
 #   --tools Read,Write … Bash/WebFetch 等を無効化 / --setting-sources "" … ユーザー設定の広い allow と hooks を読まない
 #   allow は RAW の Read と CUR の Edit(Write はこれで判定)だけ / dontAsk … 許可外は確認待ちにせず即拒否
@@ -195,15 +203,52 @@ PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 #   固定パスだと先置き・シンボリックリンク差し替えを許すので実行ごとに mktemp -d で作り、EXIT trap で消す。
 #   --safe-mode … CLAUDE.md/skills/plugins/hooks 等を読まない。--restricted はファイル系ツールを cwd 内に
 #   閉じ込め、cwd 外の RAW(/tmp)が allow ルールがあっても拒否されるため使わない(2026-09-30 実測)。
-if ! CLAUDE_CWD="$(mktemp -d)"; then
-  log "キュレーション用の一時ディレクトリ(mktemp -d)を作れず中止"; exit 1
+if ! CLAUDE_CWD="$(mktemp -d)" || ! CLAUDE_OUT="$(mktemp)"; then
+  log "キュレーション用の一時ファイル(mktemp)を作れず中止"; exit 1
 fi
-# 権限拒否等で claude が CUR を書けなかったとき、前回の curated を当日分として ingest しないよう先に消す
-rm -f "$CUR"
-if ! ( cd "$CLAUDE_CWD" && $TIMEOUT_BIN "$CLAUDE" --model claude-opus-4-8 -p "$PROMPT" \
-       --tools Read,Write --permission-mode dontAsk --setting-sources "" --strict-mcp-config \
-       --no-session-persistence --safe-mode --allowedTools "Read(/$RAW)" "Edit(/$CUR)" ) >> "$LOG" 2>&1; then
-  log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
+run_curation() {
+  # 権限拒否等で claude が CUR を書けなかったとき、前回の curated を当日分として ingest しないよう先に消す
+  rm -f "$CUR"
+  ( cd "$CLAUDE_CWD" && run_with_timeout "$CURATE_TIMEOUT" "$CLAUDE" --model opus -p "$PROMPT" \
+      --tools Read,Write --permission-mode dontAsk --setting-sources "" --strict-mcp-config \
+      --no-session-persistence --safe-mode --allowedTools "Read(/$RAW)" "Edit(/$CUR)" ) > "$CLAUDE_OUT" 2>&1
+  local rc=$?
+  cat "$CLAUDE_OUT" >> "$LOG"
+  return $rc
+}
+# Claude のセッション上限(「You've hit your session limit · resets 7:50am (Asia/Tokyo)」)なら、
+# 解除までの秒数(+60s)を出す。解除が45分より先・文言が読めないときは何も出さない。
+# 08/12・08/13・08/15・10/01 の朝はこれで落ち、12:30 のリカバリまで届かなかった(10/01 は解除が07:50で定刻前だった)。
+limit_reset_wait() {
+  "$PY" -c '
+import re, sys, datetime as dt
+from zoneinfo import ZoneInfo
+m = re.search(r"session limit.*?resets (\d{1,2})(?::(\d{2}))?\s*([ap]m)\s*(?:\(([^)]+)\))?",
+              open(sys.argv[1], errors="replace").read(), re.I)
+if not m:
+    sys.exit(0)
+now = dt.datetime.now(ZoneInfo(m.group(4)) if m.group(4) else None)
+hour = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
+reset = now.replace(hour=hour, minute=int(m.group(2) or 0), second=0, microsecond=0)
+wait = (reset - now).total_seconds()
+if wait < -300:  # 時刻だけの表記なので、過ぎていれば翌日の同時刻(例: 23:50 に「resets 12:10am」)
+    wait += 86400
+if wait <= 2700:
+    print(int(max(wait, 0)) + 60)
+' "$1" 2>/dev/null
+}
+if ! run_curation; then
+  # 待って再試行するのは自動実行(定刻・リカバリ)だけ。手動の「今すぐ」は待たせずに失敗を返す。
+  LIMIT_WAIT=""
+  if [ "$MODE" = due ] || [ "$MODE" = recover ]; then LIMIT_WAIT=$(limit_reset_wait "$CLAUDE_OUT"); fi
+  if [ -z "$LIMIT_WAIT" ]; then
+    log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
+  fi
+  log "Claude のセッション上限。解除まで ${LIMIT_WAIT}s 待って1回だけ再試行"
+  sleep "$LIMIT_WAIT"
+  if ! run_curation; then
+    log "キュレーション(claude)に失敗 or タイムアウト(上限解除後の再試行)"; exit 1
+  fi
 fi
 # claude が exit 0 でも __CUR__ を書かない/空のことがある。空のまま ingest すると
 # 既存ダイジェストは保持されるが当該実行は無意味なので、ここで止めて原因を切り分けやすくする。

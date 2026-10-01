@@ -19,15 +19,16 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
-- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:45 起動→08:00 送信) /
+- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:15 起動→08:00 送信。キュレーションが約17分かかるため 2026-10-01 に45分前起動へ) /
   `-recover`(12:30・17:00・21:00 に `deliver.sh --recover`。当日朝が未配信の日だけ集め直して送る自動復旧。
   配信済みの日は `pipeline.py pending` を見て即終了するので無害。21:00 の回も失敗したときだけ
   `pipeline.py alert` が LINE へ原因つき1通を送る(本人宛=1通)。2026-08-15 追加)。
   ※ `-breaking`(速報監視) は **2026-08-02 に停止**（bootout + disable + `breaking_enabled=False`）。
   状態確認: `launchctl list | grep xnewsbot`。plist 変更は bootout→bootstrap（kickstart では反映されない）。
-- **LINE 無料枠は 200通/月**。カウントは「メッセージ数 × 宛先数」で、グループ宛 push はグループ内の
-  友だち人数分（実測3通）課金される。定時ダイジェストは Flex が 3〜4 メッセージに分割されるので
-  **1回の配信で 3〜4通**消費する（1通ではない）。速報を日次5件で回した結果 18通/日 → 11日で枯渇し、
+- **LINE 無料枠は 200通/月**。カウントは「push 1回 × 宛先人数」で、1回の push に入れるメッセージ数（最大5）は
+  通数に影響しない（公式の料金ページと 2026-10-01 の実測で確認。旧記載「メッセージ数 × 宛先数」は誤り）。
+  グループ宛 push はグループ内の友だち人数分（実測3人=3通）課金されるので、定時ダイジェストは
+  **1回の配信で3通**。メッセージを分けて push を2回に分けると倍になる。速報を日次5件で回した結果 18通/日 → 11日で枯渇し、
   2026-07-22〜31 の10日間は全 push が 429 で不着だった。新しい送信経路を足すときは必ずこの計算をする。
   残枠は `GET /v2/bot/message/quota/consumption`、日別実績は `GET /v2/bot/insight/message/delivery?date=YYYYMMDD` で確認できる（無料）。
 - **速報リアルタイム配信**（2026-07-02 追加・2026-08-02 停止, `scripts/monitor_breaking.py` / `-breaking` plist）: 無料(Google ニュースRSS+GDELT補助)で
@@ -37,11 +38,17 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   - **LLM判定層**（同日追加, トグル `breaking_judge_enabled` 既定ON）: ヒューリスティック通過分をヘッドレス Claude
     (`claude --model claude-opus-4-8`, `ops/breaking_judge_prompt.md`)が「今すぐ割り込む価値があるか」で最終判定。
     判定失敗(タイムアウト/セッション上限/パース不能)は **fail-closed=送らない**。見送りは `breaking_rejected` に記録し再判定しない。
-- **定時ダイジェストの候補は X(twitterapi.io)＋無料ニュース(Google ニュースRSS)をマージ**（`collect_use_newsfeeds`,質向上）。
+- **定時ダイジェストの候補は X(twitterapi.io)＋無料ニュースをマージ**（`collect_use_newsfeeds`,質向上）。
   X が空でもニュースで配信継続。ニュース候補は `source:"news"`・エンゲージ0(キュレーションプロンプトが信頼扱い)。
+  取得元の構成（2026-10-01 全面見直し。ジャンル別の語・アカウント・RSS は `config/genres.toml` が正）:
+  - X: 1ジャンル3クエリ＝日本語＋英語(いいね下限高め)＋公式アカウント(`from:`、`official` 付き)。RT・除外アカウント・重複を除く。
+  - ニュース: 直取り RSS(`feeds`)＋Google ニュース(日本語/英語で別枠)。株価の銘柄ページは除外。
+    直リンク記事は本文を取得して先頭を `body` に入れる(`xnewsbot/articles.py`、有料媒体は対象外)。
+  - 市況: Yahoo chart(鍵なし)で前日終値(`xnewsbot/market.py`)。TOPIX は取れないので出さない。
+  - 再掲防止: 直近3日の配信見出しを raw の `recent_titles` で渡し、続報だけ採る。RPA ジャンルは 10-01 に廃止。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル
   (evening_enabled) は残してあり、`-deliver` plist の StartCalendarInterval に 20:45 dict を戻せば再開できる。
-- 配信時刻を変えるときは **plist の StartCalendarInterval（15分前）と `ops/deliver.sh` の MORNING_HHMM（定刻）の両方**を更新。
+- 配信時刻を変えるときは **plist の StartCalendarInterval（45分前）と `ops/deliver.sh` の MORNING_HHMM（定刻）の両方**を更新。
 - テスト: `.venv/bin/python -m pytest -q`。レイアウト確認は LINE で「テスト」（モック・無料・即時）。
   **「今すぐ配信」は push 課金（無料枠 200通/月）を消費するので乱発しない。**
 - LINE 表示の不具合報告（「日本語が出ない」「詳細が出ない」等）を受けたら、推測で直さず
