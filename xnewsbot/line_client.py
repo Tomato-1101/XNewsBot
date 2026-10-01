@@ -100,9 +100,9 @@ def settings_summary_text(sub: Subscriber) -> str:
     return f"現在の設定\n・ジャンル: {g}\n・朝の配信: {m}\n・夜の配信: {e}"
 
 
-# ---- ニュース配信(要点バブル + ジャンル別カルーセル) ----
+# ---- ニュース配信(要点バブル + 主なニュース + ほかのニュース) ----
 #
-# 1回の push は「要点バブル1通 + ジャンル別カルーセル」で最大5メッセージ。
+# 1回の push は「要点バブル1通 + 主なニュースのカルーセル + ほかのニュースのカルーセル」で最大5メッセージ。
 # LINE の通数は宛先人数で数えるので、5メッセージ以内なら通数は増えない。
 
 # ヘッダー背景(白文字)と白背景の文字の両方に使うので、白とのコントラスト 4.5 以上の濃さにする
@@ -407,56 +407,63 @@ def _point_row(no: int, item: NewsItem, digest_date: date | None, slot: str | No
 
 CREDITS_PER_USD = 100_000  # twitterapi.io: 1 USD = 100,000 クレジット
 X_USAGE_WARN_DAYS = 7      # 残りがこの日数分(今回の使用量換算)を切ったら「要チャージ」
+USAGE_FAILED = "取得できませんでした"
 
 
-def _x_usage_row(x_usage: dict | None) -> dict | None:
-    """要点バブル末尾の「X取得 今回…・残り…」1行。x_usage が無い/不正なら None(行を出さない)。
+def _usage_row(label: str, text: str, low: bool) -> dict:
+    """「残り使用量」の1行。警告時は赤系。"""
+    return {"type": "text", "text": f"{label}  {text}", "size": "xs",
+            "color": UP_COLOR if low else SUB_COLOR, "margin": "sm", "wrap": True}
 
+
+def _x_usage_row(x_usage: dict | None) -> dict:
+    """「X（ニュース取得）  残り…クレジット（約$…）・あと約N日／今回 …」の1行。
+
+    データが無い/不正でも「取得できませんでした」で必ず出す(行の場所を毎回同じにして迷わせない)。
     「あと約N日」は 残り ÷ 今回の使用量(使用量0なら出さない)。残りが7日分未満なら赤系で「要チャージ: 」を付ける。"""
+    label = "X（ニュース取得）"
     try:
         used, remaining = int(x_usage["used"]), int(x_usage["remaining"])
     except (TypeError, KeyError, ValueError):
-        return None
-    text = (f"X取得 今回 {used:,}クレジット(約${used / CREDITS_PER_USD:.2f})・"
-            f"残り {remaining:,}(約${remaining / CREDITS_PER_USD:.2f}")
+        return _usage_row(label, USAGE_FAILED, False)
+    text = f"残り {remaining:,}クレジット（約${remaining / CREDITS_PER_USD:.2f}）"
     low = False
     if used > 0:
         days = remaining // used
         text += f"・あと約{days}日"
         low = days < X_USAGE_WARN_DAYS
-    text += ")"
+    text += f"／今回 {used:,}"
     if low:
         text = "要チャージ: " + text
-    return {"type": "text", "text": text, "size": "xxs", "color": UP_COLOR if low else META_COLOR,
-            "margin": "md", "wrap": True}
+    return _usage_row(label, text, low)
 
 
 LINE_QUOTA_WARN_RUNS = 7   # 今月の残りがこの回数分(今回の配信コスト換算)を切ったら「要注意」
 
 
-def _line_quota_row(line_quota: dict | None) -> dict | None:
-    """要点バブルの「LINE 今月 残り…通」1行。line_quota が無い/不正なら None(行を出さない)。
+def _line_quota_row(line_quota: dict | None) -> dict:
+    """「LINE（配信）  今月 残り…/…通・あと約N回／今回 …通」の1行。無い/不正なら「取得できませんでした」。
 
     残り = limit - used - cost(この配信を送った後の残り。負なら 0)。あと約N回 = 残り ÷ cost。
     残り回数が7回未満なら赤系で「要注意: 」を付ける。"""
+    label = "LINE（配信）"
     try:
         limit, used, cost = (int(line_quota[k]) for k in ("limit", "used", "cost"))
     except (TypeError, KeyError, ValueError):
-        return None
+        return _usage_row(label, USAGE_FAILED, False)
     if cost <= 0:
-        return None
+        return _usage_row(label, USAGE_FAILED, False)
     remaining = max(limit - used - cost, 0)
     runs = remaining // cost
-    text = f"LINE 今月 残り {remaining}/{limit}通（今回 {cost}通・あと約{runs}回）"
+    text = f"今月 残り {remaining}/{limit}通・あと約{runs}回／今回 {cost}通"
     low = runs < LINE_QUOTA_WARN_RUNS
     if low:
         text = "要注意: " + text
-    return {"type": "text", "text": text, "size": "xxs", "color": UP_COLOR if low else META_COLOR,
-            "margin": "sm", "wrap": True}
+    return _usage_row(label, text, low)
 
 
 def _summary_bubble(grouped, points, market, schedule, heading: str, digest_date, slot,
-                    now: datetime, has_carousel: bool, x_usage: dict | None = None,
+                    now: datetime, guide: str | None, x_usage: dict | None = None,
                     line_quota: dict | None = None) -> dict:
     total = sum(len(items) for items in grouped.values())
     counts = "・".join(f"{_genre_label(g)} {len(items)}" for g, items in grouped.items() if items)
@@ -490,22 +497,22 @@ def _summary_bubble(grouped, points, market, schedule, heading: str, digest_date
         contents.append({"type": "text", "text": "評価は一般的な傾向で、投資助言ではありません",
                          "size": "xxs", "color": META_COLOR, "margin": "lg", "wrap": True})
 
-    usage_row = _x_usage_row(x_usage)
-    if usage_row:
-        contents.append(usage_row)
-    quota_row = _line_quota_row(line_quota)
-    if quota_row:
-        contents.append(quota_row)
+    # 残り使用量は他の見出しと同じ書式の節にし、データが無くても必ず出す(どこにあるか迷わせない)
+    contents.append(_sep("xl"))
+    contents.append({"type": "text", "text": "残り使用量", "size": "sm", "weight": "bold",
+                     "color": TITLE_COLOR, "margin": "lg"})
+    contents.append(_x_usage_row(x_usage))
+    contents.append(_line_quota_row(line_quota))
 
-    if has_carousel:
-        contents.append({"type": "text", "text": "ジャンル別の記事は次のカードを横にスワイプ →",
+    if guide:
+        contents.append({"type": "text", "text": guide,
                          "size": "xxs", "color": META_COLOR, "margin": "xl", "wrap": True})
     bubble = {"type": "bubble", "size": "giga",
               "body": {"type": "box", "layout": "vertical", "paddingAll": "20px", "contents": contents}}
     return _fit_component(bubble, BUBBLE_MAX_BYTES)
 
 
-# -- ジャンル別カルーセル --
+# -- 主なニュース/ほかのニュースのカルーセル --
 
 def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
     """大ニュース1件: 見出し → 要約 → 出典・時刻 → [詳細を読む][元記事]。"""
@@ -551,59 +558,72 @@ def _small_block(item: NewsItem, action: dict, now: datetime) -> dict:
             "contents": contents}
 
 
-def _genre_units(items: list[NewsItem], color: str, digest_date, slot, now) -> list[tuple[list, list]]:
-    """記事1件ごとの (先頭の区切り線, 本体) の列。バブルを分けるときは記事単位で分け、
-    新しいバブルの先頭には区切り線を置かない。"""
-    ordered = sorted(items, key=lambda it: it.rank)
-    bigs = [it for it in ordered if it.importance == "big"]
-    smalls = [it for it in ordered if it.importance != "big"]
+def _split_main_others(grouped: dict[str, list[NewsItem]]
+                       ) -> tuple[dict[str, list[NewsItem]], dict[str, list[NewsItem]]]:
+    """grouped を「主なニュース」(big)と「ほかのニュース」(残り)に分ける。ジャンル順は grouped のまま、
+    ジャンル内は rank 順。big が0件のジャンルは rank 最上位の1件を主へ上げ、その記事はほか側から除く
+    (どのジャンルも主なニュースに顔を出すように)。0件のジャンルはどちらにも入れない。"""
+    main: dict[str, list[NewsItem]] = {}
+    others: dict[str, list[NewsItem]] = {}
+    for genre, items in grouped.items():
+        if not items:
+            continue
+        ordered = sorted(items, key=lambda it: it.rank)
+        tops = [it for it in ordered if it.importance == "big"] or ordered[:1]
+        # NewsItem は値で == 比較されるので、同じ記事かどうかは id() で見る
+        top_ids = {id(it) for it in tops}
+        main[genre] = tops
+        rest = [it for it in ordered if id(it) not in top_ids]
+        if rest:
+            others[genre] = rest
+    return main, others
+
+
+def _genre_units(items: list[NewsItem], main: bool, color: str, digest_date, slot,
+                 now) -> list[tuple[list, list]]:
+    """記事1件ごとの (先頭の区切り線, 本体) の列。主なニュースは大きな見た目、ほかは要約つきの一覧行。
+    バブルを分けるときは記事単位で分け、新しいバブルの先頭には区切り線を置かない。"""
     units: list[tuple[list, list]] = []
-    for i, it in enumerate(bigs):
-        units.append(([_sep("lg")] if i else [],
-                      [_big_block(it, color, _detail_action(it, digest_date, slot), now)]))
-    for j, it in enumerate(smalls):
-        row = _small_block(it, _detail_action(it, digest_date, slot), now)
-        if j == 0 and bigs:
-            # 見出しラベルは最初の1件と同じ単位にして、ラベルだけがバブル末尾に残らないようにする
-            label = {"type": "text", "text": "ほかのニュース", "size": "xs", "weight": "bold",
-                     "color": SUB_COLOR, "margin": "lg"}
-            units.append(([_sep("xl")], [label, row]))
-        elif j == 0:
-            units.append(([], [row]))
+    for i, it in enumerate(items):
+        action = _detail_action(it, digest_date, slot)
+        if main:
+            units.append(([_sep("lg")] if i else [], [_big_block(it, color, action, now)]))
         else:
-            units.append(([_sep("md", "#F2F2F2")], [row]))
+            units.append(([_sep("md", "#F2F2F2")] if i else [], [_small_block(it, action, now)]))
     return units
 
 
-def _genre_bubble(genre: str, head: str, count: int, body: list[dict]) -> dict:
+def _genre_bubble(genre: str, head: str, note: str, body: list[dict]) -> dict:
+    """ジャンル色ヘッダー(左にジャンル名、右に「主なニュース」/「ほか N件」)のバブル。"""
     return {
         "type": "bubble", "size": "giga",
         "header": {"type": "box", "layout": "horizontal", "backgroundColor": _genre_color(genre),
                    "paddingAll": "16px", "contents": [
                        {"type": "text", "text": head, "size": "lg", "weight": "bold",
                         "color": "#FFFFFF", "flex": 1},
-                       {"type": "text", "text": f"{count}件", "size": "sm", "color": "#FFFFFF",
+                       {"type": "text", "text": note, "size": "sm", "color": "#FFFFFF",
                         "align": "end", "gravity": "center"},
                    ]},
         "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "contents": body},
     }
 
 
-def _genre_bubbles(genre: str, items: list[NewsItem], digest_date, slot,
+def _genre_bubbles(genre: str, items: list[NewsItem], main: bool, digest_date, slot,
                    now: datetime, first_max: int = BUBBLE_MAX_BYTES) -> list[tuple[dict, int]]:
-    """1ジャンルを (バブル, 載せた記事数) の列にする。件数は削らず、28000B を超えるときだけ
-    記事単位で次のバブルへ送る(見出しは「AI (1/2)」)。
+    """1ジャンルの主なニュース(main=True)かほかのニュースを (バブル, 載せた記事数) の列にする。
+    件数は削らず、28000B を超えるときだけ記事単位で次のバブルへ送る(見出しは「AI (1/2)」)。
     first_max は1枚目だけの上限(カルーセルの空きに合わせて分けるとき用。_filled_bubbles)。"""
     label = _genre_label(genre)
+    note = "主なニュース" if main else f"ほか {len(items)}件"
 
     def measure(body: list[dict]) -> int:
-        return _byte_size(_genre_bubble(genre, f"{label} (00/00)", len(items), body))
+        return _byte_size(_genre_bubble(genre, f"{label} (00/00)", note, body))
 
     budget = BUBBLE_MAX_BYTES - measure([]) - 16  # 16: 配列の区切り文字ぶんの余裕
     pages: list[tuple[list[dict], int]] = []
     cur: list[dict] = []
     n = 0
-    for lead, body in _genre_units(items, _genre_color(genre), digest_date, slot, now):
+    for lead, body in _genre_units(items, main, _genre_color(genre), digest_date, slot, now):
         body = _fit_component(body, budget - _byte_size(lead))  # 単体で上限超過なら切り詰める
         limit = BUBBLE_MAX_BYTES if pages else first_max
         if cur and measure(cur + lead + body) > limit:
@@ -616,8 +636,8 @@ def _genre_bubbles(genre: str, items: list[NewsItem], digest_date, slot,
         pages.append((cur, n))
 
     if len(pages) == 1:
-        return [(_genre_bubble(genre, label, len(items), pages[0][0]), pages[0][1])]
-    return [(_genre_bubble(genre, f"{label} ({k}/{len(pages)})", len(items), body), cnt)
+        return [(_genre_bubble(genre, label, note, pages[0][0]), pages[0][1])]
+    return [(_genre_bubble(genre, f"{label} ({k}/{len(pages)})", note, body), cnt)
             for k, (body, cnt) in enumerate(pages, 1)]
 
 
@@ -687,7 +707,7 @@ def _pack_carousels(bubbles: list[tuple[dict, int, str]],
 FILL_MIN_BYTES = 6000
 
 
-def _filled_bubbles(grouped: dict[str, list[NewsItem]], digest_date, slot,
+def _filled_bubbles(section: dict[str, list[NewsItem]], main: bool, digest_date, slot,
                     now: datetime) -> list[tuple[dict, int, str]]:
     """カルーセルの空きを埋めるように、入りきらないジャンルを空きの大きさで分けたバブル列。
 
@@ -696,20 +716,32 @@ def _filled_bubbles(grouped: dict[str, list[NewsItem]], digest_date, slot,
     ジャンル単位で詰めて収まらないときだけ使う。詰め方は _pack_carousels と同じ判定で追う。"""
     out: list[tuple[dict, int, str]] = []
     cur: list[dict] = []
-    for genre, items in grouped.items():
+    for genre, items in section.items():
         if not items:
             continue
         room = CAROUSEL_MAX_BYTES - _byte_size(_carousel(cur)) - (2 if cur else 0)  # 2: 区切りの ", "
         first = BUBBLE_MAX_BYTES
         if cur and len(cur) < CAROUSEL_MAX_BUBBLES and room >= FILL_MIN_BYTES:
             first = min(BUBBLE_MAX_BYTES, room)
-        for b, n in _genre_bubbles(genre, items, digest_date, slot, now, first_max=first):
+        for b, n in _genre_bubbles(genre, items, main, digest_date, slot, now, first_max=first):
             if cur and (len(cur) >= CAROUSEL_MAX_BUBBLES
                         or _byte_size(_carousel(cur + [b])) > CAROUSEL_MAX_BYTES):
                 cur = []
             cur.append(b)
             out.append((b, n, genre))
     return out
+
+
+def _section_carousels(section: dict[str, list[NewsItem]], main: bool, digest_date, slot,
+                       now: datetime, max_messages: int) -> list[tuple[list[dict], list[str]]]:
+    """主なニュース/ほかのニュースの片方を max_messages 通以内のカルーセルにする(もう片方とは混ぜない)。
+    ジャンル単位(1ジャンル1枚)で詰めて入りきらないときだけ、空きに合わせてジャンルを分けて詰め直す。"""
+    bubbles: list[tuple[dict, int, str]] = []
+    for genre, items in section.items():
+        bubbles += [(b, n, genre) for b, n in _genre_bubbles(genre, items, main, digest_date, slot, now)]
+    if len(_pack_carousels(bubbles, len(bubbles))) > max_messages:
+        bubbles = _filled_bubbles(section, main, digest_date, slot, now)
+    return _pack_carousels(bubbles, max_messages)
 
 
 def digest_specs(
@@ -720,10 +752,11 @@ def digest_specs(
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大5)に変換する。
 
-    1通目は要点バブル(日付見出し・ジャンル別件数・今日の要点5本・市況・今日の予定)。2通目以降は
-    ジャンル別カルーセル(grouped の順=特大→各ジャンル、1ジャンル1枚)。
-    - 件数は削らない: 全記事がどれかのカルーセルに必ず出る(各ジャンル最低1件も保たれる)。
-      ジャンル単位では4通に入りきらないときだけ、カルーセルの空きに合わせてジャンルを分ける。
+    1通目は要点バブル(日付見出し・ジャンル別件数・今日の要点5本・市況・今日の予定・残り使用量)。
+    2通目は「主なニュース」カルーセル(grouped の順=特大→各ジャンル、1ジャンル1枚に big をまとめる)。
+    3通目以降は「ほかのニュース」カルーセル(同じジャンル順で残りの記事を要約つきの一覧に)。
+    - big が0件のジャンルは rank 最上位の1件を主なニュースに上げる(どのジャンルも2通目に出る)。
+    - 件数は削らない: 全記事がどれかのカルーセルに必ず出る。入りきらない分は最後に「ほか N 件は省略」。
     - 0件のジャンルは出さない。全ジャンル0件ならテキスト1通。
     - greeting は互換のため残している(見出しは常に同じ)。
     """
@@ -735,32 +768,36 @@ def digest_specs(
     if now.tzinfo is None:
         now = now.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
 
-    bubbles: list[tuple[dict, int, str]] = []
-    for genre, items in grouped.items():
-        if items:
-            bubbles += [(b, n, genre) for b, n in _genre_bubbles(genre, items, digest_date, slot, now)]
-    if len(_pack_carousels(bubbles, len(bubbles))) > MAX_MESSAGES - 1:
-        # ジャンル単位で詰めると入りきらないときだけ、空きに合わせてジャンルを分けて詰め直す
-        bubbles = _filled_bubbles(grouped, digest_date, slot, now)
-    carousels = _pack_carousels(bubbles, MAX_MESSAGES - 1)
+    main, others = _split_main_others(grouped)
+    budget = MAX_MESSAGES - 1  # 1通目は要点バブル
+    # ほかのニュースがあるなら最低1通は残す(主なニュースが送り枠を使い切って、ほかが全部消えないように)
+    main_cars = _section_carousels(main, True, digest_date, slot, now,
+                                   budget - (1 if others else 0))
+    other_cars = (_section_carousels(others, False, digest_date, slot, now, budget - len(main_cars))
+                  if others else [])
 
     d = digest_date or now.date()
     slot_word = "夜" if slot == "evening" else "朝"
     heading = f"{d.month}月{d.day}日({_WEEKDAYS[d.weekday()]}) {slot_word}のニュース"
     points = _pick_points(grouped)
     alt = f"{slot_word}のニュース｜{points[0].title}" + (f" ほか{total - 1}件" if total > 1 else "")
+    guide = None
+    if main_cars:
+        guide = "次: 主なニュース（ジャンルごとに横へスワイプ）"
+        if other_cars:
+            guide += "→ その次: ほかのニュース（同じ順）"
 
     specs: list[dict] = [{
         "type": "flex", "alt": alt[:ALT_MAX_CHARS],
         "contents": _guard_flex(_summary_bubble(grouped, points, market, schedule, heading,
-                                                digest_date, slot, now,
-                                                has_carousel=bool(carousels), x_usage=x_usage,
-                                                line_quota=line_quota)),
+                                                digest_date, slot, now, guide=guide,
+                                                x_usage=x_usage, line_quota=line_quota)),
     }]
-    for bubble_list, genres in carousels:
-        alt_c = "ジャンル別ニュース（" + "・".join(_genre_label(g) for g in genres) + "）"
-        specs.append({"type": "flex", "alt": alt_c[:ALT_MAX_CHARS],
-                      "contents": _guard_flex(_carousel(bubble_list))})
+    for title, cars in (("主なニュース", main_cars), ("ほかのニュース", other_cars)):
+        for bubble_list, genres in cars:
+            alt_c = f"{title}（" + "・".join(_genre_label(g) for g in genres) + "）"
+            specs.append({"type": "flex", "alt": alt_c[:ALT_MAX_CHARS],
+                          "contents": _guard_flex(_carousel(bubble_list))})
     return specs
 
 

@@ -72,25 +72,35 @@ def test_genre_select_marks_selected():
 
 # ---- 要点バブル ----
 
-def test_digest_specs_summary_then_genre_carousel():
+GUIDE_BOTH = "次: 主なニュース（ジャンルごとに横へスワイプ）→ その次: ほかのニュース（同じ順）"
+GUIDE_MAIN = "次: 主なニュース（ジャンルごとに横へスワイプ）"
+
+
+def test_digest_specs_summary_then_main_then_others():
     grouped = {"特大": [], "AI": [_big()], "株": [_small(0), _small(1)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
-    assert [s["type"] for s in specs] == ["flex", "flex"]
+    assert [s["type"] for s in specs] == ["flex", "flex", "flex"]
     summary = specs[0]["contents"]
     assert summary["type"] == "bubble" and summary["size"] == "giga"
     texts = _texts(summary)
     assert texts[0] == "6月8日(月) 朝のニュース"
     assert texts[1] == "AI 1・株 2（計3件）"  # 0件のジャンル(特大)は出さない
     assert "今日の要点" in texts
-    assert "ジャンル別の記事は次のカードを横にスワイプ →" in texts
+    assert texts[-1] == GUIDE_BOTH
 
-    car = specs[1]["contents"]
-    assert car["type"] == "carousel"
-    heads = [_texts(b["header"]) for b in car["contents"]]
-    assert heads == [["AI", "1件"], ["株", "2件"]]  # grouped の順、1ジャンル1枚
-    assert car["contents"][0]["header"]["backgroundColor"] == "#4F46E5"
-    assert car["contents"][1]["header"]["backgroundColor"] == "#0F766E"
-    assert specs[1]["alt"] == "ジャンル別ニュース（AI・株）"
+    main = specs[1]["contents"]
+    assert main["type"] == "carousel"
+    heads = [_texts(b["header"]) for b in main["contents"]]
+    assert heads == [["AI", "主なニュース"], ["株", "主なニュース"]]  # grouped の順、1ジャンル1枚
+    assert main["contents"][0]["header"]["backgroundColor"] == "#4F46E5"
+    assert main["contents"][1]["header"]["backgroundColor"] == "#0F766E"
+    assert specs[1]["alt"] == "主なニュース（AI・株）"
+
+    others = specs[2]["contents"]
+    assert others["type"] == "carousel"
+    assert [_texts(b["header"]) for b in others["contents"]] == [["株", "ほか 1件"]]
+    assert others["contents"][0]["header"]["backgroundColor"] == "#0F766E"
+    assert specs[2]["alt"] == "ほかのニュース（株）"
 
 
 def test_heading_same_without_greeting_and_evening_word():
@@ -264,8 +274,8 @@ def test_advice_note_only_with_market_or_schedule():
                                 market=market, schedule=schedule, now=NOW)
         texts = _texts(specs[0]["contents"])
         assert (ADVICE_NOTE in texts) is shown, (market, schedule)
-        if shown:  # 末尾(スワイプ案内の前)に極小で
-            assert texts[-2:] == [ADVICE_NOTE, "ジャンル別の記事は次のカードを横にスワイプ →"]
+        if shown:  # 市況・予定の後、残り使用量の前に極小で
+            assert texts.index(ADVICE_NOTE) == texts.index("残り使用量") - 1
             note = next(c for c in specs[0]["contents"]["body"]["contents"]
                         if c.get("text") == ADVICE_NOTE)
             assert note["size"] == "xxs"
@@ -284,7 +294,7 @@ def test_digest_specs_empty():
     assert len(specs) == 1 and specs[0]["type"] == "text"
 
 
-# ---- ジャンル別カルーセル ----
+# ---- 主なニュース/ほかのニュースのカルーセル ----
 
 def test_big_block_detail_and_source_links():
     # 大ニュースは見出し+要約+出典/時刻+[詳細を読む](postback)+[元記事](uri)
@@ -314,16 +324,19 @@ def test_small_rows_listed_with_label_and_meta():
     s0.source_tweets = [{"author": "v", "kind": "x", "url": "u",
                          "created_at": "2026-06-05T23:00:00+00:00"}]  # NOW の2日前
     specs = lc.digest_specs({"株": [big, s0, s1]}, slot="morning", digest_date=D, now=NOW)
-    body = specs[1]["contents"]["contents"][0]["body"]["contents"]
-    texts = _texts(body)
-    assert "ほかのニュース" in texts
-    assert "@v・2日前" in texts
+    bubble = specs[2]["contents"]["contents"][0]
+    assert _texts(bubble["header"]) == ["株", "ほか 2件"]
+    body = bubble["body"]["contents"]
+    assert "@v・2日前" in _texts(body)
     smalls = [c for c in body if c.get("type") == "box" and c.get("action")]
     assert [c["action"]["data"] for c in smalls] == ["detail:20260608:morning:株:1",
                                                     "detail:20260608:morning:株:2"]
-    # small だけのジャンルには「ほかのニュース」を出さない(大ニュースとの区切りが無いため)
+    # 主なニュース側には small を出さない
+    assert "小さな話題1" not in _texts(specs[1]["contents"])
+    # small 1件だけのジャンルはそれが主なニュースに上がり、ほかのニュースは出さない
     only_small = lc.digest_specs({"株": [_small(0)]}, slot="morning", digest_date=D, now=NOW)
-    assert "ほかのニュース" not in _texts(only_small[1]["contents"])
+    assert len(only_small) == 2
+    assert "小さな話題0" in _texts(only_small[1]["contents"])
 
 
 def test_small_row_shows_summary_truncated_and_keeps_tap():
@@ -333,9 +346,9 @@ def test_small_row_shows_summary_truncated_and_keeps_tap():
     s_long.summary = "あ" * 100 + "いう"
     s_exact.summary = "え" * 100
     s_empty.summary = ""
-    specs = lc.digest_specs({"株": [s_short, s_long, s_exact, s_empty]}, slot="morning",
-                            digest_date=D, now=NOW)
-    body = specs[1]["contents"]["contents"][0]["body"]["contents"]
+    specs = lc.digest_specs({"株": [_big("株", 0), s_short, s_long, s_exact, s_empty]},
+                            slot="morning", digest_date=D, now=NOW)
+    body = specs[2]["contents"]["contents"][0]["body"]["contents"]
     rows = [c for c in body if c.get("type") == "box" and c.get("action")]
     assert [_texts(r) for r in rows] == [
         ["小さな話題1", "短い要約", "@v"],
@@ -483,11 +496,13 @@ def test_heavy_day_fits_5_messages_without_omission():
 
 
 def test_genre_kept_whole_when_greedy_packing_fits():
-    """ジャンル単位で詰めて収まる日は、空きを埋めるための分割をしない(従来どおり1ジャンル1枚)。"""
+    """ジャンル単位で詰めて収まる日は、空きを埋めるための分割をしない(主/ほかとも1ジャンル1枚)。"""
     grouped = _bulk(["特大", "AI", "株", "テクノロジー"], 8)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
-    heads = [_texts(b["header"])[0] for car in _carousels(specs) for b in car["contents"]]
-    assert heads == ["特大", "AI", "株", "テクノロジー"]
+    assert len(specs) == 3
+    for spec in specs[1:]:
+        heads = [_texts(b["header"])[0] for b in spec["contents"]["contents"]]
+        assert heads == ["特大", "AI", "株", "テクノロジー"]
 
 
 def test_large_genre_splits_into_numbered_bubbles():
@@ -501,7 +516,7 @@ def test_large_genre_splits_into_numbered_bubbles():
     heads = [_texts(b["header"])[0] for b in bubbles]
     assert len(heads) > 1
     assert heads == [f"AI ({k}/{len(heads)})" for k in range(1, len(heads) + 1)]
-    assert all(_texts(b["header"])[1] == "40件" for b in bubbles)  # 件数はジャンル全体
+    assert all(_texts(b["header"])[1] == "主なニュース" for b in bubbles)
     # 分割後のバブル先頭は区切り線で始めない
     assert all(b["body"]["contents"][0]["type"] != "separator" for b in bubbles)
     datas = {a["data"] for b in bubbles for a in _actions(b) if a["type"] == "postback"}
@@ -536,6 +551,101 @@ def test_oversized_single_item_is_truncated_not_dropped():
     bubble = _carousels(specs)[0]["contents"][0]
     assert "見出し" in _texts(bubble)  # 見出しは残る(本文だけ削る)
     assert len(item.summary) == len("長すぎる要約。") * 3000  # 元データは壊さない
+
+
+def _split_specs(specs) -> tuple[list[dict], list[dict]]:
+    """2通目以降を alt で「主なニュース」と「ほかのニュース」のカルーセルに分ける。"""
+    main = [s["contents"] for s in specs[1:] if s["alt"].startswith("主なニュース（")]
+    others = [s["contents"] for s in specs[1:] if s["alt"].startswith("ほかのニュース（")]
+    assert len(main) + len(others) == len(specs) - 1
+    return main, others
+
+
+def _bubble_datas(bubble) -> list[str]:
+    return [a["data"] for a in _actions(bubble) if a["type"] == "postback"]
+
+
+def test_main_and_others_are_separate_carousels_in_same_genre_order():
+    """主なニュース(big)とほかのニュース(small)は別カルーセル。ジャンル順は両方とも grouped の順。"""
+    grouped = _bulk(["特大", "AI", "株", "テクノロジー", "暗号資産", "話題"], 6)
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    main, others = _split_specs(specs)
+    assert main and others
+    # 主なニュースの後にほかのニュースが続く(混ざらない)
+    alts = [s["alt"] for s in specs[1:]]
+    assert alts == sorted(alts, key=lambda a: not a.startswith("主なニュース"))
+    for b in (b for car in main for b in car["contents"]):
+        assert _texts(b["header"])[1] == "主なニュース"
+        big_ranks = {int(d.rsplit(":", 1)[1]) for d in _bubble_datas(b)}
+        assert big_ranks <= {0, 1, 2}  # _bulk は先頭3件が big
+    for b in (b for car in others for b in car["contents"]):
+        assert re.fullmatch(r"ほか \d+件", _texts(b["header"])[1])
+        assert all(int(d.rsplit(":", 1)[1]) >= 3 for d in _bubble_datas(b))
+    order = [lc._genre_label(g) for g in grouped]
+    main_heads = [_texts(b["header"])[0] for car in main for b in car["contents"]]
+    other_heads = [_texts(b["header"])[0] for car in others for b in car["contents"]]
+    assert main_heads == order
+    assert other_heads == order
+
+
+def test_genre_without_big_promotes_top_item_to_main():
+    """big が0件のジャンルは rank 最上位の1件を主なニュースへ(大きい見た目で)上げ、ほか側からは除く。"""
+    small_genre = [_small(2, "株"), _small(0, "株"), _small(1, "株")]  # 並びは rank 順でなくてよい
+    grouped = {"AI": [_big()], "株": small_genre}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    main, others = _split_specs(specs)
+    stock_main = main[0]["contents"][1]
+    assert _texts(stock_main["header"]) == ["株", "主なニュース"]
+    assert _bubble_datas(stock_main) == ["detail:20260608:morning:株:0"]
+    # 大ニュースと同じ見た目(見出しが md・太字、「詳細を読む」リンク)
+    title = next(n for n in lc._text_nodes(stock_main["body"]) if n["text"] == "小さな話題0")
+    assert (title["size"], title.get("weight")) == ("md", "bold")
+    assert "詳細を読む" in _texts(stock_main["body"])
+    stock_others = others[0]["contents"][0]
+    assert _texts(stock_others["header"]) == ["株", "ほか 2件"]
+    assert _bubble_datas(stock_others) == ["detail:20260608:morning:株:1",
+                                           "detail:20260608:morning:株:2"]
+
+
+def test_every_item_appears_exactly_once():
+    """全記事が主かほかのどちらか1か所だけに出る(省略注記が無い量のとき)。"""
+    grouped = {"特大": [_big("特大", 0)], "AI": [_big("AI", 0), _big("AI", 1), _small(2, "AI")],
+               "株": [_small(0), _small(1)], "話題": [_small(0, "話題")]}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    datas = [d for s in specs[1:] for d in _bubble_datas(s["contents"])]
+    assert sorted(datas) == sorted(f"detail:20260608:morning:{g}:{it.rank}"
+                                   for g, items in grouped.items() for it in items)
+    assert "件は省略" not in json.dumps(specs, ensure_ascii=False)
+
+
+def test_six_genres_x25_fits_5_messages_without_omission():
+    grouped = _bulk(["特大", "AI", "株", "テクノロジー", "暗号資産", "話題"], 25, summary_len=100)
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
+                            schedule=_HEAVY_SCHEDULE, now=NOW,
+                            x_usage={"used": 9870, "remaining": 3_040_677},
+                            line_quota={"limit": 200, "used": 45, "cost": 3})
+    _check_limits_and_coverage(grouped, specs)
+    main, others = _split_specs(specs)
+    assert len(main) == 1 and others
+    assert "件は省略" not in json.dumps(specs, ensure_ascii=False)
+    datas = [d for car in main + others for d in _bubble_datas(car)]
+    assert sorted(datas) == sorted(f"detail:20260608:morning:{g}:{it.rank}"
+                                   for g, items in grouped.items() for it in items)
+
+
+def test_others_overflow_note_in_last_others_carousel():
+    """ほかのニュースが入りきらない量なら、最後(ほかのニュース)のカルーセル末尾に省略件数を出す。"""
+    grouped = _bulk(["特大", "AI", "株", "テクノロジー"], 150, summary_len=400)
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    assert len(specs) == lc.MAX_MESSAGES
+    main, others = _split_specs(specs)
+    assert main and others
+    m = re.fullmatch(r"ほか (\d+) 件は省略", _texts(others[-1]["contents"][-1])[0])
+    assert m
+    shown = {d for s in specs[1:] for d in _bubble_datas(s["contents"])}
+    assert len(shown) + int(m.group(1)) == sum(len(v) for v in grouped.values())
 
 
 # ---- 詳細 ----
@@ -581,7 +691,7 @@ def test_spec_to_sdk_message_text_and_flex():
     fmsg = lc._spec_to_message(specs[0])
     assert fmsg.alt_text == "朝のニュース｜大きな出来事"
     cmsg = lc._spec_to_message(specs[1])
-    assert cmsg.alt_text == "ジャンル別ニュース（AI）"
+    assert cmsg.alt_text == "主なニュース（AI）"
 
 
 # ---- 不正な元記事 URL・上限超過で push 全体が落ちないこと ----
@@ -697,41 +807,47 @@ def test_schedule_block_keeps_approx_time_for_grace_period():
     assert names == ["日銀 結果発表"]
 
 
-# --- X クレジット消費の行(要点バブル末尾) ---
+# --- 残り使用量の節(要点バブル末尾。X と LINE の2行) ---
+
+X_LABEL = "X（ニュース取得）  "
+LINE_LABEL = "LINE（配信）  "
+
 
 def _usage_node(x_usage):
     specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, now=NOW, x_usage=x_usage)
-    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if "X取得" in n["text"]]
+    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if n["text"].startswith(X_LABEL)]
     return specs, nodes
 
 
 def test_x_usage_line_normal():
     specs, nodes = _usage_node({"used": 9870, "remaining": 3_040_677})
     assert [n["text"] for n in nodes] == [
-        "X取得 今回 9,870クレジット(約$0.10)・残り 3,040,677(約$30.41・あと約308日)"]
-    assert nodes[0]["size"] == "xxs" and nodes[0]["color"] == lc.META_COLOR
+        X_LABEL + "残り 3,040,677クレジット（約$30.41）・あと約308日／今回 9,870"]
+    assert nodes[0]["size"] == "xs" and nodes[0]["color"] == lc.SUB_COLOR
     assert all(s["type"] == "flex" for s in specs)
 
 
 def test_x_usage_line_warns_under_7_days():
     _specs, nodes = _usage_node({"used": 10_000, "remaining": 69_999})  # 6.99 日分 → あと約6日
     assert [n["text"] for n in nodes] == [
-        "要チャージ: X取得 今回 10,000クレジット(約$0.10)・残り 69,999(約$0.70・あと約6日)"]
+        X_LABEL + "要チャージ: 残り 69,999クレジット（約$0.70）・あと約6日／今回 10,000"]
     assert nodes[0]["color"] == lc.UP_COLOR
     _specs, nodes = _usage_node({"used": 10_000, "remaining": 70_000})  # ちょうど7日分は警告しない
-    assert nodes[0]["text"].startswith("X取得") and nodes[0]["color"] == lc.META_COLOR
+    assert "要チャージ" not in nodes[0]["text"] and nodes[0]["color"] == lc.SUB_COLOR
 
 
-def test_x_usage_line_hidden_when_none():
-    specs, nodes = _usage_node(None)
-    assert nodes == []
-    assert not any("X取得" in t for t in _texts(specs[0]["contents"]))
+def test_x_usage_line_shown_as_failed_when_none():
+    """データが無くても行は出す(どこにあるか迷わせない)。"""
+    for bad in (None, {}, {"used": "x", "remaining": 1}):
+        _specs, nodes = _usage_node(bad)
+        assert [n["text"] for n in nodes] == [X_LABEL + "取得できませんでした"]
+        assert nodes[0]["color"] == lc.SUB_COLOR
 
 
 def test_x_usage_line_used_zero_omits_days():
     _specs, nodes = _usage_node({"used": 0, "remaining": 3_040_677})
-    assert [n["text"] for n in nodes] == ["X取得 今回 0クレジット(約$0.00)・残り 3,040,677(約$30.41)"]
-    assert nodes[0]["color"] == lc.META_COLOR
+    assert [n["text"] for n in nodes] == [X_LABEL + "残り 3,040,677クレジット（約$30.41）／今回 0"]
+    assert nodes[0]["color"] == lc.SUB_COLOR
 
 
 def test_x_usage_line_no_empty_text_nodes():
@@ -739,48 +855,58 @@ def test_x_usage_line_no_empty_text_nodes():
     assert all(t for t in _texts(specs[0]["contents"]))
 
 
-# --- LINE 今月の残り通数の行(X取得行の直下) ---
-
 def _quota_specs(line_quota, x_usage=None):
     specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, now=NOW,
                             x_usage=x_usage, line_quota=line_quota)
-    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if "LINE 今月" in n["text"]]
+    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if n["text"].startswith(LINE_LABEL)]
     return specs, nodes
 
 
 def test_line_quota_line_normal():
     _specs, nodes = _quota_specs({"limit": 200, "used": 45, "cost": 3})
-    assert [n["text"] for n in nodes] == ["LINE 今月 残り 152/200通（今回 3通・あと約50回）"]
-    assert nodes[0]["size"] == "xxs" and nodes[0]["color"] == lc.META_COLOR
+    assert [n["text"] for n in nodes] == [LINE_LABEL + "今月 残り 152/200通・あと約50回／今回 3通"]
+    assert nodes[0]["size"] == "xs" and nodes[0]["color"] == lc.SUB_COLOR
 
 
-def test_line_quota_line_hidden_when_none():
-    specs, nodes = _quota_specs(None)
-    assert nodes == []
-    assert not any("LINE 今月" in t for t in _texts(specs[0]["contents"]))
+def test_line_quota_line_shown_as_failed_when_none():
+    for bad in (None, {"limit": 200, "used": 1}, {"limit": 200, "used": 1, "cost": 0}):
+        _specs, nodes = _quota_specs(bad)
+        assert [n["text"] for n in nodes] == [LINE_LABEL + "取得できませんでした"]
+        assert nodes[0]["color"] == lc.SUB_COLOR
 
 
 def test_line_quota_line_warns_under_7_runs():
     # 残り 20 / cost 3 → あと約6回(7回未満)
     _specs, nodes = _quota_specs({"limit": 200, "used": 177, "cost": 3})
-    assert [n["text"] for n in nodes] == ["要注意: LINE 今月 残り 20/200通（今回 3通・あと約6回）"]
+    assert [n["text"] for n in nodes] == [LINE_LABEL + "要注意: 今月 残り 20/200通・あと約6回／今回 3通"]
     assert nodes[0]["color"] == lc.UP_COLOR
     # 残り 21 / cost 3 → ちょうど7回は警告しない
     _specs, nodes = _quota_specs({"limit": 200, "used": 176, "cost": 3})
-    assert nodes[0]["text"].startswith("LINE 今月") and nodes[0]["color"] == lc.META_COLOR
+    assert "要注意" not in nodes[0]["text"] and nodes[0]["color"] == lc.SUB_COLOR
 
 
 def test_line_quota_line_remaining_never_negative():
     _specs, nodes = _quota_specs({"limit": 200, "used": 199, "cost": 3})
-    assert [n["text"] for n in nodes] == ["要注意: LINE 今月 残り 0/200通（今回 3通・あと約0回）"]
+    assert [n["text"] for n in nodes] == [LINE_LABEL + "要注意: 今月 残り 0/200通・あと約0回／今回 3通"]
 
 
-def test_line_quota_line_is_right_after_x_usage_row():
-    specs, _ = _quota_specs({"limit": 200, "used": 45, "cost": 3},
-                            x_usage={"used": 9870, "remaining": 3_040_677})
-    texts = [n["text"] for n in lc._text_nodes(specs[0]["contents"])]
-    i = next(k for k, t in enumerate(texts) if t.startswith("X取得"))
-    assert texts[i + 1].startswith("LINE 今月")
+def test_usage_section_heading_then_x_then_line_even_without_data():
+    """区切り線 → 見出し「残り使用量」(市況と同じ書式) → X → LINE の順。データが None でも出る。"""
+    for x_usage, line_quota in ((None, None),
+                                ({"used": 9870, "remaining": 3_040_677},
+                                 {"limit": 200, "used": 45, "cost": 3})):
+        specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, now=NOW,
+                                market=[_NIKKEI], x_usage=x_usage, line_quota=line_quota)
+        body = specs[0]["contents"]["body"]["contents"]
+        i = next(k for k, c in enumerate(body) if c.get("text") == "残り使用量")
+        assert body[i - 1]["type"] == "separator"
+        head = body[i]
+        market_head = next(c for c in body if c.get("text") == "市況（前日終値）")
+        assert {k: v for k, v in head.items() if k != "text"} == \
+            {k: v for k, v in market_head.items() if k != "text"}
+        assert body[i + 1]["text"].startswith(X_LABEL)
+        assert body[i + 2]["text"].startswith(LINE_LABEL)
+        assert body[i + 3]["text"] == GUIDE_MAIN  # 末尾は構造が分かる案内
 
 
 # --- LineMessenger.fetch_quota (SDK を差し替え。実 API は叩かない) ---

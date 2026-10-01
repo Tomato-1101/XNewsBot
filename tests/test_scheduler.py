@@ -243,7 +243,8 @@ def test_deliver_to_subscriber_shows_saved_x_usage(session, messenger):
     session.refresh(sub)
     now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
     specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
-    assert "X取得 今回 9,870クレジット(約$0.10)" in json.dumps(specs[0], ensure_ascii=False)
+    assert "X（ニュース取得）  残り 3,040,677クレジット（約$30.41）・あと約308日／今回 9,870" in json.dumps(
+        specs[0], ensure_ascii=False)
 
 
 def test_deliver_to_subscriber_passes_line_quota(session, messenger):
@@ -263,7 +264,7 @@ def test_deliver_to_subscriber_passes_line_quota(session, messenger):
     now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
     specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
     assert asked == [sub.push_target]
-    assert "LINE 今月 残り 152/200通（今回 3通・あと約50回）" in json.dumps(specs[0], ensure_ascii=False)
+    assert "LINE（配信）  今月 残り 152/200通・あと約50回／今回 3通" in json.dumps(specs[0], ensure_ascii=False)
 
 
 def test_deliver_to_subscriber_without_fetch_quota_hides_line_row(session, messenger):
@@ -275,4 +276,5 @@ def test_deliver_to_subscriber_without_fetch_quota_hides_line_row(session, messe
     session.refresh(sub)
     now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
     specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
-    assert "LINE 今月" not in json.dumps(specs[0], ensure_ascii=False)
+    # 取れなくても行は出す(どこにあるか迷わせない)
+    assert "LINE（配信）  取得できませんでした" in json.dumps(specs[0], ensure_ascii=False)
