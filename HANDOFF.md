@@ -2,6 +2,13 @@
 
 新セッションの Claude はまずこれを読む。
 
+## 配信の全面見直し（10-01 19:10 更新）
+- 目的: 本人依頼「ジャンル・取得方法・まとめ方・形式を全部見直し、見やすく・質を高く」。中身は好評なので量は削らない。計画は `~/.claude/plans/lucky-riding-umbrella.md`。
+- 現状: 実装・試走・Codex レビュー済み。取得(X 3クエリ+直取りRSS+Google ニュース日英+記事本文+市況)/ まとめ方(curate_prompt 書き直し・直近3日の見出しで再掲除外)/ 表示(要点バブル+ジャンル別カルーセル)/ RPA 廃止。
+- 試走(10/01 データ): キュレーション 478s・48件(旧34件。テクノロジー 4→20)・再掲0。plist は 07:15 起動に変更済み(登録済み)。本人 1:1 へプレビュー1回 push 済み。
+- 未解決: twitterapi キー#0 は残高不足(402)。TOPIX は Yahoo で取れず未掲載。README に RPA・旧ジャンルの記述が残る。`collect_newsfeeds_per_genre` は未使用。
+- 次にやること: 10/02 07:15 の初回本番を `~/Library/Logs/xnewsbot-deliver.log` で確認(キュレーション時間・件数・push 成功・通数3)。
+
 ## 目的
 X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーションし **LINE Bot** で配信する。
 大ニュースは要約付きで即配信、そのほかは見出しのみ→タップで詳細。**1日1回(朝08:00)**配信
@@ -11,10 +18,10 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 決定事項
 - 稼働: **ローカル Mac 常駐(launchd 3点) + トンネル(ngrok 固定ドメイン)**。
   - `com.tomato.xnewsbot`(uvicorn:8010 webhook専任) / `com.tomato.xnewsbot-ngrok`(固定ドメイン→:8010, `--log=stdout`必須) /
-    `com.tomato.xnewsbot-deliver`(配信時刻の15分前=07:45 起動 → 定刻08:00 着)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
+    `com.tomato.xnewsbot-deliver`(配信時刻の45分前=07:15 起動 → 定刻08:00 着。2026-10-01 に15分前から変更)。全て RunAtLoad+KeepAlive=ログイン時自動起動・自動再起動。
 - 加工: **Claude Code が定期実行でキュレーション(Anthropic API キーは使わない=従量課金なし)**。
 - 配信: **1日1回・朝(既定 08:00)の1スロット**。直近24hの最新を収集してキュレーション。
-  収集+キュレーション(ヘッドレスClaude)に最大10分ほどかかるため**15分前(07:45)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
+  収集+キュレーション(ヘッドレスClaude)に約17分(2026-10-01 の新構成の試走)かかるため**45分前(07:15)に起動して先に収集・キュレーションし、deliver.sh が定刻まで待ってから送信**(=最新かつ届く時刻を揃える)。定刻に間に合わなくても終わり次第すぐ送る(諦めて打ち切らない)。
   - 2026-06-24: 唯一の従量課金API(twitterapi.io)・Claude実行・LINE push を約半減させるため夜21:00 スロットを停止し1日1回化。夜は `-deliver` plist の StartCalendarInterval に 20:45 dict を戻し bootout→bootstrap で再開できる(evening_enabled/onboardingの夜時刻設定はコードに残置)。
   - 2026-07-02: 質優先(コスト度外視)へ方針転換。**定時ダイジェストの候補を X + 無料ニュース(Google ニュースRSS)のマージに拡張**(`xnewsbot/newsfeeds.py`, `collect_use_newsfeeds`, 1ジャンル+`collect_newsfeeds_per_genre`件)。lang="any"ジャンルは英語ロケールも収集。ニュース候補は `source:"news"`/エンゲージ0でキュレーションが信頼扱い(`ops/curate_prompt.md`)。X が空でもニュースで配信継続。※候補増でキュレーション時間が延びうる→初回の実配信で720s以内に収まるか要観察(超えるなら `collect_newsfeeds_per_genre` を下げる)。
 - 速報リアルタイム配信(2026-07-02 新設): **`scripts/monitor_breaking.py` を `com.tomato.xnewsbot-breaking`(15分毎)が実行**。定時ダイジェストとは独立した「速報だけ」の常時チャンネル。
@@ -27,11 +34,13 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
     ヒューリスティック通過分をヘッドレス Claude(`claude --model claude-opus-4-8` + `ops/breaking_judge_prompt.md`、実誤送信例で較正)が最終判定し、
     重大(major)のみ送信。失敗は fail-closed(送らない・次サイクルで再挑戦)。見送りは `breaking_rejected` テーブルに記録し再判定・再送しない。
     トグル `breaking_judge_enabled`(既定ON)。テストは `tests/test_breaking_judge.py`(claudeはモック)。
-- ジャンル: **特大(常時) / AI / 株 / テクノロジー / RPA / ビジネス / 健康 / 暗号資産**(`config/genres.toml` で編集)。
+- ジャンル: **特大(常時) / AI / 株 / テクノロジー**(`config/genres.toml` で編集)。2026-10-01 に RPA を廃止(過去記事は履歴として残す)。
   各ジャンルは海外・国際キーワードも併記し日本だけでなく世界の話題も拾う(lang:jaは維持)。
   - 2026-08-10: 読者の関心変更で **政治 / 経済 / 世界情勢 を廃止**(政治・戦争・国際情勢は不要、AI・テック・株・RPA 中心へ)。
     金融政策・為替は「株」が吸収。AI は最重要ジャンルとして small も厚めに出す(`ops/curate_prompt.md` の読者関心を参照)。
-- 表示(見やすさ優先): **大ニュースはジャンル順(特大→各ジャンル)に全件表示**(1ジャンルが多くても他を押し出さない/各ジャンル最低1件/無いジャンルは出さない)、**小ニュースは見出し行を全件表示**(タップで詳細。旧「ほかN件」隠れバグ解消)。1バブル~7KB超で次メッセージへ自動分割(`digest_specs`/`_pack_bubbles`、件数は削らない)。選択肢に**「キャンセル」**追加。
+- 表示(2026-10-01 刷新): **1通目=要点バブル**(件数・今日の要点 最大5本・前日の市況)、**2通目=ジャンル別カルーセル**(特大→AI→株→テクノロジー。big は要約+出典名・時刻+［詳細］［元記事］、small は見出し行でタップで詳細)。
+  並びは big 先・score 降順(取り込み時に確定)。bubble 28000B・carousel 48000B を超えると分割/差し替え、不正 URI はエンコードか除外(1件で push 全体が 400 になるため)。以下は旧表示の記録。
+- 旧表示: **大ニュースはジャンル順(特大→各ジャンル)に全件表示**(1ジャンルが多くても他を押し出さない/各ジャンル最低1件/無いジャンルは出さない)、**小ニュースは見出し行を全件表示**(タップで詳細。旧「ほかN件」隠れバグ解消)。1バブル~7KB超で次メッセージへ自動分割(`digest_specs`/`_pack_bubbles`、件数は削らない)。選択肢に**「キャンセル」**追加。
   通数: LINE無料枠200通/月は **push のみ計上**(reply対話=オンボ/メニュー/テストは無料無制限)。配信は内容が多い時のみ複数通。テスト用途は通数を食う「今すぐ」でなく無料の「テスト」(モック)を使う。
   「今すぐ配信」はボタンに加え**「今すぐ」「最新」等のテキスト送信でも起動**(その瞬間の最新を収集→送信)。
   **明示コマンド(今すぐ/テスト/メニュー/ヘルプ)は1:1でもグループでも応答**する(グループの雑談には無反応=荒らさない。`onboarding._try_command`)。
@@ -41,7 +50,7 @@ X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーシ
 ## 2部構成（READMEの「アーキテクチャ」も参照）
 1. **常駐サーバ**(`com.tomato.xnewsbot`, FastAPI:8010): **LINE Webhook 受信専任**(オンボーディング/設定変更/
    詳細タップ/今すぐ配信)。定刻配信の tick は既定で無効(`scheduler_enabled=False`)。
-2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の15分前=07:45 に起動):
+2. **リアルタイム配信ジョブ**(`ops/deliver.sh` を launchd `com.tomato.xnewsbot-deliver` が 配信時刻の45分前=07:15 に起動):
    先に `pipeline.py collect`(--due) → **Claude Code がキュレーション** → `pipeline.py ingest` を済ませ、
    `deliver.sh` の `wait_until` で**定刻(08:00)まで待ってから** `pipeline.py push --due`(=その時刻までの最新を、届く時刻を揃えて配信/古いDBを送らない)。
    配信時刻を変えたら **plist の StartCalendarInterval(15分前) と deliver.sh の MORNING_HHMM(定刻) の両方**を更新する。
