@@ -559,7 +559,7 @@ def test_dump_raw_one_candidate_per_line_with_index():
 def test_cap_x_keeps_all_official_then_top_views():
     off = [{"id": f"o{i}", "_official": True, "viewCount": 1} for i in range(3)]
     rest = [{"id": f"r{i}", "viewCount": i} for i in range(10)]
-    out = pl._cap_x(rest + off, limit=6)
+    out = pl._cap_x(rest + off, limit=6, min_general=0)
     assert [t["id"] for t in out] == ["o0", "o1", "o2", "r9", "r8", "r7"]
 
 
@@ -700,6 +700,7 @@ def test_newsfeed_candidates_combines_sources(monkeypatch):
 
     monkeypatch.setattr(pl, "keywords", lambda g: ["生成AI", "Claude Code"])
     monkeypatch.setattr(pl, "keywords_en", lambda g: ["LLM"])
+    monkeypatch.setattr(pl, "trend_sources", lambda g: [])   # genres.toml の AI は実ネットを引く取得元を持つ
     monkeypatch.setattr(pl, "feeds", lambda g: [
         {"url": "https://f/plain", "name": "P", "filter": False},
         {"url": "https://f/filtered", "name": "F", "filter": True},

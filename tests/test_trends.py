@@ -126,8 +126,12 @@ def test_hatena_unescapes_titles_and_drops_old_entries(monkeypatch):
 
 def test_sources_failure_returns_empty_with_one_line(monkeypatch, capsys):
     _serve(monkeypatch, None)
+
+    def boom(url, timeout):
+        raise TimeoutError("down")
+    monkeypatch.setattr(trends, "_get_json", boom)    # 新モデル2取得元(JSON API)も実ネットに出さない
     assert all(fn(24) == [] for fn in trends.SOURCES.values())
     _serve(monkeypatch, b"<rss><broken")
     assert trends.SOURCES["google_trends"](24) == [] and trends.SOURCES["hatena"](24) == []
     err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 5 and all(line.strip().startswith("話題:") for line in err)
+    assert len(err) == 7 and all(line.strip().startswith("話題:") for line in err)

@@ -39,7 +39,8 @@ PAYWALL_DOMAINS = (
     "nikkei.com", "bloomberg.com", "bloomberg.co.jp", "wsj.com", "ft.com", "economist.com",
     "nytimes.com", "washingtonpost.com", "barrons.com", "theinformation.com",
 )
-_SKIP_HOSTS = ("news.google.com",)
+# openrouter.ai・huggingface.co は JS 描画で本文が取れない。reddit.com(www/old 含む)は自動取得を拒否される
+_SKIP_HOSTS = ("news.google.com", "openrouter.ai", "huggingface.co", "reddit.com")
 _SKIP_EXT = (".pdf", ".jpg", ".jpeg", ".png", ".gif", ".mp4", ".zip")
 
 

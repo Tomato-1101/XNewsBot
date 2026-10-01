@@ -75,10 +75,11 @@ feeds = [
 [[genre]]
 key = "AI"
 # マイナーな AI ニュースも拾うため、いいね下限を既定(日本語200/英語500)の半分に(2026-10-01)。
-# 取得件数の上限は変えないので X の費用は増えない。ニュース候補は媒体が増えたので上限を60に。
+# 取得件数の上限は変えないので X の費用は増えない。
 min_faves = 100
 min_faves_en = 250
-news_max = 60
+# 取得元が倍増した(feeds 約30本+新モデル2取得元)ので、1本あたりの枠が削られすぎないよう上限を100に。
+news_max = 100
 note = "最新のAIニュース・プロダクト・研究・開発ツール(国内/海外問わず)。読者の最重要ジャンルで厚めに拾う。株/投資の宣伝が混ざりやすいので exclude で除外。"
 keywords = [
   "生成AI", "ChatGPT", "OpenAI", "Claude", "Anthropic", "Gemini",
@@ -96,6 +97,13 @@ accounts = [
   "AIatMeta", "MistralAI", "xai", "nvidia", "huggingface", "OpenAIDevs",
   "cursor_ai", "deepseek_ai", "Alibaba_Qwen", "sama",
 ]
+# 新モデルの公開をマイナーな組織まで拾うための公式アカウント。accounts に足すと大手に枠(最大20件・Top順)を
+# 奪われるので別の生クエリにする。いいね下限なし・RT/返信は除く。取得上限は各20件。
+x_queries = [
+  { query = "(from:MicrosoftAI OR from:Zai_org OR from:Kimi_Moonshot OR from:XiaomiMiMo OR from:MiniMax__AI OR from:SakanaAILabs OR from:preferred_jp OR from:ELYZA_inc OR from:llm_jp OR from:liquidai OR from:allen_ai OR from:OpenBMB OR from:Alibaba_Wan) -filter:replies -filter:retweets", max = 20 },
+  { query = "(from:elevenlabs OR from:cartesia_ai OR from:FishAudio OR from:kyutai_labs OR from:sesame OR from:StabilityAI OR from:bfl_ai OR from:runwayml OR from:LumaLabsAI OR from:Kling_ai OR from:suno OR from:HeyGen OR from:ollama OR from:lmstudio OR from:arena OR from:ArtificialAnlys) -filter:replies -filter:retweets", max = 20 },
+]
+trend_sources = ["openrouter_models", "hf_models"]
 exclude_accounts = [
   "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
   "unusual_whales", "Polymarket", "Kalshi",
@@ -115,6 +123,21 @@ feeds = [
   { url = "https://ainow.ai/feed/", name = "AINOW" },
   { url = "https://zenn.dev/topics/ai/feed", name = "Zenn(AI)" },
   { url = "https://github.com/anthropics/claude-code/releases.atom", name = "Claude Code リリース" },
+  { url = "https://mistral.ai/rss.xml", name = "Mistral" },
+  { url = "https://about.fb.com/news/tag/ai/feed/", name = "Meta AI" },
+  { url = "https://www.microsoft.com/en-us/research/feed/", name = "Microsoft Research", filter = true },
+  { url = "https://devblogs.microsoft.com/foundry/feed/", name = "Microsoft Foundry", filter = true },
+  { url = "https://machinelearning.apple.com/rss.xml", name = "Apple ML" },
+  { url = "https://aws.amazon.com/blogs/machine-learning/feed/", name = "AWS ML", filter = true },
+  { url = "https://developer.nvidia.com/blog/feed", name = "NVIDIA Dev", filter = true },
+  { url = "https://blog.google/technology/google-deepmind/rss/", name = "DeepMind Blog" },
+  { url = "https://blog.google/products/gemini/rss/", name = "Gemini" },
+  { url = "https://elevenlabs.io/docs/changelog.rss", name = "ElevenLabs 更新" },
+  { url = "https://pandaily.com/feed/", name = "Pandaily", filter = true },
+  { url = "https://www.qbitai.com/feed", name = "量子位" },
+  { url = "https://www.testingcatalog.com/rss/", name = "TestingCatalog" },
+  { url = "https://ollama.com/blog/rss.xml", name = "Ollama" },
+  { url = "https://www.reddit.com/r/LocalLLaMA/top/.rss?t=day", name = "r/LocalLLaMA", filter = true },
 ]
 
 [[genre]]

@@ -40,7 +40,7 @@ from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
 from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords  # noqa: E402
-from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources  # noqa: E402
+from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources, x_queries  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.models import GenreDigest, NewsItem  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
@@ -80,8 +80,13 @@ def _trim(t: dict) -> dict:
     }
 
 
-# X 候補の上限。公式は全部残し、それ以外を viewCount 降順で合計この数まで。
+# X 候補の上限。公式(accounts 由来)は全部残し、それ以外を viewCount 降順で合計この数まで。
 X_PER_GENRE = 50
+# x_queries の from: に並べた監視アカウントは公式扱いだが無制限にはしない(AI は約30アカウントで、
+# 全部残すと日本語・英語キーワードの一般投稿が枠から消えるため)。viewCount の高い順にこの数まで。
+X_WATCHED_MAX = 15
+# 一般投稿(キーワード検索)に最低限残す数。公式・監視で X_PER_GENRE を使い切っても、これだけは確保する。
+X_MIN_GENERAL = 30
 # ニュース候補の上限(Google ニュース日本語+英語+直取り RSS を重複除去した後)。
 # genres.toml の news_max があればそちらを使う(媒体の多い AI・話題は 60)。
 NEWS_PER_GENRE = 40
@@ -95,13 +100,32 @@ GN_QUERY_TERMS = 6  # Google ニュース検索に使う先頭キーワード数
 QUOTE_PAGE_MARKS = ("株価・株式情報", "指数情報・推移")
 # 再掲を避けるためキュレーションに渡す「直近の配信見出し」の範囲(raw の date の前日〜N日前)。
 RECENT_DAYS = 3
+# 新モデルの登録一覧(trends.PINNED)をラウンドロビンの外で先に入れる件数の上限。
+# 上限が無いと、新モデルが多い日に RSS・Google ニュースが 1 本あたり約 1 件まで細る。
+PINNED_MAX = 30
 
 
-def _cap_x(tweets: list[dict], limit: int = X_PER_GENRE) -> list[dict]:
-    """公式は全部残し、それ以外を viewCount 降順で合計 limit 件まで(公式→その他の順)。"""
-    off = [t for t in tweets if t.get("_official")]
+def _mark_watched(genre: str, tweets: list[dict]) -> list[dict]:
+    """x_queries の from: に並べた当事者アカウント(AI の新興ラボ・音声系など)の投稿に _official と _watched を付ける。
+    公式扱いにしないと _cap_x で再生数の多い一般投稿に押し出され、マイナーなモデル公開を取りこぼすため。
+    accounts 由来で既に _official の投稿は、監視枠(上限あり)に落とさずそのまま公式として扱う。
+    `-from:spam` のような除外指定は監視対象ではない(先頭が - や英数字の from: は拾わない)。"""
+    watched = {u.lower() for q in x_queries(genre) for u in re.findall(r"(?<![-\w])from:(\w+)", q["query"])}
+    if watched:
+        for t in tweets:
+            if not t.get("_official") and ((t.get("author") or {}).get("userName") or "").lower() in watched:
+                t["_official"] = True
+                t["_watched"] = True
+    return tweets
+
+
+def _cap_x(tweets: list[dict], limit: int = X_PER_GENRE, min_general: int = X_MIN_GENERAL) -> list[dict]:
+    """公式は全部・監視アカウントは viewCount 降順で X_WATCHED_MAX 件まで・一般投稿は残り枠(最低 min_general 件)。
+    出力順は 公式→監視→一般。"""
+    off = [t for t in tweets if t.get("_official") and not t.get("_watched")]
+    watched = sorted((t for t in tweets if t.get("_watched")), key=xclient.views, reverse=True)[:X_WATCHED_MAX]
     rest = sorted((t for t in tweets if not t.get("_official")), key=xclient.views, reverse=True)
-    return off + rest[: max(0, limit - len(off))]
+    return off + watched + rest[: max(min_general, limit - len(off) - len(watched))]
 
 
 def _gn_query(terms: list[str]) -> str:
@@ -134,27 +158,37 @@ def _feed_items(feed: dict, terms: list[str], hours) -> list:
     return items[:FEED_MAX]
 
 
-def merge_news(sources: list[list], limit: int = NEWS_PER_GENRE) -> list[dict]:
+def merge_news(sources: list[list], limit: int = NEWS_PER_GENRE, pinned: int = 0) -> list[dict]:
     """ソースごとの記事列を1件ずつ順番に取り出し(ラウンドロビン)、URL と正規化見出しで重複を除いて
     limit 件までの候補にする。1つのソースが枠を埋めて他の媒体・英語が押し出されないように。
+    先頭 pinned 本のソースは先に入れる(新モデルの登録一覧など、深い順位も落としたくないもの)。
+    pinned 全体で PINNED_MAX 件まで(1つの一覧が枠を使い切らないよう、pinned 同士もラウンドロビン)。
     要素は FeedItem か、候補の形の dict(trends の候補。trend キー付き)のどちらでもよい。"""
     seen_url: set[str] = set()
     seen_title: set[str] = set()
     out: list[dict] = []
-    depth = max((len(s) for s in sources), default=0)
+
+    def add(it) -> None:
+        c = it if isinstance(it, dict) else newsfeeds.as_candidate(it)
+        nt = _norm_title(c["text"])
+        if c["url"] in seen_url or (nt and nt in seen_title):
+            return
+        seen_url.add(c["url"])
+        if nt:
+            seen_title.add(nt)
+        out.append(c)
+
+    pin_srcs = sources[:pinned]
+    for i in range(max((len(s) for s in pin_srcs), default=0)):
+        for src in pin_srcs:
+            if i < len(src) and len(out) < min(limit, PINNED_MAX):
+                add(src[i])
+    rest = sources[pinned:]
+    depth = max((len(s) for s in rest), default=0)
     for i in range(depth):
-        for src in sources:
-            if i >= len(src) or len(out) >= limit:
-                continue
-            it = src[i]
-            c = it if isinstance(it, dict) else newsfeeds.as_candidate(it)
-            nt = _norm_title(c["text"])
-            if c["url"] in seen_url or (nt and nt in seen_title):
-                continue
-            seen_url.add(c["url"])
-            if nt:
-                seen_title.add(nt)
-            out.append(c)
+        for src in rest:
+            if i < len(src) and len(out) < limit:
+                add(src[i])
     return out
 
 
@@ -179,10 +213,16 @@ def _newsfeed_candidates(genre: str, settings) -> list[dict]:
     kws, kws_en = keywords(genre), keywords_en(genre)
     jobs = []
     # 話題の候補を先に並べる(同じ記事が RSS にもあれば、話題の大きさ(trend)付きの方を残す)
+    names = []
     for name in trend_sources(genre):
-        if name not in trends.SOURCES:
+        if name in trends.SOURCES:
+            names.append(name)
+        else:
             print(f"  {genre}: 未知の trend_sources をスキップ: {name}", file=sys.stderr)
-            continue
+    # 新モデルの登録一覧は件数が少なく取りこぼしたくないので、ラウンドロビンの外で全件先に入れる
+    names.sort(key=lambda n: n not in trends.PINNED)
+    pinned = sum(1 for n in names if n in trends.PINNED)
+    for name in names:
         jobs.append(lambda fn=trends.SOURCES[name]: fn(hours))
     if kws:
         jobs.append(lambda: _not_quote_page(
@@ -197,7 +237,7 @@ def _newsfeed_candidates(genre: str, settings) -> list[dict]:
         return []
     with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
         sources = list(pool.map(_safe_source, jobs))
-    return merge_news(sources, limit=news_max(genre) or NEWS_PER_GENRE)
+    return merge_news(sources, limit=news_max(genre) or NEWS_PER_GENRE, pinned=pinned)
 
 
 def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
@@ -342,7 +382,7 @@ def cmd_collect(args) -> None:
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
         # X(有料)と 無料ニュース(RSS)の両方を集めて候補プールにする(質向上)。片方が空でも続ける。
         try:
-            tweets = _cap_x(xclient.collect(g, settings=settings, keys=keys))
+            tweets = _cap_x(_mark_watched(g, xclient.collect(g, settings=settings, keys=keys)))
         except Exception as e:
             print(f"  {g}: X収集失敗のためスキップ ({type(e).__name__}: {e})", file=sys.stderr)
             tweets = []
