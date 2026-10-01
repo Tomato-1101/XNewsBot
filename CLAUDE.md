@@ -19,7 +19,7 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
-- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:8010) / `-ngrok` / `-deliver`(07:15 起動→08:00 送信。キュレーションが約17分かかるため 2026-10-01 に45分前起動へ) /
+- 常駐: launchd `com.tomato.xnewsbot`(uvicorn:18010) / `-admin`(管理画面 8011) / `-ngrok` / `-deliver`(07:15 起動→08:00 送信。キュレーションが約17分かかるため 2026-10-01 に45分前起動へ) /
   `-recover`(12:30・17:00・21:00 に `deliver.sh --recover`。当日朝が未配信の日だけ集め直して送る自動復旧。
   配信済みの日は `pipeline.py pending` を見て即終了するので無害。21:00 の回も失敗したときだけ
   `pipeline.py alert` が LINE へ原因つき1通を送る(本人宛=1通)。2026-08-15 追加)。
@@ -54,6 +54,12 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   - 話題ジャンル(10-02 追加): X のバズ投稿(`x_queries`)＋急上昇ワード(`trend_sources`=Yahoo!リアルタイム/Google トレンド/はてブ、
     `xnewsbot/trends.py`)＋総合 RSS。仮想通貨はキー「暗号資産」・表示名「仮想通貨」。
   - 再掲防止: 直近3日の配信見出しを raw の `recent_titles` で渡し、続報だけ採る。RPA ジャンルは 10-01 に廃止。
+  - 監視アカウント(10-02 追加, `xnewsbot/watch.py`、genres.toml の `watch = true`): 管理画面で登録した X アカウントの
+    前回配信以降の投稿(RT・他人への返信を除く)を、候補があれば必ず独立の組でキュレーションする。
+    取得期間は DB 横の `watch_state.json`。配信日の最初の取り込みだけ前進(同日の今すぐ更新では進めない)。
+- LINE の段組み(10-02): 要点 → 主なニュース → 注目ニュース(score≥50、要約付き) → その他の見出し → 溢れたら続き1通。1回の push は最大5通。
+- AI解説(10-02): LINE の詳細のクイックリプライと Web のボタンから、ヘッドレス `claude --model sonnet`(WebSearch)で記事ごとに作る
+  (`xnewsbot/explain.py`、`ops/explain_prompt.md`)。作成後は押した人のトークへ push(1通×人数)。
 - raw が 300KB 以上なら `pipeline.py split` でジャンルを2組（`CURATE_GROUPS`）に分け、claude を並列実行して `merge` する
   （489KB を1セッションで読むと文脈があふれた）。組をまたぐ同じ出来事は1件にまとめられないので、重なりやすいジャンルは同じ組に入れる。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル
