@@ -9,3 +9,4 @@ __pycache__/
 xnewsbot.db-wal
 xnewsbot.db-shm
 seen_models.json
+watch_state.json

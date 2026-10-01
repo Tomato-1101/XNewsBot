@@ -12,8 +12,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlmodel import select
 
 from ..config import get_settings
+from ..models import WatchedAccount
+from ..watch import normalize_handle
 from . import news, stores
 from .web import require_auth, templates
 
@@ -26,6 +29,7 @@ _OK_MESSAGES = {
     "delivery": "配信時刻を変更し、配信ジョブを再登録しました。",
     "run_now": "今すぐ配信を開始しました。バックグラウンドで最新を収集・要約し、全購読者へ送信します"
                "(完了まで約20分。結果は配信ログに記録されます)。",
+    "watch": "監視アカウントを更新しました(次回の収集から反映されます)。",
     "run_refresh": "今すぐ更新を開始しました。バックグラウンドで最新を収集・要約します"
                    "(完了まで約20分。LINE へは送信しません)。",
 }
@@ -49,6 +53,8 @@ def manage_index(
     ]
     with news.get_session() as session:
         usage = news.usage_context(session, datetime.now(ZoneInfo(get_settings().default_tz)))
+        watched = [{"id": w.id, "handle": w.handle, "enabled": w.enabled}
+                   for w in session.exec(select(WatchedAccount).order_by(WatchedAccount.id)).all()]
     return templates.TemplateResponse(
         request,
         "manage.html",
@@ -61,6 +67,7 @@ def manage_index(
             "flash_ok": _OK_MESSAGES.get(ok or ""),
             "flash_err": err,
             "usage": usage,
+            "watched": watched,
         },
     )
 
@@ -112,6 +119,36 @@ def edit_keys(
         return _redirect("err=不正な操作です。")
     stores.write_keys(keys)
     return _redirect("ok=keys")
+
+
+@router.post("/manage/watch")
+def edit_watch(
+    action: str = Form(...),
+    handle: str = Form(""),
+    id: int = Form(-1),
+    _user: str = Depends(require_auth),
+) -> RedirectResponse:
+    """監視アカウントの追加・有効/停止の切替・削除。"""
+    with news.get_session() as session:
+        if action == "add":
+            h = normalize_handle(handle)
+            if not h:
+                return _redirect("err=ハンドルは英数字と _ の15文字までで入力してください(@ は付けても可)。")
+            rows = session.exec(select(WatchedAccount)).all()
+            if any(r.handle.lower() == h.lower() for r in rows):
+                return _redirect(f"err=@{h} は既に登録されています。")
+            session.add(WatchedAccount(handle=h))
+        else:
+            row = session.get(WatchedAccount, id)
+            if row is None or action not in ("toggle", "delete"):
+                return _redirect("err=不正な操作です。")
+            if action == "toggle":
+                row.enabled = not row.enabled
+                session.add(row)
+            else:
+                session.delete(row)
+        session.commit()
+    return _redirect("ok=watch")
 
 
 @router.post("/manage/collect")

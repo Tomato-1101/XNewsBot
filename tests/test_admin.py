@@ -509,3 +509,47 @@ def test_explain_reused_item_id_is_regenerated(wired, monkeypatch, no_quiet):
         assert c.post(f"/explain/{item_id}", auth=AUTH).json()["status"] == "running"
     assert len(started) == 1
     assert explain.get(wired.session, item_id).title == "解説対象の見出し"
+
+
+# --- 監視アカウント ---
+
+def test_watch_add_toggle_delete(wired):
+    from sqlmodel import select
+    from xnewsbot.models import WatchedAccount
+
+    with TestClient(app) as c:
+        r = c.post("/manage/watch", data={"action": "add", "handle": " @ClaudeDevs "}, auth=AUTH,
+                   follow_redirects=False)
+        assert r.status_code == 303 and "ok=watch" in r.headers["location"]
+        rows = wired.session.exec(select(WatchedAccount)).all()
+        assert [(w.handle, w.enabled) for w in rows] == [("ClaudeDevs", True)]  # @ なし・大小文字は入力どおり
+        assert "@ClaudeDevs" in c.get("/manage", auth=AUTH).text
+
+        wid = rows[0].id
+        c.post("/manage/watch", data={"action": "toggle", "id": wid}, auth=AUTH)
+        wired.session.refresh(rows[0])
+        assert rows[0].enabled is False
+        assert "@ClaudeDevs（停止中）" in c.get("/manage", auth=AUTH).text
+
+        c.post("/manage/watch", data={"action": "delete", "id": wid}, auth=AUTH)
+        assert wired.session.exec(select(WatchedAccount)).all() == []
+
+
+def test_watch_rejects_duplicate_and_invalid(wired):
+    from sqlmodel import select
+    from xnewsbot.models import WatchedAccount
+
+    with TestClient(app) as c:
+        c.post("/manage/watch", data={"action": "add", "handle": "ClaudeDevs"}, auth=AUTH)
+        r = c.post("/manage/watch", data={"action": "add", "handle": "@claudedevs"}, auth=AUTH)
+        assert "既に登録されています" in r.text  # 大小文字違いも重複
+        for bad in ("", "@", "a-b", "x" * 16, "日本語"):
+            r = c.post("/manage/watch", data={"action": "add", "handle": bad}, auth=AUTH)
+            assert "英数字と _ の15文字まで" in r.text, bad
+        r = c.post("/manage/watch", data={"action": "delete", "id": 999}, auth=AUTH)
+        assert "不正な操作" in r.text
+        assert len(wired.session.exec(select(WatchedAccount)).all()) == 1
+
+
+def test_bundled_genres_toml_with_watch_genre_is_valid():
+    stores.validate_genres_toml(stores.GENRES_FILE.read_text(encoding="utf-8"))

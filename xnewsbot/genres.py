@@ -6,6 +6,7 @@ collect 時は 日本語(keywords, lang:ja)・英語(keywords_en, lang:en)・公
 最大3クエリになり、exclude 語・exclude_accounts は除外する。feeds は直取り RSS(pipeline collect)。
 x_queries はキーワードを使わない生クエリ(話題ジャンルの「いいねが極端に多い日本語の投稿」用)、
 trend_sources は急上昇ワード・はてブ等の話題の取得元(xnewsbot.trends)、news_max はニュース候補の上限。
+watch=true のジャンルは上の収集を使わず、管理画面で登録した監視アカウントの全投稿を集める(xnewsbot.watch)。
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ def _load() -> dict[str, dict]:
             "trend_sources": [str(t) for t in g.get("trend_sources", [])],
             "news_max": g.get("news_max"),  # None なら pipeline の既定(NEWS_PER_GENRE)
             "selectable": bool(g.get("selectable", True)),  # false=常時ジャンル(全員に常時配信)
+            "watch": bool(g.get("watch", False)),  # true=監視アカウントの全投稿を集めるジャンル
             # 廃止(2026-10-01): 英語は keywords_en の別クエリで集める。互換のため読み込みだけ残す。
             "lang": str(g.get("lang", "ja")).strip().lower(),
             "note": g.get("note", ""),
@@ -73,6 +75,8 @@ GENRE_KEYS: list[str] = list(GENRES.keys())
 SELECTABLE_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["selectable"]]
 # 全員に常時配信する常時ジャンル(selectable=false。例: 特大ニュース)
 ALWAYS_KEYS: list[str] = [k for k in GENRE_KEYS if not GENRES[k]["selectable"]]
+# 監視アカウントの全投稿を集めるジャンル(watch=true)
+WATCH_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["watch"]]
 
 
 def is_valid_genre(name: str) -> bool:
@@ -81,6 +85,10 @@ def is_valid_genre(name: str) -> bool:
 
 def is_always(genre: str) -> bool:
     return genre in ALWAYS_KEYS
+
+
+def is_watch(genre: str) -> bool:
+    return genre in WATCH_KEYS
 
 
 def display_genres(enabled: list[str]) -> list[str]:

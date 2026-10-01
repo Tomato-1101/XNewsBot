@@ -89,6 +89,34 @@
     </section>
 
     <section class="panel">
+      <h2>監視アカウント</h2>
+      <p class="hint">前回の配信から今回の配信までの全投稿（引用・自分のスレッドの続きを含み、リポストと他人への返信は除く）を、AI が要約して「監視アカウント」ジャンルに載せます。
+        X の取得費用は投稿1件あたり 15 クレジット（約 $0.00015）です。</p>
+      {% if watched %}
+      <ol class="keys">
+        {% for w in watched %}
+        <li>
+          <span class="key-no">{{ loop.index }}</span>
+          <code class="masked">@{{ w.handle }}{% if not w.enabled %}（停止中）{% endif %}</code>
+          <span class="key-actions">
+            <form method="post" action="/manage/watch"><input type="hidden" name="action" value="toggle"><input type="hidden" name="id" value="{{ w.id }}"><button class="icon-btn">{% if w.enabled %}停止{% else %}再開{% endif %}</button></form>
+            <form method="post" action="/manage/watch" class="needs-confirm" data-confirm="@{{ w.handle }} を監視アカウントから削除しますか？"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ w.id }}"><button class="icon-btn danger" aria-label="削除" title="削除">削除</button></form>
+          </span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="hint">監視アカウントはまだありません。</p>
+      {% endif %}
+      <form method="post" action="/manage/watch" class="add-key">
+        <input type="hidden" name="action" value="add">
+        <input type="text" name="handle" placeholder="@ClaudeDevs" autocomplete="off" required maxlength="16"
+               pattern="@?[A-Za-z0-9_]{1,15}" aria-label="追加する X アカウント">
+        <button type="submit" class="btn">追加</button>
+      </form>
+    </section>
+
+    <section class="panel">
       <h2>ジャンル（genres.toml）</h2>
       <p class="hint">TOML 全文を編集して保存します。保存のときに書き方と必須項目（key の重複など）を確かめます。</p>
       <form method="post" action="/manage/genres" class="needs-confirm"

@@ -4,6 +4,7 @@
 - GenreDigest: 「日×スロット(朝/夜)×ジャンル」単位のキュレーション結果(複数購読者で再利用)。
 - NewsItem   : GenreDigest 配下の1ニュース(大/小、見出し・要約・元ツイート)。
 - MarketSnapshot: 「日×スロット」単位の市況(前日終値)。要点バブルの市況ブロックに出す。
+- WatchedAccount: 「監視アカウント」ジャンルで全投稿を集める X アカウント。
 """
 
 from __future__ import annotations
@@ -138,6 +139,16 @@ class XUsageSnapshot(SQLModel, table=True):
     slot: str = Field(default="morning", index=True)  # "morning" | "evening"
     used: int = 0       # 今回の収集で使ったクレジット(収集前後の残高差)
     remaining: int = 0  # 収集後の残りクレジット
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class WatchedAccount(SQLModel, table=True):
+    """「監視アカウント」ジャンルで全投稿を集める X アカウント(管理画面で追加・削除)。
+
+    handle は @ なし・入力どおりの大小文字で保存し、重複の判定は小文字で行う(X のハンドルは大小文字を区別しない)。"""
+    id: int | None = Field(default=None, primary_key=True)
+    handle: str = Field(index=True, unique=True)
+    enabled: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

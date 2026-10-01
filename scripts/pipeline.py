@@ -25,7 +25,7 @@ import sys
 import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -34,12 +34,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import select  # noqa: E402
 
 from xnewsbot import digest, newsfeeds, xclient  # noqa: E402
-from xnewsbot import articles, market, schedule, trends  # noqa: E402
+from xnewsbot import articles, market, schedule, trends, watch  # noqa: E402
 from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
-from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords  # noqa: E402
+from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, is_watch, keywords  # noqa: E402
 from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources, x_queries  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.models import GenreDigest, NewsItem  # noqa: E402
@@ -306,6 +306,7 @@ def _dump_raw(out: dict) -> str:
 
     lines = ["{"] + [f"{d(k)}: {d(out[k])}," for k in ("date", "tz", "slot")]
     lines.append(f'"x_usage": {d(out.get("x_usage"))},')
+    lines.append(f'"watch": {d(out.get("watch"))},')
     lines += ['"market": ['] + block(out["market"], last=False)
     lines += ['"schedule": ['] + block(out["schedule"], last=False)
     lines += ['"indicator_results": ['] + block(out["indicator_results"], last=False)
@@ -375,12 +376,26 @@ def cmd_collect(args) -> None:
     keys = xclient.load_keys(settings)
     balance_before = _total_balance(keys)  # X クレジット消費の算出用(残高 API は課金されない)
 
+    # 監視アカウントのジャンル(watch=true)は、前回の取り込みから今回までの全投稿を集める(xnewsbot/watch.py)
+    watch_since = watch_until = None
+    watch_handles: list[str] = []
+    watch_ok: dict[str, bool] = {}
+    if any(is_watch(g) for g in genres):
+        watch_since, watch_until = watch.window(day, datetime.now(timezone.utc), watch.load_state())
+        init_db()
+        with get_session() as session:
+            watch_handles = watch.enabled_handles(session)
+
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
     # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
     def _one(g: str) -> tuple[str, list[dict], int, int, list[dict]]:
         # 1ジャンルの失敗(再試行しても回復しないタイムアウト/恒久エラー)で収集全体を落とさない。
         # 取れたジャンルだけで配信を続ける(空になったジャンルはキュレーションで空配列扱い)。
         # X(有料)と 無料ニュース(RSS)の両方を集めて候補プールにする(質向上)。片方が空でも続ける。
+        if is_watch(g):
+            # 全投稿が要件なので _cap_x の件数制限はかけない。ニュース RSS も使わない。
+            tweets, watch_ok[g] = watch.collect(watch_handles, watch_since, watch_until, keys)
+            return g, [_trim(t) for t in tweets], len(tweets), len(tweets), []
         try:
             tweets = _cap_x(_mark_watched(g, xclient.collect(g, settings=settings, keys=keys)))
         except Exception as e:
@@ -426,8 +441,17 @@ def cmd_collect(args) -> None:
         sched = {"schedule": [], "results": []}
     print(f"  今日の予定: {len(sched['schedule'])} 件 (直近の指標結果 {len(sched['results'])} 件)",
           file=sys.stderr)
+    # 監視アカウントの取得期間。全アカウントの取得に成功したときだけ載せ、ingest がこれで状態を進める
+    # (失敗した日は載せない=状態が進まず、次回に同じ範囲を取り直す)。
+    watch_window = None
+    if watch_until is not None:
+        if all(watch_ok.values()):
+            watch_window = {"since": watch.fmt_utc(watch_since), "until": watch.fmt_utc(watch_until)}
+        else:
+            print("  監視アカウント: 取得に失敗したアカウントがあるため、次回も同じ範囲から取り直します",
+                  file=sys.stderr)
     out = {"date": day.isoformat(), "tz": settings.default_tz, "slot": args.slot,
-           "x_usage": x_usage,
+           "x_usage": x_usage, "watch": watch_window,
            "market": mkt, "schedule": sched["schedule"], "indicator_results": sched["results"],
            "recent_titles": _recent_titles(genres, day),
            "genres": cands_by_genre}
@@ -478,12 +502,39 @@ def cmd_ingest(args) -> None:
         digest.save_market(session, local_date, slot, raw.get("market") or [])
         digest.save_x_usage(session, local_date, slot, raw.get("x_usage"))
         digest.save_schedule(session, local_date, slot, raw.get("schedule") or [])
+    _advance_watch_state(raw, cur_genres, local_date)
     print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件, "
           f"予定 {len(raw.get('schedule') or [])} 件)", file=sys.stderr)
 
 
+def _advance_watch_state(raw: dict, cur_genres: dict, local_date: date) -> None:
+    """取り込みに成功した監視アカウントの取得期間を記録する(次回はこの続きから集める)。
+
+    - キュレーション結果に監視ジャンルのキー自体が無いときは進めない(取り込めなかった投稿を次回も取り直す)。
+      キーがあって空配列なのは「中身の無い投稿だけだった」正常な結果なので進める。
+    - 同じ配信日の2回目以降(今すぐ更新・リカバリ・1:1 の今すぐ)では進めない。進めると、その日の朝の配信以降の
+      投稿が翌朝の窓から外れ、グループの LINE に一度も届かなくなるため(重複は recent_titles で抑える)。"""
+    w = raw.get("watch")
+    wg = [g for g in raw["genres"] if is_watch(g)]
+    if not w or not wg:
+        return
+    if not all(g in cur_genres or not raw["genres"][g] for g in wg):
+        print("  監視アカウント: キュレーション結果に無いため、次回も同じ範囲から取り直します", file=sys.stderr)
+        return
+    if watch.load_state().get("date") == local_date.isoformat():
+        return
+    try:
+        watch.save_state(local_date, w["since"], w["until"])
+    except Exception as e:  # 記録できなくても配信は続ける(次回に同じ範囲を取り直すだけ)
+        print(f"  監視アカウント: watch_state.json を保存できず続行 ({type(e).__name__}: {e})", file=sys.stderr)
+        return
+    print(f"  監視アカウント: 取得期間を記録 ({w['since']} 〜 {w['until']})", file=sys.stderr)
+
+
 # キュレーションを並列に分けるときのジャンルの組。同じ出来事が重なりやすいジャンルを同じ組に入れる
 # 組をまたぐ同じ出来事は1件にまとめられない。試走5で重複した5件中4件がテクノロジーと話題の間だったので同じ組にする。
+# 監視アカウントのジャンル(watch=true)はここに入れない。登録アカウントが増えても他のジャンルの
+# キュレーションを圧迫しないよう、候補があれば raw の大きさに関わらず必ず独立した組にする(split_raw)。
 CURATE_GROUPS = [["特大", "AI", "株"], ["暗号資産", "テクノロジー", "話題"]]
 # raw がこれ未満なら分割しない。1セッションで読み切れる大きさなら、組をまたぐ重複を避けられる
 # 1セッションの方がよい(288KB では問題なく、489KB で文脈があふれ自動圧縮が走った。2026-10-02 実測)。
@@ -491,15 +542,25 @@ SPLIT_MIN_BYTES = 300_000
 _SPLIT_KEEP_KEYS = ("date", "tz", "slot", "market", "schedule", "indicator_results")
 
 
-def split_raw(raw: dict) -> list[dict]:
-    """raw をジャンルの組ごとの raw に分ける。候補の配列(と `i`)は変えない。0ジャンルの組は出さない。"""
+def split_raw(raw: dict, whole: bool = False) -> list[dict]:
+    """raw をジャンルの組ごとの raw に分ける。候補の配列(と `i`)は変えない。0ジャンルの組は出さない。
+
+    監視アカウントのジャンルは、候補があれば独立した組(最後)にし、候補が0件なら組に入れない
+    (空の組で claude を起動しない。curated に無いジャンルは ingest が空として扱う)。
+    whole=True なら監視アカウント以外は分けずに1組にする(raw が小さいとき)。"""
     genres = raw["genres"]
-    size = {g: len(json.dumps(c, ensure_ascii=False).encode()) for g, c in genres.items()}
-    groups = [[g for g in grp if g in genres] for grp in CURATE_GROUPS]
-    known = {g for grp in CURATE_GROUPS for g in grp}
-    for g in genres:
-        if g not in known:  # 組に無いジャンルは、その時点で小さい方の組へ(偏りを抑える)
-            min(groups, key=lambda grp: sum(size[x] for x in grp)).append(g)
+    normal = [g for g in genres if not is_watch(g)]
+    watch_grp = [g for g in genres if is_watch(g) and genres[g]]
+    if whole:
+        groups = [normal]
+    else:
+        size = {g: len(json.dumps(genres[g], ensure_ascii=False).encode()) for g in normal}
+        groups = [[g for g in grp if g in normal] for grp in CURATE_GROUPS]
+        known = {g for grp in CURATE_GROUPS for g in grp}
+        for g in normal:
+            if g not in known:  # 組に無いジャンルは、その時点で小さい方の組へ(偏りを抑える)
+                min(groups, key=lambda grp: sum(size[x] for x in grp)).append(g)
+    groups.append(watch_grp)
     parts = []
     for grp in groups:
         if not grp:
@@ -513,12 +574,14 @@ def split_raw(raw: dict) -> list[dict]:
 
 def cmd_split(args) -> None:
     src = Path(args.raw)
-    if src.stat().st_size < SPLIT_MIN_BYTES:
+    raw = json.loads(src.read_text(encoding="utf-8"))
+    small = src.stat().st_size < SPLIT_MIN_BYTES
+    # 小さく、監視アカウントの候補も無ければ分けない(=従来どおり1セッション)
+    if small and not any(is_watch(g) and c for g, c in raw["genres"].items()):
         print(src)
         return
-    raw = json.loads(src.read_text(encoding="utf-8"))
     base = str(src)[:-len(".json")] if src.name.endswith(".json") else str(src)
-    for n, part in enumerate(split_raw(raw)):
+    for n, part in enumerate(split_raw(raw, whole=small)):
         dst = Path(f"{base}.p{n}.json")
         dst.write_text(_dump_raw(part), encoding="utf-8")
         print(dst)

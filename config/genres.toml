@@ -27,6 +27,9 @@
 # - min_faves_en: 任意。英語クエリの最低いいね数(省略時は max(min_faves, 500))。
 # - selectable: 任意(既定 true)。false にするとオンボーディングの選択肢に出さず、
 #               全員に常時収集・常時配信する「常時ジャンル」になる(例: 特大ニュース)。
+# - watch     : 任意(既定 false)。true にすると keywords・feeds 等を使わず、管理画面の「監視アカウント」に
+#               登録した X アカウントの全投稿(前回の取り込みから今回まで。引用・自分のスレッドの続きを含み、
+#               リポストと他人への返信は除く)を集める。
 # - note      : 任意のメモ(動作には影響しません)。
 # - lang      : 廃止(2026-10-01)。英語は keywords_en の別クエリで集めるため不要。書いても無視されます。
 #
@@ -253,6 +256,12 @@ feeds = [
   { url = "https://travel.watch.impress.co.jp/data/rss/1.0/trw/feed.rdf", name = "トラベル Watch" },
   { url = "https://gigazine.net/news/rss_2.0/", name = "GIGAZINE" },
 ]
+
+[[genre]]
+key = "監視アカウント"
+label = "監視アカウント"
+watch = true
+note = "管理画面で登録した X アカウント(例: @ClaudeDevs)の、前回の取り込みから今回までの全投稿。要約はキュレーションが行う。"
 
 [[genre]]
 key = "ビジネス"
