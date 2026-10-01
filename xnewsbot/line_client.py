@@ -14,13 +14,16 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 import urllib.parse
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
+
+log = logging.getLogger(__name__)
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
@@ -102,7 +105,9 @@ def settings_summary_text(sub: Subscriber) -> str:
 # 1回の push は「要点バブル1通 + ジャンル別カルーセル」で最大5メッセージ。
 # LINE の通数は宛先人数で数えるので、5メッセージ以内なら通数は増えない。
 
-GENRE_COLORS = {"特大": "#D32F2F", "AI": "#4F46E5", "株": "#0F766E", "テクノロジー": "#0369A1"}
+# ヘッダー背景(白文字)と白背景の文字の両方に使うので、白とのコントラスト 4.5 以上の濃さにする
+GENRE_COLORS = {"特大": "#D32F2F", "AI": "#4F46E5", "株": "#0F766E", "テクノロジー": "#0369A1",
+                "暗号資産": "#B45309", "話題": "#A21CAF"}
 OTHER_COLOR = "#475569"   # 上記以外のジャンル
 TITLE_COLOR = "#111111"
 TEXT_COLOR = "#222222"
@@ -112,6 +117,10 @@ RULE_COLOR = "#EEEEEE"
 UP_COLOR = "#C62828"
 DOWN_COLOR = "#1565C0"
 POINTS_MAX = 5
+SCHEDULE_MAX = 12        # 今日の予定の最大行数
+# 時刻が「21:30」「翌03:00」でない予定(昼ごろ・寄り前・引け後)の at は近似なので、過ぎても3時間は出す
+SCHEDULE_APPROX_GRACE = timedelta(hours=3)
+SMALL_SUMMARY_MAX = 100  # 小ニュースの要約の表示上限(字)。超えたら「…」で切る
 ALT_MAX_CHARS = 400
 DEFAULT_TZ = "Asia/Tokyo"
 _WEEKDAYS = "月火水木金土日"
@@ -324,6 +333,8 @@ def _market_row(m: dict) -> dict | None:
         close_s = f"{close:,.2f}円"
     elif kind == "yield":
         close_s = f"{close:.2f}%"
+    elif kind == "crypto":
+        close_s = f"${close:,.0f}"
     else:
         close_s = f"{close:,.0f}"
     raw, unit = (m.get("change"), "pt") if kind == "yield" else (m.get("change_pct"), "%")
@@ -337,6 +348,45 @@ def _market_row(m: dict) -> dict | None:
         {"type": "text", "text": chg_s, "size": "xs", "weight": "bold", "color": chg_color,
          "align": "end", "flex": 3},
     ]}
+
+
+def _schedule_row(ev: dict) -> dict | None:
+    """予定1行: 左に時刻、右に名前(その下に予想・前回)。名前が無い行は出さない。"""
+    name = str(ev.get("name") or "")
+    if not name:
+        return None
+    right: list[dict] = [{"type": "text", "text": name, "size": "xs", "color": TEXT_COLOR,
+                          "wrap": True}]
+    figs = "｜".join(f"{lab} {v}" for lab, v in (("予想", ev.get("forecast")),
+                                                  ("前回", ev.get("previous"))) if v)
+    if figs:
+        right.append({"type": "text", "text": figs, "size": "xxs", "color": META_COLOR,
+                      "wrap": True})
+    # 空文字の text は LINE が拒否し push 全体が落ちるので、時刻が無い行は「未定」にする
+    return {"type": "box", "layout": "horizontal", "margin": "sm", "spacing": "md", "contents": [
+        {"type": "text", "text": str(ev.get("time_label") or "未定"), "size": "xs",
+         "color": SUB_COLOR, "flex": 1},
+        {"type": "box", "layout": "vertical", "flex": 4, "contents": right},
+    ]}
+
+
+def _schedule_rows(schedule: list[dict] | None, now: datetime) -> list[dict]:
+    """今日の予定の行(最大 SCHEDULE_MAX)。at が now より前の予定は出さない(at が無い予定は出す。
+    時刻が近似の予定は SCHEDULE_APPROX_GRACE だけ猶予)。多いときは重要度の高いものを残し
+    (FOMC などが早い時刻の決算に押し出されないように)、at 順・at 無しは最後に並べる。"""
+    upcoming = []
+    for ev in schedule or []:
+        if not ev.get("name"):
+            continue
+        at = _parse_time(ev.get("at")) if ev.get("at") else None
+        approx = not re.fullmatch(r"翌?\d{1,2}:\d{2}", str(ev.get("time_label") or ""))
+        if at is None or at + (SCHEDULE_APPROX_GRACE if approx else timedelta(0)) >= now:
+            upcoming.append((at, ev))
+    upcoming.sort(key=lambda p: (p[0] is None, p[0] or now))
+    # 重要度が同じなら時刻の早い順に残す(sorted は安定)
+    keep = sorted(range(len(upcoming)), key=lambda i: -int(upcoming[i][1].get("importance") or 0))
+    upcoming = [upcoming[i] for i in sorted(keep[:SCHEDULE_MAX])]
+    return [r for r in (_schedule_row(ev) for _at, ev in upcoming) if r]
 
 
 def _point_row(no: int, item: NewsItem, digest_date: date | None, slot: str | None) -> dict:
@@ -355,8 +405,59 @@ def _point_row(no: int, item: NewsItem, digest_date: date | None, slot: str | No
     }
 
 
-def _summary_bubble(grouped, points, market, heading: str, digest_date, slot,
-                    has_carousel: bool) -> dict:
+CREDITS_PER_USD = 100_000  # twitterapi.io: 1 USD = 100,000 クレジット
+X_USAGE_WARN_DAYS = 7      # 残りがこの日数分(今回の使用量換算)を切ったら「要チャージ」
+
+
+def _x_usage_row(x_usage: dict | None) -> dict | None:
+    """要点バブル末尾の「X取得 今回…・残り…」1行。x_usage が無い/不正なら None(行を出さない)。
+
+    「あと約N日」は 残り ÷ 今回の使用量(使用量0なら出さない)。残りが7日分未満なら赤系で「要チャージ: 」を付ける。"""
+    try:
+        used, remaining = int(x_usage["used"]), int(x_usage["remaining"])
+    except (TypeError, KeyError, ValueError):
+        return None
+    text = (f"X取得 今回 {used:,}クレジット(約${used / CREDITS_PER_USD:.2f})・"
+            f"残り {remaining:,}(約${remaining / CREDITS_PER_USD:.2f}")
+    low = False
+    if used > 0:
+        days = remaining // used
+        text += f"・あと約{days}日"
+        low = days < X_USAGE_WARN_DAYS
+    text += ")"
+    if low:
+        text = "要チャージ: " + text
+    return {"type": "text", "text": text, "size": "xxs", "color": UP_COLOR if low else META_COLOR,
+            "margin": "md", "wrap": True}
+
+
+LINE_QUOTA_WARN_RUNS = 7   # 今月の残りがこの回数分(今回の配信コスト換算)を切ったら「要注意」
+
+
+def _line_quota_row(line_quota: dict | None) -> dict | None:
+    """要点バブルの「LINE 今月 残り…通」1行。line_quota が無い/不正なら None(行を出さない)。
+
+    残り = limit - used - cost(この配信を送った後の残り。負なら 0)。あと約N回 = 残り ÷ cost。
+    残り回数が7回未満なら赤系で「要注意: 」を付ける。"""
+    try:
+        limit, used, cost = (int(line_quota[k]) for k in ("limit", "used", "cost"))
+    except (TypeError, KeyError, ValueError):
+        return None
+    if cost <= 0:
+        return None
+    remaining = max(limit - used - cost, 0)
+    runs = remaining // cost
+    text = f"LINE 今月 残り {remaining}/{limit}通（今回 {cost}通・あと約{runs}回）"
+    low = runs < LINE_QUOTA_WARN_RUNS
+    if low:
+        text = "要注意: " + text
+    return {"type": "text", "text": text, "size": "xxs", "color": UP_COLOR if low else META_COLOR,
+            "margin": "sm", "wrap": True}
+
+
+def _summary_bubble(grouped, points, market, schedule, heading: str, digest_date, slot,
+                    now: datetime, has_carousel: bool, x_usage: dict | None = None,
+                    line_quota: dict | None = None) -> dict:
     total = sum(len(items) for items in grouped.values())
     counts = "・".join(f"{_genre_label(g)} {len(items)}" for g, items in grouped.items() if items)
     contents: list[dict] = [
@@ -374,6 +475,27 @@ def _summary_bubble(grouped, points, market, heading: str, digest_date, slot,
         contents.append({"type": "text", "text": "市況（前日終値）", "size": "sm", "weight": "bold",
                          "color": TITLE_COLOR, "margin": "lg"})
         contents += rows
+        if any(m.get("kind") == "crypto" and _market_row(m) for m in market):
+            contents.append({"type": "text", "text": "仮想通貨は直近値・24時間比", "size": "xxs",
+                             "color": META_COLOR, "margin": "sm", "wrap": True})
+
+    sched = _schedule_rows(schedule, now)
+    if sched:
+        contents.append(_sep("xl"))
+        contents.append({"type": "text", "text": "今日の予定", "size": "sm", "weight": "bold",
+                         "color": TITLE_COLOR, "margin": "lg"})
+        contents += sched
+
+    if rows or sched:
+        contents.append({"type": "text", "text": "評価は一般的な傾向で、投資助言ではありません",
+                         "size": "xxs", "color": META_COLOR, "margin": "lg", "wrap": True})
+
+    usage_row = _x_usage_row(x_usage)
+    if usage_row:
+        contents.append(usage_row)
+    quota_row = _line_quota_row(line_quota)
+    if quota_row:
+        contents.append(quota_row)
 
     if has_carousel:
         contents.append({"type": "text", "text": "ジャンル別の記事は次のカードを横にスワイプ →",
@@ -412,10 +534,16 @@ def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
 
 
 def _small_block(item: NewsItem, action: dict, now: datetime) -> dict:
-    """見出し一覧の1行(タップで詳細)。出典・時刻を小さく添える。"""
+    """見出し一覧の1行(タップで詳細)。要約と出典・時刻を小さく添える。"""
     contents: list[dict] = [
         {"type": "text", "text": item.title, "size": "sm", "color": TEXT_COLOR, "wrap": True},
     ]
+    if item.summary:
+        summary = item.summary
+        if len(summary) > SMALL_SUMMARY_MAX:
+            summary = summary[:SMALL_SUMMARY_MAX].rstrip() + "…"
+        contents.append({"type": "text", "text": summary, "size": "xs", "color": "#666666",
+                         "wrap": True, "margin": "xs"})
     meta = _meta_text(item, now)
     if meta:
         contents.append({"type": "text", "text": meta, "size": "xxs", "color": "#AAAAAA"})
@@ -437,7 +565,7 @@ def _genre_units(items: list[NewsItem], color: str, digest_date, slot, now) -> l
         row = _small_block(it, _detail_action(it, digest_date, slot), now)
         if j == 0 and bigs:
             # 見出しラベルは最初の1件と同じ単位にして、ラベルだけがバブル末尾に残らないようにする
-            label = {"type": "text", "text": "ほかの見出し", "size": "xs", "weight": "bold",
+            label = {"type": "text", "text": "ほかのニュース", "size": "xs", "weight": "bold",
                      "color": SUB_COLOR, "margin": "lg"}
             units.append(([_sep("xl")], [label, row]))
         elif j == 0:
@@ -462,9 +590,10 @@ def _genre_bubble(genre: str, head: str, count: int, body: list[dict]) -> dict:
 
 
 def _genre_bubbles(genre: str, items: list[NewsItem], digest_date, slot,
-                   now: datetime) -> list[tuple[dict, int]]:
+                   now: datetime, first_max: int = BUBBLE_MAX_BYTES) -> list[tuple[dict, int]]:
     """1ジャンルを (バブル, 載せた記事数) の列にする。件数は削らず、28000B を超えるときだけ
-    記事単位で次のバブルへ送る(見出しは「AI (1/2)」)。"""
+    記事単位で次のバブルへ送る(見出しは「AI (1/2)」)。
+    first_max は1枚目だけの上限(カルーセルの空きに合わせて分けるとき用。_filled_bubbles)。"""
     label = _genre_label(genre)
 
     def measure(body: list[dict]) -> int:
@@ -476,7 +605,8 @@ def _genre_bubbles(genre: str, items: list[NewsItem], digest_date, slot,
     n = 0
     for lead, body in _genre_units(items, _genre_color(genre), digest_date, slot, now):
         body = _fit_component(body, budget - _byte_size(lead))  # 単体で上限超過なら切り詰める
-        if cur and measure(cur + lead + body) > BUBBLE_MAX_BYTES:
+        limit = BUBBLE_MAX_BYTES if pages else first_max
+        if cur and measure(cur + lead + body) > limit:
             pages.append((cur, n))
             cur, n = list(body), 1
         else:
@@ -553,16 +683,47 @@ def _pack_carousels(bubbles: list[tuple[dict, int, str]],
     return out
 
 
+# 空きがこれ未満なら、次のジャンルは分けずに次のカルーセルから始める(1〜2件だけの断片を作らない)
+FILL_MIN_BYTES = 6000
+
+
+def _filled_bubbles(grouped: dict[str, list[NewsItem]], digest_date, slot,
+                    now: datetime) -> list[tuple[dict, int, str]]:
+    """カルーセルの空きを埋めるように、入りきらないジャンルを空きの大きさで分けたバブル列。
+
+    1ジャンル1枚が 23〜28KB あると、2ジャンル目が 48000B に入らずカルーセルが半分空のまま
+    5メッセージを使い切り、記事が「省略」される(小ニュースに要約を足した 2026-10-01 の試算で発生)。
+    ジャンル単位で詰めて収まらないときだけ使う。詰め方は _pack_carousels と同じ判定で追う。"""
+    out: list[tuple[dict, int, str]] = []
+    cur: list[dict] = []
+    for genre, items in grouped.items():
+        if not items:
+            continue
+        room = CAROUSEL_MAX_BYTES - _byte_size(_carousel(cur)) - (2 if cur else 0)  # 2: 区切りの ", "
+        first = BUBBLE_MAX_BYTES
+        if cur and len(cur) < CAROUSEL_MAX_BUBBLES and room >= FILL_MIN_BYTES:
+            first = min(BUBBLE_MAX_BYTES, room)
+        for b, n in _genre_bubbles(genre, items, digest_date, slot, now, first_max=first):
+            if cur and (len(cur) >= CAROUSEL_MAX_BUBBLES
+                        or _byte_size(_carousel(cur + [b])) > CAROUSEL_MAX_BYTES):
+                cur = []
+            cur.append(b)
+            out.append((b, n, genre))
+    return out
+
+
 def digest_specs(
     grouped: dict[str, list[NewsItem]], greeting: bool = True, slot: str | None = None,
     digest_date: date | None = None, market: list[dict] | None = None,
-    now: datetime | None = None,
+    now: datetime | None = None, schedule: list[dict] | None = None,
+    x_usage: dict | None = None, line_quota: dict | None = None,
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大5)に変換する。
 
-    1通目は要点バブル(日付見出し・ジャンル別件数・今日の要点5本・市況)。2通目以降は
+    1通目は要点バブル(日付見出し・ジャンル別件数・今日の要点5本・市況・今日の予定)。2通目以降は
     ジャンル別カルーセル(grouped の順=特大→各ジャンル、1ジャンル1枚)。
     - 件数は削らない: 全記事がどれかのカルーセルに必ず出る(各ジャンル最低1件も保たれる)。
+      ジャンル単位では4通に入りきらないときだけ、カルーセルの空きに合わせてジャンルを分ける。
     - 0件のジャンルは出さない。全ジャンル0件ならテキスト1通。
     - greeting は互換のため残している(見出しは常に同じ)。
     """
@@ -578,6 +739,9 @@ def digest_specs(
     for genre, items in grouped.items():
         if items:
             bubbles += [(b, n, genre) for b, n in _genre_bubbles(genre, items, digest_date, slot, now)]
+    if len(_pack_carousels(bubbles, len(bubbles))) > MAX_MESSAGES - 1:
+        # ジャンル単位で詰めると入りきらないときだけ、空きに合わせてジャンルを分けて詰め直す
+        bubbles = _filled_bubbles(grouped, digest_date, slot, now)
     carousels = _pack_carousels(bubbles, MAX_MESSAGES - 1)
 
     d = digest_date or now.date()
@@ -588,8 +752,10 @@ def digest_specs(
 
     specs: list[dict] = [{
         "type": "flex", "alt": alt[:ALT_MAX_CHARS],
-        "contents": _guard_flex(_summary_bubble(grouped, points, market, heading, digest_date, slot,
-                                                has_carousel=bool(carousels))),
+        "contents": _guard_flex(_summary_bubble(grouped, points, market, schedule, heading,
+                                                digest_date, slot, now,
+                                                has_carousel=bool(carousels), x_usage=x_usage,
+                                                line_quota=line_quota)),
     }]
     for bubble_list, genres in carousels:
         alt_c = "ジャンル別ニュース（" + "・".join(_genre_label(g) for g in genres) + "）"
@@ -660,6 +826,9 @@ def _spec_to_message(spec: dict):
     raise ValueError(f"未知の spec type: {spec['type']}")
 
 
+_QUOTA_TIMEOUT = (5, 10)  # (接続, 読み取り) 秒。linebot.v3 の _request_timeout にそのまま渡す
+
+
 class LineMessenger:
     """実 LINE 送信。spec のリストを受けて reply/push する。"""
 
@@ -669,6 +838,31 @@ class LineMessenger:
     def _api(self):
         from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
         return MessagingApi(ApiClient(Configuration(access_token=self._access_token)))
+
+    def fetch_quota(self, to: str) -> dict | None:
+        """今月の LINE 無料枠(上限・使用数)と、この配信の消費通数を返す。取得系は無料 API。
+
+        消費通数は push 1回 × 宛先人数: グループ(C…)/ルーム(R…)は人数、ユーザーは1。
+        上限なし(type=none)や取得失敗は None(行を出さないだけで、配信は止めない)。"""
+        # 応答が止まると後続の push(配信本体)まで止まるので、接続5秒・読み取り10秒で打ち切る
+        # (時間切れは下の except で None=残量の行を出さないだけ)。
+        t = _QUOTA_TIMEOUT
+        try:
+            api = self._api()
+            quota = api.get_message_quota(_request_timeout=t)
+            if str(getattr(quota.type, "value", quota.type)) != "limited":
+                return None
+            used = api.get_message_quota_consumption(_request_timeout=t).total_usage
+            if to.startswith("C"):
+                cost = api.get_group_member_count(to, _request_timeout=t).count
+            elif to.startswith("R"):
+                cost = api.get_room_member_count(to, _request_timeout=t).count
+            else:
+                cost = 1
+            return {"limit": int(quota.value), "used": int(used), "cost": int(cost)}
+        except Exception:  # noqa: BLE001 — 残量表示のために配信を止めない
+            log.warning("LINE の残り通数を取得できませんでした", exc_info=True)
+            return None
 
     def reply(self, reply_token: str, specs: list[dict]) -> None:
         from linebot.v3.messaging import ReplyMessageRequest

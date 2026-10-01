@@ -17,7 +17,7 @@ from sqlmodel import Session, select
 from . import xclient
 from .curator import CuratedItem
 from .genres import GENRE_KEYS
-from .models import GenreDigest, MarketSnapshot, NewsItem
+from .models import GenreDigest, MarketSnapshot, NewsItem, ScheduleSnapshot, XUsageSnapshot
 
 _X_CREATED_FMT = "%a %b %d %H:%M:%S %z %Y"  # 例: 'Tue Sep 30 12:34:56 +0000 2026'
 
@@ -114,6 +114,7 @@ def ingest_curated(
     slot: str,
     curated: list[CuratedItem],
     tweets: list[dict],
+    commit: bool = True,
 ) -> GenreDigest:
     """キュレーション済みアイテムを DB に取り込む。
     当日・当スロット・当ジャンルの既存ダイジェストがあれば置き換える(再実行で冪等)。
@@ -121,7 +122,9 @@ def ingest_curated(
     取り込む内容が空(curated が空 = 収集失敗やノイズのみ)で、かつ既存ダイジェストがある場合は
     置き換えない(既存をそのまま返す)。これは収集失敗の「今すぐ」配信が、定刻に作られた良い
     ダイジェストを空で上書き破壊するのを防ぐため。既存が無い場合は従来どおり空ダイジェストを作る
-    (「キュレーション済み・該当ニュースなし」を表し、catch-up の揃い判定が完了とみなせる)。"""
+    (「キュレーション済み・該当ニュースなし」を表し、catch-up の揃い判定が完了とみなせる)。
+
+    commit=False なら確定は呼び出し側に任せる(複数ジャンルを1トランザクションで書くため)。"""
     existing = get_genre_digest(session, genre, local_date, slot)
     if not curated and existing:
         return existing
@@ -140,7 +143,8 @@ def ingest_curated(
 
     for item in _build_news_items(digest.id, genre, curated, tweets):
         session.add(item)
-    session.commit()
+    if commit:
+        session.commit()
     return digest
 
 
@@ -194,3 +198,62 @@ def get_market(session: Session, d: date, slot: str) -> list[dict]:
         .order_by(MarketSnapshot.id.desc())
     ).first()
     return list(snap.data) if snap else []
+
+
+def save_schedule(session: Session, d: date, slot: str, schedule: list[dict]) -> None:
+    """当日・当スロットの「今日の予定」を保存する(空なら既存を消さない=save_market と同じ)。
+
+    既存とはマージする: 同じ予定(name と at が同じ)は新しい値で上書きし、新しい結果に無い既存の
+    予定は残す。再収集で一部の取得元だけ失敗したときに、未到来の FOMC 等が消えないようにするため。
+    並び順・件数の絞り込みは表示側(line_client._schedule_rows)が行う。"""
+    existing = session.exec(
+        select(ScheduleSnapshot).where(ScheduleSnapshot.digest_date == d, ScheduleSnapshot.slot == slot)
+        .order_by(ScheduleSnapshot.id)
+    ).all()
+    if not schedule and existing:
+        return
+    key = lambda ev: (ev.get("name"), ev.get("at"))  # noqa: E731
+    new_by_key = {key(ev): ev for ev in schedule}
+    old = list(existing[-1].data) if existing else []  # get_schedule と同じく最新のスナップショット
+    old_keys = {key(ev) for ev in old}
+    merged = [new_by_key.get(key(ev), ev) for ev in old]
+    merged += [ev for ev in schedule if key(ev) not in old_keys]
+    for snap in existing:
+        session.delete(snap)
+    session.add(ScheduleSnapshot(digest_date=d, slot=slot, data=merged))
+    session.commit()
+
+
+def get_schedule(session: Session, d: date, slot: str) -> list[dict]:
+    """当日・当スロットの「今日の予定」(無ければ空)。"""
+    snap = session.exec(
+        select(ScheduleSnapshot)
+        .where(ScheduleSnapshot.digest_date == d, ScheduleSnapshot.slot == slot)
+        .order_by(ScheduleSnapshot.id.desc())
+    ).first()
+    return list(snap.data) if snap else []
+
+
+def save_x_usage(session: Session, d: date, slot: str, usage: dict | None) -> None:
+    """当日・当スロットの twitterapi.io クレジット消費 {"used","remaining"} を保存する(置き換え)。
+
+    取得に失敗して None のときは何もしない(既存を消さない=save_market と同じ)。"""
+    if not usage:
+        return
+    for snap in session.exec(
+        select(XUsageSnapshot).where(XUsageSnapshot.digest_date == d, XUsageSnapshot.slot == slot)
+    ).all():
+        session.delete(snap)
+    session.add(XUsageSnapshot(digest_date=d, slot=slot, used=int(usage["used"]),
+                               remaining=int(usage["remaining"])))
+    session.commit()
+
+
+def get_x_usage(session: Session, d: date, slot: str) -> dict | None:
+    """当日・当スロットのクレジット消費 {"used","remaining"}(無ければ None)。"""
+    snap = session.exec(
+        select(XUsageSnapshot)
+        .where(XUsageSnapshot.digest_date == d, XUsageSnapshot.slot == slot)
+        .order_by(XUsageSnapshot.id.desc())
+    ).first()
+    return {"used": snap.used, "remaining": snap.remaining} if snap else None

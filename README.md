@@ -6,7 +6,7 @@ X(Twitter)から1日2回(朝・夜)その時点のニュースを集め、**Clau
 - **大ニュース**は要約付きで即配信。
 - **そのほか**は見出しのみ一覧 → タップで詳細を返す。
 - 受け取るジャンルと朝/夜の配信時刻は、Bot との対話で設定・変更できる。
-- 既定ジャンルは **AI / 株 / 経済 / 政治 / RPA / 世界**。`config/genres.toml` で編集する。
+- ジャンルは **特大 / AI / 株 / 仮想通貨 / テクノロジー / 話題** など。`config/genres.toml` で編集する。
 
 データ源は twitterapi.io(読み取り専用 / 自分のXアカウントは使わない)。
 **キュレーションは Claude Code が定期実行で行う(Anthropic API キーは使わない=従量課金なし)。**
@@ -125,7 +125,8 @@ curl -s localhost:8010/health
 - `key` … ジャンル識別子(LINEボタン・DB)
 - `keywords` … X検索キーワード(OR検索)
 - `exclude` … 任意。この語を含む投稿を除外(例: AIの株スパム対策)
-- `min_faves` … 任意。ジャンル別の最低いいね数(RPAなどニッチは下げる。既定は `.env` の `COLLECT_MIN_FAVES`)
+- `min_faves` … 任意。ジャンル別の最低いいね数(ニッチは下げる。既定は `.env` の `COLLECT_MIN_FAVES`)
+- その他(`keywords_en` / `accounts` / `feeds` / `x_queries` / `trend_sources` / `news_max` など)は `config/genres.toml` 冒頭のコメントを参照
 
 ## テスト
 ```bash

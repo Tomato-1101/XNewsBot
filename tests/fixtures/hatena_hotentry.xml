@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<rdf:RDF
+ xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+ xmlns="http://purl.org/rss/1.0/"
+ xmlns:admin="http://webns.net/mvcb/"
+ xmlns:content="http://purl.org/rss/1.0/modules/content/"
+ xmlns:dc="http://purl.org/dc/elements/1.1/"
+ xmlns:hatena="http://www.hatena.ne.jp/info/xmlns#"
+ xmlns:syn="http://purl.org/rss/1.0/modules/syndication/"
+ xmlns:taxo="http://purl.org/rss/1.0/modules/taxonomy/"
+>
+
+<channel rdf:about="https://b.hatena.ne.jp/hotentry/all">
+<title>&#x306F;&#x3066;&#x306A;&#x30D6;&#x30C3;&#x30AF;&#x30DE;&#x30FC;&#x30AF; - &#x4EBA;&#x6C17;&#x30A8;&#x30F3;&#x30C8;&#x30EA;&#x30FC; - &#x7DCF;&#x5408;</title>
+<link>https://b.hatena.ne.jp/hotentry/all</link>
+<description>&#x6700;&#x8FD1;&#x306E;&#x4EBA;&#x6C17;&#x30A8;&#x30F3;&#x30C8;&#x30EA;&#x30FC;</description>
+<items>
+ <rdf:Seq>
+  <rdf:li rdf:resource="https://news.denfaminicogamer.jp/news/2610012e" />
+  <rdf:li rdf:resource="https://note.com/kksk/n/ne08d78dad481" />
+  <rdf:li rdf:resource="https://zenn.dev/algoartis/articles/0b1c731881b25c" />
+  <rdf:li rdf:resource="https://note.com/ak_iii/n/n3ceb0a3f545d" />
+ </rdf:Seq>
+</items>
+</channel>
+<item rdf:about="https://news.denfaminicogamer.jp/news/2610012e">
+<title>&#x65E5;&#x672C;&#x30DE;&#x30AF;&#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x300C;&#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x300D;&#x306E;&#x540D;&#x524D;&#x304C;&#x300C;&#x30ED;&#x30CA;&#x30EB;&#x30C9;&#x300D;&#x306B;&#x5909;&#x66F4;&#x3002;&#x516C;&#x5F0F;&#x30B5;&#x30A4;&#x30C8;&#x3067;&#x3082;&#x300C;&#x30ED;&#x30CA;&#x30EB;&#x30C9;&#x300D;&#x8868;&#x8A18;&#x304C;&#x78BA;&#x8A8D;&#x3067;&#x304D;&#x308B;</title>
+<link>https://news.denfaminicogamer.jp/news/2610012e</link>
+<description>&#x30DE;&#x30AF;&#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x306E;&#x30AD;&#x30E3;&#x30E9;&#x30AF;&#x30BF;&#x30FC;&#x300C;&#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x300D;&#x306E;&#x540D;&#x524D;&#x306F;&#x672C;&#x65E5;10&#x6708;1&#x65E5;&#x3088;&#x308A;&#x300C;&#x30ED;&#x30CA;&#x30EB;&#x30C9;&#x300D;&#x3068;&#x306A;&#x308B;&#x3002; &#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x3001;&#x3069;&#x30FC;&#x306A;&#x308B;&#x306E;&#xFF1F; pic.twitter.com/y97RsfnVTH &#x2014; &#x30DE;&#x30AF;&#x30C9;&#x30CA;&#x30EB;&#x30C9; (@McDonaldsJapan) October 1, 2026 &#x3053;&#x306E;&#x80CC;&#x666F;&#x306B;&#x306F;&#x3001;&#x540C;&#x65E5;&#x300C;&#x516C;&#x76CA;&#x8CA1;&#x56E3;&#x6CD5;&#x4EBA;&#x30ED;&#x30CA;&#x30EB;&#x30C9;&#x30FB;&#x30DE;&#x30AF;&#x30C9;&#x30CA;&#x30EB;&#x30C9;&#x30FB;&#x30CF;&#x30A6;&#x30B9;&#x30FB;&#x30B8;&#x30E3;&#x30D1;&#x30F3;&#x300D;&#x304C;&#x6CD5;&#x4EBA;&#x540D;&#x30FB;&#x30D6;&#x30E9;&#x30F3;&#x30C9;&#x540D;&#x30FB;&#x30ED;&#x30B4;&#x30DE;&#x30FC;&#x30AF;&#x3092;&#x5909;&#x66F4;&#x3057;&#x305F;...</description>
+<dc:date>2026-10-01T07:38:50Z</dc:date>
+<dc:subject>&#x30A2;&#x30CB;&#x30E1;&#x3068;&#x30B2;&#x30FC;&#x30E0;</dc:subject>
+<dc:subject>&#x30DE;&#x30AF;&#x30C9;&#x30CA;&#x30EB;&#x30C9;</dc:subject>
+<dc:subject>&#x3042;&#x3068;&#x3067;&#x8AAD;&#x3080;</dc:subject>
+<dc:subject>&#x30D3;&#x30B8;&#x30CD;&#x30B9;</dc:subject>
+<dc:subject>&#x540D;&#x524D;</dc:subject>
+<dc:subject>&#x30CD;&#x30BF;</dc:subject>
+<dc:subject>&#x82F1;&#x8A9E;</dc:subject>
+<dc:subject>name</dc:subject>
+<dc:subject>2026</dc:subject>
+<dc:subject>&#x3053;&#x3068;&#x3070;</dc:subject>
+<hatena:bookmarkcount>222</hatena:bookmarkcount>
+<hatena:bookmarkCommentListPageUrl>https://b.hatena.ne.jp/entry/s/news.denfaminicogamer.jp/news/2610012e</hatena:bookmarkCommentListPageUrl>
+<hatena:bookmarkSiteEntriesListUrl>https://b.hatena.ne.jp/site/news.denfaminicogamer.jp/</hatena:bookmarkSiteEntriesListUrl>
+<hatena:imageurl>https://news.denfaminicogamer.jp/wp-content/uploads/2026/10/HTdF02XWIAAyUb-.jpg</hatena:imageurl>
+</item>
+
+<item rdf:about="https://note.com/kksk/n/ne08d78dad481">
+<title>&#x624D;&#x6C17;&#x3042;&#x308B;&#x9B45;&#x529B;&#x7684;&#x306A;&#x5973;&#x6027;&#x30AD;&#x30E3;&#x30E9;&#x30AF;&#x30BF;&#x30FC;&#x304C;&#x3001;&#x7279;&#x5B9A;&#x306E;&#x7537;&#x6027;(&#x4E3B;&#x4EBA;&#x516C;)&#x306B;&#x57F7;&#x7740;&#x3059;&#x308B;&#x3053;&#x3068;&#x306B;&#x3064;&#x3044;&#x3066;&#xFF5C;kqck</title>
+<link>https://note.com/kksk/n/ne08d78dad481</link>
+<description>&#x203B;&#x5B66;&#x30DE;&#x30B9;&#x306F;&#x4E00;&#x5EA6;&#x3082;&#x30D7;&#x30EC;&#x30A4;&#x3057;&#x305F;&#x3053;&#x3068;&#x304C;&#x306A;&#x3044;&#x6B63;&#x771F;&#x6B63;&#x9298;&#x306E;&#x30A8;&#x30A2;&#x30D7;&#x3067;&#x3059; &#x3044;&#x3084;&#x3001;&#x3080;&#x3057;&#x308D;&#x5F7C;&#x5973;&#x3089;&#x5358;&#x4F53;&#x3067;&#x306F;&#x597D;&#x307F;&#x306A;&#x306F;&#x305A;&#x306A;&#x3093;&#x3060;&#x3051;&#x3069;&#x3001;&#x3053;&#x3046;&#x3044;&#x3046;&#x5973;&#x5B50;&#x30AD;&#x30E3;&#x30E9;&#x304C;&#x3042;&#x308B;&#x7A2E;&#x306E;&#x30D8;&#x30C6;&#x30ED;&#x7537;&#x6027;&#x30AA;&#x30BF;&#x30AF;&#x306B;&#x5927;&#x4EBA;&#x6C17;&#x3067;&#x3042;&#x308B;&#x3001;&#x3068;&#x3044;&#x3046;&#x73FE;&#x5B9F;&#x306B;&#xFF08;&#x81EA;&#x5DF1;&#x5ACC;&#x60AA;&#x3092;&#x542B;&#x3081;&#x3066;&#xFF09;&#x8F9F;&#x6613;&#x3057;&#x3066;&#x3044;&#x308B;&#x3001;&#x3068;&#x3044;&#x3063;&#x305F;&#x307B;&#x3046;&#x304C;&#x6B63;&#x78BA;&#x304B;&#x3002; &#x5F7C;&#x5973;&#x3089;&#x306F;&#x3001;&#x305D;&#x308C;&#x305E;&#x308C;&#x6A5F;&#x77E5;&#x3084;&#x624D;&#x6C17;&#x306B;&#x6EA2;&#x308C;&#x3066;&#x3044;&#x3066;&#x3001;&#x81EA;&#x8EAB;&#x306E;&#x6B32;&#x671B;/&#x9858;&#x671B;&#x3092;&#x6301;&#x3064;...</description>
+<dc:date>2026-09-30T22:31:23Z</dc:date>
+<dc:subject>&#x66AE;&#x3089;&#x3057;</dc:subject>
+<dc:subject>&#x5275;&#x4F5C;</dc:subject>
+<dc:subject>&#x3042;&#x3068;&#x3067;&#x8AAD;&#x3080;</dc:subject>
+<dc:subject>&#x7537;&#x5973;</dc:subject>
+<dc:subject>&#x30B8;&#x30A7;&#x30F3;&#x30C0;&#x30FC;</dc:subject>
+<dc:subject>&#x30A2;&#x30CB;&#x30E1;</dc:subject>
+<dc:subject>&#x672C;&#x6587;&#x8AAD;&#x3093;&#x3067;&#x306A;&#x3044;</dc:subject>
+<dc:subject>&#x30AD;&#x30E3;&#x30E9;</dc:subject>
+<dc:subject>character</dc:subject>
+<dc:subject>&#x30AD;&#x30E3;&#x30E9;&#x30AF;&#x30BF;&#x30FC;</dc:subject>
+<dc:subject>&#x6279;&#x8A55;</dc:subject>
+<hatena:bookmarkSiteEntriesListUrl>https://b.hatena.ne.jp/site/note.com/kksk</hatena:bookmarkSiteEntriesListUrl>
+<hatena:bookmarkCommentListPageUrl>https://b.hatena.ne.jp/entry/s/note.com/kksk/n/ne08d78dad481</hatena:bookmarkCommentListPageUrl>
+<hatena:bookmarkcount>390</hatena:bookmarkcount>
+<hatena:imageurl>https://assets.st-note.com/production/uploads/images/293310224/rectangle_large_type_2_7e19d32d901d6051795c1283503dd172.jpeg?fit=bounds&#x26;quality=85&#x26;width=1280</hatena:imageurl>
+</item>
+
+<item rdf:about="https://zenn.dev/algoartis/articles/0b1c731881b25c">
+<title>AI-Slop&#x306A;&#x65E5;&#x672C;&#x8A9E;&#x3092;&#x69CB;&#x9020;&#x30EC;&#x30D9;&#x30EB;&#x3067;&#x8AAD;&#x307F;&#x3084;&#x3059;&#x304F;&#x3059;&#x308B;Skill&#x300E;yomiyasu&#xFF08;&#x3088;&#x307F;&#x3084;&#x3059;&#xFF09;&#x300F;&#x3092;&#x4F5C;&#x308A;&#x307E;&#x3057;&#x305F;</title>
+<link>https://zenn.dev/algoartis/articles/0b1c731881b25c</link>
+<description>&#x8208;&#x5473;&#x6DF1;&#x3044;&#x3053;&#x3068;&#x306B;&#x3001;&#x304B;&#x3064;&#x3066;AI&#x306E;&#x5178;&#x578B;&#x3068;&#x3055;&#x308C;&#x3066;&#x3044;&#x305F;&#x300C;&#x301C;&#x3057;&#x307E;&#x3057;&#x3087;&#x3046;&#x300D;&#x300C;&#x3059;&#x308B;&#x3053;&#x3068;&#x304C;&#x53EF;&#x80FD;&#x3067;&#x3059;&#x300D;&#x300C;&#x307E;&#x305F;&#x3001;&#x300D;&#x3068;&#x3044;&#x3063;&#x305F;&#x8868;&#x73FE;&#x306F;&#x3001;2026&#x5E74;&#x6642;&#x70B9;&#x3067;&#x306F;&#x3080;&#x3057;&#x308D;&#x6E1B;&#x5C11;&#x3057;&#x3066;&#x3044;&#x307E;&#x3057;&#x305F;&#x3002; &#x521D;&#x671F;&#x306E;&#x5B9A;&#x578B;&#x53E5;&#x304C;&#x66F8;&#x304D;&#x624B;&#x3084;&#x30E2;&#x30C7;&#x30EB;&#x5074;&#x3067;&#x8B66;&#x6212;&#x3055;&#x308C;&#x308B;&#x3088;&#x3046;&#x306B;&#x306A;&#x3063;&#x305F;&#x7D50;&#x679C;&#x3001;&#x3088;&#x308A;&#x5DE7;&#x5999;&#x3067;&#x7121;&#x81EA;&#x899A;&#x306A;&#x8868;&#x73FE;&#x3001;&#x3059;&#x306A;&#x308F;&#x3061;&#x300C;&#x4F5C;&#x696D;&#x3092;&#x6BD4;&#x55A9;&#x3067;&#x8A00;&#x3046;&#x52D5;&#x8A5E;&#x300D;&#x3084;&#x300C;&#x76F4;&#x8A33;&#x8ABF;&#x306E;&#x8A00;&#x3044;&#x56DE;&#x3057;&#x300D;&#x3078;&#x3068;&#x75C5;&#x7406;&#x304C;&#x6F5C;&#x884C;...</description>
+<dc:date>2026-09-30T19:49:24Z</dc:date>
+<dc:subject>&#x30C6;&#x30AF;&#x30CE;&#x30ED;&#x30B8;&#x30FC;</dc:subject>
+<dc:subject>AI</dc:subject>
+<dc:subject>&#x3042;&#x3068;&#x3067;&#x8AAD;&#x3080;</dc:subject>
+<dc:subject>&#x65E5;&#x672C;&#x8A9E;</dc:subject>
+<dc:subject>&#x6587;&#x7AE0;</dc:subject>
+<dc:subject>&#x4EBA;&#x5DE5;&#x77E5;&#x80FD;</dc:subject>
+<dc:subject>LLM</dc:subject>
+<dc:subject>&#x6587;&#x5316;</dc:subject>
+<hatena:bookmarkcount>449</hatena:bookmarkcount>
+<hatena:bookmarkCommentListPageUrl>https://b.hatena.ne.jp/entry/s/zenn.dev/algoartis/articles/0b1c731881b25c</hatena:bookmarkCommentListPageUrl>
+<hatena:bookmarkSiteEntriesListUrl>https://b.hatena.ne.jp/site/zenn.dev/algoartis</hatena:bookmarkSiteEntriesListUrl>
+<hatena:imageurl>https://res.cloudinary.com/zenn/image/upload/s---JFTvqeA--/c_fit%2Cg_north_west%2Cl_text:notosansjp-medium.otf_55:AI-Slop%25E3%2581%25AA%25E6%2597%25A5%25E6%259C%25AC%25E8%25AA%259E%25E3%2582%2592%25E6%25A7%258B%25E9%2580%25A0%25E3%2583%25AC%25E3%2583%2599%25E3%2583%25AB%25E3%2581%25A7%25E8%25AA%25AD%25E3%2581%25BF%25E3%2582%2584%25E3%2581%2599%25E3%2581%258F%25E3%2581%2599%25E3%2582%258BSkill%25E3%2580%258Eyomiyasu%25EF%25BC%2588%25E3%2582%2588%25E3%2581%25BF%25E3%2582%2584%25E3%2581%2599%25EF%25BC%2589%25E3%2580%258F%25E3%2582%2592%25E4%25BD%259C%25E3%2582%258A%25E3%2581%25BE%25E3%2581%2597%25E3%2581%259F%2Cw_1010%2Cx_90%2Cy_100/g_south_west%2Cl_text:notosansjp-medium.otf_34:%25E5%25A4%25A7%25E8%25B3%2580%25E6%2584%259B%25E4%25B8%2580%25E9%2583%258E%25EF%25BC%2588oga_aiichiro%25EF%25BC%2589%2Cx_220%2Cy_108/bo_3px_solid_rgb:d6e3ed%2Cg_south_west%2Ch_90%2Cl_fetch:aHR0cHM6Ly9zdGF0aWMuemVubi5zdHVkaW8vdXNlci11cGxvYWQvYXZhdGFyLzEwYzNmNzM0ODQuanBlZw==%2Cr_20%2Cw_90%2Cx_92%2Cy_102/g_south_west%2Ch_34%2Cl_default:og-publication-pro-mark-xcosax%2Cw_34%2Cx_217%2Cy_158/co_rgb:6e7b85%2Cg_south_west%2Cl_text:notosansjp-medium.otf_30:ALGO%2520ARTIS%2Cx_255%2Cy_160/bo_4px_solid_white%2Cg_south_west%2Ch_50%2Cl_fetch:aHR0cHM6Ly9zdGF0aWMuemVubi5zdHVkaW8vdXNlci11cGxvYWQvYXZhdGFyLzNhMDEwODY1NzkuanBlZw==%2Cr_max%2Cw_50%2Cx_139%2Cy_84/v1627283836/default/og-base-w1200-v2.png?_a=BACMTiAE</hatena:imageurl>
+</item>
+
+<item rdf:about="https://note.com/ak_iii/n/n3ceb0a3f545d">
+<title>&#x3042;&#x306A;&#x305F;&#x306E;&#x7D0D;&#x5F97;&#x306F;&#x30C1;&#x30FC;&#x30E0;&#x306B;&#x306F;&#x95A2;&#x4FC2;&#x306A;&#x3044;&#xFF5C;Aki</title>
+<link>https://note.com/ak_iii/n/n3ceb0a3f545d</link>
+<description>&#x65B0;&#x3057;&#x3044;&#x65B9;&#x91DD;&#x304C;&#x767A;&#x8868;&#x3055;&#x308C;&#x305F;&#x3042;&#x3068;&#x3001;&#x5ECA;&#x4E0B;&#x3067;&#x3001;&#x5225;&#x306E;&#x4F1A;&#x8B70;&#x3067;&#x3001;&#x3042;&#x308B;&#x3044;&#x306F;Slack&#x306E;DM&#x3067;&#x3001;&#x300C;&#x5B9F;&#x306F;&#x79C1;&#x3082;&#x53CD;&#x5BFE;&#x3057;&#x305F;&#x3093;&#x3060;&#x3051;&#x3069;&#x306D;&#x300D;&#x300C;&#x307E;&#x3042;&#x3001;&#x4E0A;&#x304C;&#x6C7A;&#x3081;&#x305F;&#x3053;&#x3068;&#x3060;&#x304B;&#x3089;&#x300D;&#x306A;&#x3069;&#x3068;&#x8A00;&#x3046;&#x4E0A;&#x53F8;&#x304C;&#x3044;&#x307E;&#x3059;&#x3002; &#x8A00;&#x3063;&#x3066;&#x3044;&#x308B;&#x672C;&#x4EBA;&#x306F;&#x3001;&#x8AA0;&#x5B9F;&#x306A;&#x3064;&#x3082;&#x308A;&#x3067;&#x3059;&#x3002;&#x7D0D;&#x5F97;&#x3057;&#x3066;&#x3044;&#x306A;&#x3044;&#x3082;&#x306E;&#x3092;&#x7D0D;&#x5F97;&#x3057;&#x305F;&#x30D5;&#x30EA;&#x3067;&#x90E8;&#x4E0B;&#x306B;&#x58F2;&#x308A;&#x3064;&#x3051;&#x308B;&#x306E;&#x306F;&#x4E0D;&#x8AA0;&#x5B9F;&#x3060;&#x3001;&#x305B;&#x3081;&#x3066;&#x81EA;&#x5206;&#x306E;&#x672C;&#x5FC3;&#x306F;&#x6B63;&#x76F4;&#x306B;&#x4F1D;&#x3048;&#x3066;&#x304A;&#x3053;&#x3046;&#x3001;&#x3068;&#x3002;...</description>
+<dc:date>2026-09-30T14:35:48Z</dc:date>
+<dc:subject>&#x5B66;&#x3073;</dc:subject>
+<dc:subject>&#x30DE;&#x30CD;&#x30B8;&#x30E1;&#x30F3;&#x30C8;</dc:subject>
+<dc:subject>&#x3042;&#x3068;&#x3067;&#x8AAD;&#x3080;</dc:subject>
+<dc:subject>&#x4ED5;&#x4E8B;</dc:subject>
+<dc:subject>&#x7D4C;&#x55B6;</dc:subject>
+<dc:subject>&#x30B3;&#x30DF;&#x30E5;&#x30CB;&#x30B1;&#x30FC;&#x30B7;&#x30E7;&#x30F3;</dc:subject>
+<dc:subject>management</dc:subject>
+<dc:subject>communication</dc:subject>
+<dc:subject>&#x5FC3;&#x7406;</dc:subject>
+<dc:subject>&#x30C1;&#x30FC;&#x30E0;</dc:subject>
+<dc:subject>work</dc:subject>
+<hatena:bookmarkSiteEntriesListUrl>https://b.hatena.ne.jp/site/note.com/ak_iii</hatena:bookmarkSiteEntriesListUrl>
+<hatena:bookmarkcount>519</hatena:bookmarkcount>
+<hatena:bookmarkCommentListPageUrl>https://b.hatena.ne.jp/entry/s/note.com/ak_iii/n/n3ceb0a3f545d</hatena:bookmarkCommentListPageUrl>
+<hatena:imageurl>https://assets.st-note.com/production/uploads/images/319282225/rectangle_large_type_2_6e0c0c3f9426442f503f2beed95d6a2b.png?fit=bounds&#x26;quality=85&#x26;width=1280</hatena:imageurl>
+</item>
+
+</rdf:RDF>

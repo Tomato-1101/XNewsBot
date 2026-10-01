@@ -6,8 +6,17 @@
 - 目的: 本人依頼「ジャンル・取得方法・まとめ方・形式を全部見直し、見やすく・質を高く」。中身は好評なので量は削らない。計画は `~/.claude/plans/lucky-riding-umbrella.md`。
 - 現状: 実装・試走・Codex レビュー済み。取得(X 3クエリ+直取りRSS+Google ニュース日英+記事本文+市況)/ まとめ方(curate_prompt 書き直し・直近3日の見出しで再掲除外)/ 表示(要点バブル+ジャンル別カルーセル)/ RPA 廃止。
 - 試走(10/01 データ): キュレーション 478s・48件(旧34件。テクノロジー 4→20)・再掲0。plist は 07:15 起動に変更済み(登録済み)。本人 1:1 へプレビュー1回 push 済み。
-- 未解決: twitterapi キー#0 は残高不足(402)。TOPIX は Yahoo で取れず未掲載。README に RPA・旧ジャンルの記述が残る。`collect_newsfeeds_per_genre` は未使用。
+- 未解決: TOPIX は Yahoo で取れず未掲載。`collect_newsfeeds_per_genre` は未使用。(キー#0 は 10-02 に削除、README は 10-02 に更新済み)
 - 次にやること: 10/02 07:15 の初回本番を `~/Library/Logs/xnewsbot-deliver.log` で確認(キュレーション時間・件数・push 成功・通数3)。
+
+## 追加改善: 要約常時表示・今日の予定・仮想通貨・話題・残量表示（10-02 03:00 更新・コミット済み）
+- 目的: 本人追加依頼。小ニュースも要約を常時表示／AI はマイナーも／今日の経済予定／指標は「予想比＋資産別の矢印(一般に)」／新ジャンル 仮想通貨(key 暗号資産)・話題／毎回の配信に X クレジットと LINE 残り通数。計画 `~/.claude/plans/lucky-riding-umbrella.md`。
+- 済: 上記すべて実装・コミット。raw 300KB 以上は2組(特大/AI/株・暗号資産/テクノロジー/話題)に分けて claude 並列→merge(試走5: 940s・153件・圧縮なし・全件が4メッセージに収まる)。Codex レビュー2回分の指摘は全て修正(LINE 残量 API タイムアウト／merge 型検証＋ingest 1トランザクション／上限解除後は成功パートを残し失敗パートだけ再実行／予定はマージ保存)。pytest 308。
+- 本番 DB: 購読者1 の enabled_genres に 暗号資産・話題 を追加済み(バックアップ `backups/xnewsbot_20261002_before_genres.db`)。本人 1:1 へプレビュー1通 push 済み。
+- 鍵: 旧 Keychain `twitterapi_io_key`(残高切れ …d015)削除、中央 `TWITTERAPI_IO_KEY`/shared を …3e15 に差し替え(XAgent も同じ鍵を読む)。残 約305万クレジット≒1日1万で約300日。
+- 仮想通貨の公式アカウント: TheBlock__→TheBlockCo に修正、CoinDeskJapan・neweconomy_jp は実在せず削除。
+- xclient.py の tau_log 差分と AGENTS.md は他セッションの作業なので未コミットのまま残している。
+- 次: 10/02 07:15 の本番を `~/Library/Logs/xnewsbot-deliver.log` で確認(分割並列・所要時間・push 成功・残量行・通数3)。
 
 ## 目的
 X(Twitter)発のニュースを **Claude Code(サブスク)** でキュレーションし **LINE Bot** で配信する。

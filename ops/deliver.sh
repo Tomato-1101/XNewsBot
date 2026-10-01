@@ -105,6 +105,7 @@ notify_recover_failure() {
   [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"   # 自分が取ったロックだけ返す
   [ -n "${CLAUDE_CWD:-}" ] && rm -rf "$CLAUDE_CWD"   # キュレーション用の一時 cwd(mktemp -d)を片付ける
   [ -n "${CLAUDE_OUT:-}" ] && rm -f "$CLAUDE_OUT"
+  [ -n "${TMP_PARTS:-}" ] && rm -f "${TMP_PARTS[@]}"   # 分割キュレーションのパート raw/curated/出力
   if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
     osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
     if [ "$(date +%H)" -ge 20 ]; then
@@ -190,10 +191,26 @@ elif [ "$COLLECT_RC" -ne 0 ]; then
 fi
 
 # 2) キュレーション(ヘッドレス Claude Code, Read/Write のみ)
+# raw が大きいと1セッションでは読み終えた時点で文脈があふれ自動圧縮が走り、品質が落ちる(489KB で実測)。
+# split でジャンルを組に分け、組ごとに別の claude を並列に走らせて最後に merge する。
+# 小さい raw は split が元のパス1行だけを返す(=従来どおり1セッション)。
+if ! SPLIT_OUT="$("$PY" scripts/pipeline.py split --raw "$RAW" 2>>"$LOG")" || [ -z "$SPLIT_OUT" ]; then
+  log "split に失敗"; exit 1
+fi
+PART_RAWS=(); PART_CURS=(); PART_OUTS=(); TMP_PARTS=()
+while IFS= read -r p; do [ -n "$p" ] && PART_RAWS+=("$p"); done <<< "$SPLIT_OUT"
+if [ "${#PART_RAWS[@]}" -eq 1 ]; then
+  PART_CURS=("$CUR")   # 分割なし: パートの出力が $CUR そのもの(merge 不要)
+else
+  for p in "${PART_RAWS[@]}"; do
+    PART_CURS+=("${p%.json}_curated.json")
+    TMP_PARTS+=("$p" "${p%.json}_curated.json")
+  done
+  log "キュレーションを ${#PART_RAWS[@]} 組に分けて並列実行"
+fi
 # 実測: 旧形式は約8分(498s/300KB raw)。新しい候補構成(約320件・本文つき)の試走は 975s(2026-10-01)。
 # 900s では打ち切られるので 1800s にする(plist の起動も 45分前に前倒し済み)。
 CURATE_TIMEOUT=1800
-PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 # モデルを明示する。未指定だと settings.json 既定(Fable 5・1M)を継承して 1 実行 ~12 分かかる。
 # 版番号で固定すると旧版の提供終了で止まるので、エイリアス opus(その時点の最新 Opus)を使う。
 # raw のツイートは信用できない外部テキスト。仕込まれた指示で任意ファイルを触られないよう権限を絞る:
@@ -206,15 +223,45 @@ PROMPT="$(sed -e "s#__RAW__#$RAW#g" -e "s#__CUR__#$CUR#g" ops/curate_prompt.md)"
 if ! CLAUDE_CWD="$(mktemp -d)" || ! CLAUDE_OUT="$(mktemp)"; then
   log "キュレーション用の一時ファイル(mktemp)を作れず中止"; exit 1
 fi
+for p in "${PART_RAWS[@]}"; do
+  if ! o="$(mktemp)"; then log "キュレーション用の一時ファイル(mktemp)を作れず中止"; exit 1; fi
+  PART_OUTS+=("$o"); TMP_PARTS+=("$o")
+done
+# CLAUDE_CODE_MAX_OUTPUT_TOKENS は上げない。分割で1セッションの出力は半分ほどになり既定で足りる。
+# 上げると入力(raw の読み込み)に使える文脈がその分減り、自動圧縮を招くおそれがある。
+# 成功したパート(exit 0 かつ curated あり)。上限解除後の再試行では失敗したパートだけ走らせ直す
+# (片方が上限で早く落ちても、もう片方の約17分の結果を捨てて定刻を越えないように)。
+PART_OK=()
 run_curation() {
+  local k r i rc=0 pids=() ks=()
   # 権限拒否等で claude が CUR を書けなかったとき、前回の curated を当日分として ingest しないよう先に消す
-  rm -f "$CUR"
-  ( cd "$CLAUDE_CWD" && run_with_timeout "$CURATE_TIMEOUT" "$CLAUDE" --model opus -p "$PROMPT" \
+  # (成功済みパートの curated は残す。分割時の $CUR は merge の出力なので毎回消す)
+  [ "${#PART_RAWS[@]}" -gt 1 ] && rm -f "$CUR"
+  for ((k = 0; k < ${#PART_RAWS[@]}; k++)); do
+    [ "${PART_OK[$k]:-}" = 1 ] && continue
+    rm -f "${PART_CURS[$k]}"
+    local praw="${PART_RAWS[$k]}" pcur="${PART_CURS[$k]}" prompt
+    prompt="$(sed -e "s#__RAW__#$praw#g" -e "s#__CUR__#$pcur#g" ops/curate_prompt.md)"
+    ( cd "$CLAUDE_CWD" \
+      && run_with_timeout "$CURATE_TIMEOUT" "$CLAUDE" --model opus -p "$prompt" \
       --tools Read,Write --permission-mode dontAsk --setting-sources "" --strict-mcp-config \
-      --no-session-persistence --safe-mode --allowedTools "Read(/$RAW)" "Edit(/$CUR)" ) > "$CLAUDE_OUT" 2>&1
-  local rc=$?
+      --no-session-persistence --safe-mode --allowedTools "Read(/$praw)" "Edit(/$pcur)" ) > "${PART_OUTS[$k]}" 2>&1 &
+    pids+=($!); ks+=("$k")
+  done
+  for ((k = 0; k < ${#pids[@]}; k++)); do
+    wait "${pids[$k]}"; r=$?; i="${ks[$k]}"
+    if [ "$r" -ne 0 ]; then log "キュレーションのパート $i (${PART_RAWS[$i]}) が exit=$r"; rc=$r
+    elif [ -s "${PART_CURS[$i]}" ]; then PART_OK[$i]=1; fi
+  done
+  # limit_reset_wait が上限の文言を読めるよう、全パートの出力を1つにまとめる
+  cat "${PART_OUTS[@]}" > "$CLAUDE_OUT"
   cat "$CLAUDE_OUT" >> "$LOG"
-  return $rc
+  [ "$rc" -eq 0 ] || return $rc
+  if [ "${#PART_RAWS[@]}" -gt 1 ] \
+      && ! "$PY" scripts/pipeline.py merge --out "$CUR" "${PART_CURS[@]}" >> "$LOG" 2>&1; then
+    log "キュレーション結果の merge に失敗"; return 1
+  fi
+  return 0
 }
 # Claude のセッション上限(「You've hit your session limit · resets 7:50am (Asia/Tokyo)」)なら、
 # 解除までの秒数(+60s)を出す。解除が45分より先・文言が読めないときは何も出さない。
@@ -231,7 +278,9 @@ now = dt.datetime.now(ZoneInfo(m.group(4)) if m.group(4) else None)
 hour = int(m.group(1)) % 12 + (12 if m.group(3).lower() == "pm" else 0)
 reset = now.replace(hour=hour, minute=int(m.group(2) or 0), second=0, microsecond=0)
 wait = (reset - now).total_seconds()
-if wait < -300:  # 時刻だけの表記なので、過ぎていれば翌日の同時刻(例: 23:50 に「resets 12:10am」)
+# 時刻だけの表記なので、大きく過ぎていれば翌日の同時刻(例: 23:50 に「resets 12:10am」)。
+# 90分以内の過去は「並列の他パートを待つ間に解除時刻を過ぎた」なので、すぐ(60s 後に)再試行する。
+if wait < -5400:
     wait += 86400
 if wait <= 2700:
     print(int(max(wait, 0)) + 60)

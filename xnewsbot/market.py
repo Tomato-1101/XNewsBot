@@ -2,13 +2,16 @@
 
 株ジャンルの冒頭に「前日の日経平均・米国株・ドル円・米10年債」を数字で出すため(本人要望 2026-10-01)。
 戻り値の形はメイン(キュレーション)と表示担当(line_client)との契約なので変えない:
-  [{"key","label","close","change","change_pct","asof","kind"}, ...]  kind = "index" | "fx" | "yield"
+  [{"key","label","close","change","change_pct","asof","kind"}, ...]  kind = "index" | "fx" | "yield" | "crypto"
 
 - 「確定終値」だけを使う: 取引時間中の当日足(途中値)は終値として扱わない。
   currentTradingPeriod.regular の時間内にいる足は捨てる(為替は24h取引なので当日足は常に捨てる)。
 - TOPIX は Yahoo に指数そのものの記号が無い(^TOPX / ^TPX / 998405.T はいずれも 404 を実測)。
   ETF(1306.T 等)で代用すると指数と値が違うので入れない。
 - 失敗した銘柄は入れない。全滅なら []。配信は市況なしで続ける。
+- 仮想通貨(ビットコイン・イーサリアム, kind="crypto")は CoinGecko の simple/price(鍵なし)から。
+  24時間取引で「終値」が無いので、close は取得時点の直近値(ドル)、change/change_pct は24時間比。
+  asof は取得日(JST)。取れなければ仮想通貨の行だけ省く(本人要望 2026-10-01)。
 """
 
 from __future__ import annotations
@@ -29,6 +32,10 @@ _TIMEOUT = 15
 # query1 が 429 のとき query2 で取れることがある(実測)。順に試す。
 _HOSTS = ("query1", "query2")
 
+COINGECKO_URL = ("https://api.coingecko.com/api/v3/simple/price"
+                 "?ids={ids}&vs_currencies=usd&include_24hr_change=true")
+JST = ZoneInfo("Asia/Tokyo")
+
 # (key, Yahoo 記号, 表示ラベル, kind)。並びは表示順。
 SYMBOLS: list[tuple[str, str, str, str]] = [
     ("N225", "^N225", "日経平均", "index"),
@@ -38,6 +45,12 @@ SYMBOLS: list[tuple[str, str, str, str]] = [
     ("USDJPY", "JPY=X", "ドル円", "fx"),
     # ^TNX は利回り(%)そのもの(例 5.293 = 5.293%。2026-10-01 実データで確認。旧来の10倍表記ではない)。
     ("TNX", "^TNX", "米10年債利回り", "yield"),
+]
+
+# (key, CoinGecko の id, 表示ラベル)。指数・為替・金利の後ろにこの順で並べる。
+CRYPTO: list[tuple[str, str, str]] = [
+    ("BTC", "bitcoin", "ビットコイン"),
+    ("ETH", "ethereum", "イーサリアム"),
 ]
 
 
@@ -55,6 +68,32 @@ def _fetch_chart(symbol: str) -> dict | None:
         except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError):
             return None
     return None
+
+
+def _fetch_crypto() -> dict | None:
+    ids = ",".join(cid for _key, cid, _label in CRYPTO)
+    req = urllib.request.Request(COINGECKO_URL.format(ids=ids), headers={"User-Agent": _UA})
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError):
+        return None
+
+
+def parse_crypto(data: dict, asof: str) -> list[dict]:
+    """CoinGecko simple/price → 仮想通貨の行(直近値と24時間比)。値の無い通貨は入れない。
+
+    _row は前日比を (last-prev)/prev で出すので、24時間比から24時間前の値を逆算して渡す。
+    """
+    out: list[dict] = []
+    for key, cid, label in CRYPTO:
+        try:
+            v = data[cid]
+            last, pct = float(v["usd"]), float(v["usd_24h_change"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append(_row(key, label, "crypto", last, last / (1 + pct / 100), asof))
+    return out
 
 
 def _local_date(ts: int, meta: dict) -> str:
@@ -111,6 +150,7 @@ def _row(key: str, label: str, kind: str, last: float, prev: float, asof: str) -
 
 def fetch_market() -> list[dict]:
     """主要指数・ドル円・米10年債の前日終値と前日比。失敗した銘柄は入れない。全滅なら []。
+    仮想通貨は直近値と24時間比を最後に足す(取れなければ仮想通貨の行だけ省く)。
 
     Yahoo は短時間の連打で 429 になりやすいので並列にせず順に取る(6件で数秒)。
     """
@@ -123,4 +163,8 @@ def fetch_market() -> list[dict]:
             continue
         last, prev, asof = parsed
         out.append(_row(key, label, kind, last, prev, asof))
-    return out
+    data = _fetch_crypto()
+    crypto = parse_crypto(data, datetime.now(JST).date().isoformat()) if data else []
+    if not crypto:
+        print("  市況: 仮想通貨(CoinGecko) 取得失敗のため省略", file=sys.stderr)
+    return out + crypto

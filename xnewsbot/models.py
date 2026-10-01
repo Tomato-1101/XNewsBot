@@ -118,3 +118,24 @@ class MarketSnapshot(SQLModel, table=True):
     # [{"key","label","close","change","change_pct","asof","kind"("index"|"fx"|"yield")}, ...]
     data: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class ScheduleSnapshot(SQLModel, table=True):
+    """配信日の「今日の予定」(経済指標・金融政策・要人発言・決算)。MarketSnapshot と同型。"""
+    id: int | None = Field(default=None, primary_key=True)
+    digest_date: date = Field(index=True)
+    slot: str = Field(default="morning", index=True)  # "morning" | "evening"
+    # [{"at": ISO8601(JST) or None, "time_label", "kind"("indicator"|"policy"|"speech"|"earnings"),
+    #   "country"("JP"|"US"|"EU"|"CN"|...), "name", "forecast", "previous", "result", "importance"}, ...]
+    data: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class XUsageSnapshot(SQLModel, table=True):
+    """配信日の twitterapi.io クレジット消費(今回の収集で使った分と残り)。MarketSnapshot と同型。"""
+    id: int | None = Field(default=None, primary_key=True)
+    digest_date: date = Field(index=True)
+    slot: str = Field(default="morning", index=True)  # "morning" | "evening"
+    used: int = 0       # 今回の収集で使ったクレジット(収集前後の残高差)
+    remaining: int = 0  # 収集後の残りクレジット
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

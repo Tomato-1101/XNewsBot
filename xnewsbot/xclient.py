@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .config import Settings, get_settings
 from .genres import (accounts, exclude_accounts, excludes, keywords, keywords_en,
-                     min_faves, min_faves_en)
+                     min_faves, min_faves_en, x_queries)
 
 BASE_URL = "https://api.twitterapi.io/twitter/tweet/advanced_search"
 KEY_FILE = Path(__file__).resolve().parent.parent / ".key"
@@ -358,6 +358,8 @@ def collect(genre: str, settings: Settings | None = None, keys: list[str] | None
     最大3クエリ: 日本語(keywords, lang:ja)・英語(keywords_en, lang:en, いいね下限高め)・
     公式(accounts の from:, いいね下限なし)。twitterapi.io の min_faves / -filter:replies は
     best-effort で揺らぐため、いいね下限・返信除外・直近性はクライアント側で確定的にフィルタする。
+    genres.toml の x_queries(キーワードを使わない生クエリ。話題ジャンルのバズ投稿など)があれば
+    「生クエリ」として足す(キーワードが空のジャンルでもこれだけで動く)。
     1クエリの失敗では他のクエリを捨てない。全クエリ失敗のときだけ例外を投げる
     (呼び出し側 pipeline._one がそのジャンルの X を空として扱う)。
     """
@@ -385,6 +387,10 @@ def collect(genre: str, settings: Settings | None = None, keys: list[str] | None
     if accounts(genre):
         plans.append(("公式", build_official_query(accounts(genre), hours),
                       min(OFFICIAL_MAX_TWEETS, cap), True, None, None))
+    for xq in x_queries(genre):
+        # いいね下限はクエリ側(min_faves:)が揺らいでも min_faves で確定的に効かせる(表示回数の救済はしない)
+        plans.append(("生クエリ", xq["query"] + _window_clause(hours),
+                      min(xq["max"], cap), False, xq["min_faves"], None))
 
     official: list[dict] = []
     others: list[dict] = []
@@ -409,3 +415,24 @@ def collect(genre: str, settings: Settings | None = None, keys: list[str] | None
     if plans and len(errors) == len(plans):
         raise errors[-1]
     return merge_tweets(official, others, exclude_accounts(genre))
+
+
+BALANCE_URL = "https://api.twitterapi.io/oapi/my/info"
+BALANCE_TIMEOUT = 15
+
+
+def fetch_balance(key: str) -> int | None:
+    """そのキーのアカウントの残クレジット(recharge_credits)。失敗・形式不正は None。
+
+    残高 API は呼んでもクレジットを消費しない。鍵はヘッダにだけ載せる(URL・ログに出さない)。
+    残高がマイナスのキーは負の整数のまま返す(呼び出し側が「正の鍵だけ合計」で扱う)。"""
+    req = urllib.request.Request(BALANCE_URL, headers={"X-API-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=BALANCE_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        credits = data["recharge_credits"]
+        if isinstance(credits, bool) or not isinstance(credits, (int, float)):
+            return None
+        return int(credits)
+    except Exception:  # noqa: BLE001  通信・JSON・キー欠落のどれでも「取れなかった」だけを返す
+        return None

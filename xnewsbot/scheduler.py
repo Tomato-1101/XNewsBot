@@ -103,8 +103,13 @@ def deliver_to_subscriber(
     if skip_if_empty and not any(grouped.values()):
         return []
     market = digest.get_market(session, local_date, slot)
+    schedule = digest.get_schedule(session, local_date, slot)
+    x_usage = digest.get_x_usage(session, local_date, slot)
+    fetch_quota = getattr(messenger, "fetch_quota", None)
+    line_quota = fetch_quota(sub.push_target) if fetch_quota else None
     specs = lc.digest_specs(grouped, greeting=greeting, slot=slot, digest_date=local_date,
-                            market=market, now=now_local)
+                            market=market, now=now_local, schedule=schedule, x_usage=x_usage,
+                            line_quota=line_quota)
     messenger.push(sub.push_target, specs)  # push_to(グループ等)があればそこへ、無ければ1:1
     if mark_delivered:
         sub.set_last_on(slot, local_date)

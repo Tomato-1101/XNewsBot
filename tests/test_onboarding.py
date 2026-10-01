@@ -154,6 +154,36 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     assert "RPA" not in blob          # 配信ジャンルから廃止済み
 
 
+def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
+    """モック返信(テスト)に今日の予定・仮想通貨の市況・小ニュースの要約が出て、5メッセージ以内。"""
+    import json
+
+    from xnewsbot import mockdata
+
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("message", text="テスト"))
+    specs = messenger.last_reply
+    assert len(specs) <= 5
+    summary = json.dumps(specs[1], ensure_ascii=False)
+    assert "今日の予定" in summary and "米 FOMC 政策金利発表" in summary
+    assert "$118,235" in summary and "仮想通貨は直近値・24時間比" in summary
+    assert "評価は一般的な傾向で、投資助言ではありません" in summary
+    assert "X取得 今回 9,870クレジット(約$0.10)・残り 3,040,677(約$30.41・あと約308日)" in summary
+    assert "LINE 今月 残り 152/200通（今回 3通・あと約50回）" in summary
+    assert "ほかのニュース" in json.dumps(specs[2:], ensure_ascii=False)
+    # 小ニュースの要約が一覧に出る(タップしなくても読める)
+    small = next(r for r in mockdata._MOCK if r[1] == "small" and r[0] == "AI")
+    assert small[4] in json.dumps(specs[2:], ensure_ascii=False)
+
+
+def test_help_mentions_schedule_and_new_genres(session, messenger):
+    _onboard(session, messenger)
+    handle_event(session, messenger, ev("message", text="ヘルプ"))
+    text = messenger.last_reply[0]["text"]
+    assert "今日の予定" in text and "仮想通貨" in text and "話題" in text
+    assert "見出しのみ" not in text  # 小ニュースにも要約が付いた
+
+
 def test_group_command_responds_but_chatter_ignored(session, messenger):
     _onboard(session, messenger)
     # グループでの明示コマンド(テスト)は応答する

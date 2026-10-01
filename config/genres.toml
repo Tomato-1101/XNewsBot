@@ -13,6 +13,13 @@
 #               いいね下限なしで集め、候補の先頭に置く(official=true)。
 # - feeds     : 任意。直取り RSS/Atom/RDF。{ url, name, filter } の配列。
 #               filter=true は keywords/keywords_en のどれかを見出し・概要に含む項目だけ採用(総合媒体用)。
+# - x_queries : 任意。キーワードを使わない X の生クエリ。{ query, max, min_faves } の配列。
+#               query に直近の窓(within_time)を足して投げ、いいね下限 min_faves はクライアント側でも
+#               確定的に効かせる(例: 話題の「いいねが極端に多い日本語の投稿」)。max は取得上限(管理UIの上限も効く)。
+# - trend_sources: 任意。急上昇ワード・人気エントリーの取得元(xnewsbot/trends.py)の名前の配列。
+#               "yahoo_realtime"(Yahoo!リアルタイム検索のトレンド語 → Google ニュースの見出し) /
+#               "google_trends"(Google トレンド急上昇・関連ニュースつき) / "hatena"(はてブ人気エントリー)。
+# - news_max  : 任意。ニュース候補(Google ニュース+feeds+trend_sources を重複除去した後)の上限。省略時は 40。
 # - exclude   : 任意。この語を含む投稿を除外(スパム・別話題対策)。
 # - exclude_accounts: 任意。使い回し・煽り系アカウントの denylist(@ なし・大文字小文字は無視)。
 # - min_faves : 任意。日本語クエリの最低いいね数(ニッチは下げ、特大は上げる)。省略時は設定の既定値。
@@ -29,6 +36,7 @@
 # ※2026-08-10 読者の関心に合わせ「政治」「経済」「世界情勢」を廃止(AI/テクノロジー/株中心へ)。
 #   金融政策・為替など市場に直結するマクロ要因は「株」ジャンルが吸収。
 # ※2026-10-01 「RPA」を廃止(本人の決定)。取得を「日本語/英語/公式アカウント」の3クエリ＋直取り RSS に刷新。
+# ※2026-10-01 「話題」を追加し、「暗号資産」の表示名を「仮想通貨」に。並びを 特大/AI/株/仮想通貨/テクノロジー/話題/他 に変更。
 
 [[genre]]
 key = "特大"
@@ -66,6 +74,11 @@ feeds = [
 
 [[genre]]
 key = "AI"
+# マイナーな AI ニュースも拾うため、いいね下限を既定(日本語200/英語500)の半分に(2026-10-01)。
+# 取得件数の上限は変えないので X の費用は増えない。ニュース候補は媒体が増えたので上限を60に。
+min_faves = 100
+min_faves_en = 250
+news_max = 60
 note = "最新のAIニュース・プロダクト・研究・開発ツール(国内/海外問わず)。読者の最重要ジャンルで厚めに拾う。株/投資の宣伝が混ざりやすいので exclude で除外。"
 keywords = [
   "生成AI", "ChatGPT", "OpenAI", "Claude", "Anthropic", "Gemini",
@@ -95,6 +108,13 @@ feeds = [
   { url = "https://huggingface.co/blog/feed.xml", name = "Hugging Face" },
   { url = "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic_news.xml", name = "Anthropic" },
   { url = "https://rss.itmedia.co.jp/rss/2.0/aiplus.xml", name = "ITmedia AI+" },
+  { url = "https://the-decoder.com/feed/", name = "The Decoder" },
+  { url = "https://www.marktechpost.com/feed/", name = "MarkTechPost" },
+  { url = "https://simonwillison.net/atom/everything/", name = "Simon Willison" },
+  { url = "https://www.latent.space/feed", name = "Latent Space" },
+  { url = "https://ainow.ai/feed/", name = "AINOW" },
+  { url = "https://zenn.dev/topics/ai/feed", name = "Zenn(AI)" },
+  { url = "https://github.com/anthropics/claude-code/releases.atom", name = "Claude Code リリース" },
 ]
 
 [[genre]]
@@ -121,6 +141,45 @@ feeds = [
   { url = "https://www.boj.or.jp/rss/whatsnew.xml", name = "日本銀行" },
   { url = "https://www.federalreserve.gov/feeds/press_all.xml", name = "FRB" },
   { url = "https://news.yahoo.co.jp/rss/topics/business.xml", name = "Yahoo!ニュース", filter = true },
+]
+
+[[genre]]
+key = "暗号資産"
+label = "仮想通貨"
+min_faves = 100
+min_faves_en = 500
+note = "暗号資産・Web3。値動きより業界・規制ニュース寄り(海外取引所・規制も)。スパムが多いので exclude を厚めに。"
+keywords = [
+  "ビットコイン", "イーサリアム", "暗号資産", "仮想通貨", "Web3",
+  "NFT", "ブロックチェーン", "ステーブルコイン", "暗号資産規制",
+  "BTC", "XRP", "ソラナ", "JPYC", "ビットコインETF", "暗号資産ETF",
+]
+keywords_en = [
+  "Bitcoin", "Ethereum", "crypto", "stablecoin", "Bitcoin ETF", "Solana", "XRP",
+  "crypto regulation", "Coinbase", "Binance", "DeFi",
+]
+# 煽り・勧誘(エアドロップ・紹介コード・プレセール・億り人など)。英語の勧誘語も同じリストで落とす。
+exclude = ["必ず儲かる", "稼げる", "LINE登録", "無料配布", "プレゼント企画", "エアドロ",
+           "エアドロップ", "紹介コード", "招待コード", "プレセール", "億り人", "爆上げ", "草コイン",
+           "100倍", "airdrop", "presale", "giveaway", "referral"]
+# 取引所・主要プロジェクト・米当局(SEC/CFTC)・主要媒体の公式
+accounts = [
+  "binance", "coinbase", "krakenfx", "bitFlyer", "coincheckjp", "bitbank_inc",
+  "ethereum", "solana", "Ripple", "SECGov", "CFTC",
+  "CoinDesk", "TheBlockCo", "decryptmedia",
+]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
+  "unusual_whales", "Polymarket", "Kalshi",
+]
+feeds = [
+  { url = "https://coinpost.jp/?feed=rss2", name = "CoinPost" },
+  { url = "https://www.neweconomy.jp/feed", name = "あたらしい経済" },
+  { url = "https://www.coindeskjapan.com/feed/", name = "CoinDesk Japan" },
+  { url = "https://www.coindesk.com/arc/outboundfeeds/rss/", name = "CoinDesk" },
+  { url = "https://www.theblock.co/rss.xml", name = "The Block" },
+  { url = "https://cointelegraph.com/rss", name = "Cointelegraph" },
+  { url = "https://decrypt.co/feed", name = "Decrypt" },
 ]
 
 [[genre]]
@@ -155,6 +214,24 @@ feeds = [
 ]
 
 [[genre]]
+key = "話題"
+note = "X や世の中で大きく話題になっていること(政治・芸能・スポーツ・ライフスタイル・グルメ・旅行も)。キーワードは持たず、いいねが極端に多い日本語の投稿(x_queries)・急上昇ワード(trend_sources)・総合ニュースの RSS から集める。"
+# 日本語のバズ投稿。キーワードが無いので「いいね2万以上・返信以外」だけで絞る(クライアント側でも確定的に)。
+x_queries = [
+  { query = "lang:ja min_faves:20000 -filter:replies", max = 40, min_faves = 20000 },
+]
+# いいねの多い投稿はプレゼント企画(フォロー&RT)が多いので落とす。
+exclude = ["プレゼント企画", "フォロー&RT", "フォロー＆RT", "フォローとRT", "抽選で", "応募方法", "#PR"]
+trend_sources = ["yahoo_realtime", "google_trends", "hatena"]
+news_max = 60
+feeds = [
+  { url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml", name = "Yahoo!ニュース" },
+  { url = "https://news.livedoor.com/topics/rss/top.xml", name = "livedoor ニュース" },
+  { url = "https://travel.watch.impress.co.jp/data/rss/1.0/trw/feed.rdf", name = "トラベル Watch" },
+  { url = "https://gigazine.net/news/rss_2.0/", name = "GIGAZINE" },
+]
+
+[[genre]]
 key = "ビジネス"
 note = "企業・起業・業界動向(国内/海外スタートアップ含む)。"
 keywords = [
@@ -169,12 +246,3 @@ keywords = [
   "健康", "医療", "病気", "新薬", "ワクチン", "感染症",
   "メンタルヘルス", "睡眠", "栄養", "WHO", "ダイエット",
 ]
-
-[[genre]]
-key = "暗号資産"
-note = "暗号資産・Web3。値動きより業界・規制ニュース寄り(海外取引所・規制も)。スパムが多いので exclude を厚めに。"
-keywords = [
-  "ビットコイン", "イーサリアム", "暗号資産", "仮想通貨", "Web3",
-  "NFT", "ブロックチェーン", "ステーブルコイン", "暗号資産規制",
-]
-exclude = ["必ず儲かる", "稼げる", "LINE登録", "無料配布", "プレゼント企画", "エアドロ"]

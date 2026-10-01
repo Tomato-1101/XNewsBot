@@ -4,6 +4,8 @@
 本モジュールは起動時に1度読み込み、辞書として公開する。
 collect 時は 日本語(keywords, lang:ja)・英語(keywords_en, lang:en)・公式(accounts, from:)の
 最大3クエリになり、exclude 語・exclude_accounts は除外する。feeds は直取り RSS(pipeline collect)。
+x_queries はキーワードを使わない生クエリ(話題ジャンルの「いいねが極端に多い日本語の投稿」用)、
+trend_sources は急上昇ワード・はてブ等の話題の取得元(xnewsbot.trends)、news_max はニュース候補の上限。
 """
 
 from __future__ import annotations
@@ -20,6 +22,15 @@ def _feed(genre: str, f: dict) -> dict:
     if not url:
         raise ValueError(f"genres.toml: {genre} の feeds に url の無い要素があります: {f}")
     return {"url": url, "name": str(f.get("name") or url), "filter": bool(f.get("filter", False))}
+
+
+def _xq(genre: str, q: dict) -> dict:
+    """x_queries の1要素を {query, max, min_faves} に正規化する(query 必須)。"""
+    query = str(q.get("query") or "").strip() if isinstance(q, dict) else ""
+    if not query:
+        raise ValueError(f"genres.toml: {genre} の x_queries に query の無い要素があります: {q}")
+    mf = q.get("min_faves")
+    return {"query": query, "max": int(q.get("max", 40)), "min_faves": int(mf) if mf is not None else None}
 
 
 def _load() -> dict[str, dict]:
@@ -42,6 +53,9 @@ def _load() -> dict[str, dict]:
             "accounts": [str(a).lstrip("@") for a in g.get("accounts", [])],
             "exclude_accounts": [str(a).lstrip("@") for a in g.get("exclude_accounts", [])],
             "feeds": [_feed(key, f) for f in g.get("feeds", [])],
+            "x_queries": [_xq(key, q) for q in g.get("x_queries", [])],
+            "trend_sources": [str(t) for t in g.get("trend_sources", [])],
+            "news_max": g.get("news_max"),  # None なら pipeline の既定(NEWS_PER_GENRE)
             "selectable": bool(g.get("selectable", True)),  # false=常時ジャンル(全員に常時配信)
             # 廃止(2026-10-01): 英語は keywords_en の別クエリで集める。互換のため読み込みだけ残す。
             "lang": str(g.get("lang", "ja")).strip().lower(),
@@ -117,4 +131,20 @@ def feeds(genre: str) -> list[dict]:
 def min_faves_en(genre: str) -> int | None:
     """英語クエリの最低いいね数(未指定なら None → 呼び出し側の既定)。"""
     v = GENRES[genre].get("min_faves_en")
+    return int(v) if v is not None else None
+
+
+def x_queries(genre: str) -> list[dict]:
+    """キーワードを使わない X の生クエリ [{query, max, min_faves}](無ければ空)。"""
+    return GENRES[genre].get("x_queries", [])
+
+
+def trend_sources(genre: str) -> list[str]:
+    """話題の取得元の名前(xnewsbot.trends.SOURCES のキー)。"""
+    return GENRES[genre].get("trend_sources", [])
+
+
+def news_max(genre: str) -> int | None:
+    """ニュース候補の上限(未指定なら None → pipeline の既定)。"""
+    v = GENRES[genre].get("news_max")
     return int(v) if v is not None else None

@@ -17,7 +17,7 @@ class _Settings:
 
 def _fake_genre(monkeypatch, *, kws=("生成AI", "GitHub Copilot"), kws_en=("OpenAI", "Claude Code"),
                 accounts=("OpenAI", "AnthropicAI"), ex=("銘柄",), deny=(), min_faves=None,
-                min_faves_en=None):
+                min_faves_en=None, xq=()):
     """genres.toml の現在値に依存しないよう、xclient が参照するジャンル定義を差し替える。"""
     monkeypatch.setattr(xclient, "keywords", lambda g: list(kws))
     monkeypatch.setattr(xclient, "keywords_en", lambda g: list(kws_en))
@@ -26,6 +26,7 @@ def _fake_genre(monkeypatch, *, kws=("生成AI", "GitHub Copilot"), kws_en=("Ope
     monkeypatch.setattr(xclient, "exclude_accounts", lambda g: list(deny))
     monkeypatch.setattr(xclient, "min_faves", lambda g: min_faves)
     monkeypatch.setattr(xclient, "min_faves_en", lambda g: min_faves_en)
+    monkeypatch.setattr(xclient, "x_queries", lambda g: [dict(q) for q in xq])
 
 
 def _route(ja=(), en=(), official=(), calls=None):
@@ -121,6 +122,24 @@ def test_collect_partial_failure_keeps_other_queries(monkeypatch):
     monkeypatch.setattr(xclient, "fetch_with_retry", all_fail)
     with pytest.raises(xclient.XClientError):
         xclient.collect("AI", settings=_Settings(), keys=["k"])
+
+
+def test_collect_raw_query_without_keywords(monkeypatch):
+    """キーワードの無いジャンルでも x_queries の生クエリだけで集める。窓を足し、上限は max と管理UIの小さい方。
+    いいね下限はクライアント側で確定的に効かせ(表示回数では救済しない)、返信・除外語も落とす。"""
+    _fake_genre(monkeypatch, kws=(), kws_en=(), accounts=(), ex=("プレゼント企画",), xq=[
+        {"query": "lang:ja min_faves:20000 -filter:replies", "max": 80, "min_faves": 20000}])
+    calls = []
+    ja = [
+        {"id": "1", "viewCount": 10, "likeCount": 25000, "text": "バズった話", "createdAt": ""},
+        {"id": "2", "viewCount": 9_000_000, "likeCount": 19999, "text": "惜しい", "createdAt": ""},
+        {"id": "3", "viewCount": 10, "likeCount": 30000, "text": "返信", "isReply": True, "createdAt": ""},
+        {"id": "4", "viewCount": 10, "likeCount": 90000, "text": "プレゼント企画です", "createdAt": ""},
+    ]
+    monkeypatch.setattr(xclient, "fetch_with_retry", _route(ja=ja, calls=calls))
+    out = xclient.collect("話題", settings=_Settings(), keys=["k"])
+    assert calls == [("lang:ja min_faves:20000 -filter:replies within_time:24h", 60)]
+    assert [t["text"] for t in out] == ["バズった話"]
 
 
 def test_merge_tweets_dedup_rt_and_denylist():
@@ -263,3 +282,55 @@ def test_load_keys_dedup_and_order(monkeypatch):
     monkeypatch.setattr(xclient, "_keychain_get", lambda: "c")
     monkeypatch.setattr(xclient, "KEY_FILE", xclient.Path("/nonexistent/.key"))
     assert xclient.load_keys(S()) == ["a", "b", "c"]
+
+
+# --- fetch_balance(残高 API。ネットワークは使わない) ---
+
+class _Resp:
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_fetch_balance_parses_recharge_credits(monkeypatch):
+    """recharge_credits を int で返し、鍵はヘッダにだけ載せる(URL に出さない)・timeout 15秒。"""
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["url"], seen["key"], seen["timeout"] = req.full_url, req.get_header("X-api-key"), timeout
+        return _Resp(b'{"recharge_credits": 3040677, "total_bonus_credits": 0}')
+
+    monkeypatch.setattr(xclient.urllib.request, "urlopen", fake_urlopen)
+    assert xclient.fetch_balance("secret-key") == 3040677
+    assert seen["url"] == "https://api.twitterapi.io/oapi/my/info"
+    assert seen["key"] == "secret-key" and "secret-key" not in seen["url"]
+    assert seen["timeout"] == 15
+
+
+def test_fetch_balance_negative_balance_is_returned_as_is(monkeypatch):
+    monkeypatch.setattr(xclient.urllib.request, "urlopen",
+                        lambda req, timeout=None: _Resp(b'{"recharge_credits": -120}'))
+    assert xclient.fetch_balance("k") == -120
+
+
+@pytest.mark.parametrize("body", [b"not json", b'{"other": 1}', b'{"recharge_credits": "x"}',
+                                  b'{"recharge_credits": null}', b"[]"])
+def test_fetch_balance_bad_body_is_none(monkeypatch, body):
+    monkeypatch.setattr(xclient.urllib.request, "urlopen", lambda req, timeout=None: _Resp(body))
+    assert xclient.fetch_balance("k") is None
+
+
+def test_fetch_balance_network_error_is_none(monkeypatch):
+    def boom(req, timeout=None):
+        raise xclient.urllib.error.URLError("down")
+
+    monkeypatch.setattr(xclient.urllib.request, "urlopen", boom)
+    assert xclient.fetch_balance("k") is None

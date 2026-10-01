@@ -161,6 +161,124 @@ def test_no_market_block_when_empty():
     assert "市況（前日終値）" not in _texts(specs[0]["contents"])
 
 
+CRYPTO_NOTE = "仮想通貨は直近値・24時間比"
+ADVICE_NOTE = "評価は一般的な傾向で、投資助言ではありません"
+_NIKKEI = {"key": "nikkei", "label": "日経平均", "close": 45210.35, "change": 540.1,
+           "change_pct": 1.21, "asof": "2026-06-05", "kind": "index"}
+
+
+def _section(spec: dict, heading: str) -> list[dict]:
+    """要点バブルで見出し heading の後ろ、次の区切り線までの要素。"""
+    body = spec["contents"]["body"]["contents"]
+    start = next(i for i, c in enumerate(body) if c.get("text") == heading)
+    out = []
+    for c in body[start + 1:]:
+        if c["type"] == "separator":
+            break
+        out.append(c)
+    return out
+
+
+def test_market_crypto_row_in_dollars_with_note():
+    market = [_NIKKEI,
+              {"key": "btc", "label": "ビットコイン", "close": 118234.7, "change": 2668.1,
+               "change_pct": 2.31, "asof": "2026-06-08T07:50:00+09:00", "kind": "crypto"},
+              {"key": "eth", "label": "イーサリアム", "close": 4321.8, "change": -52.4,
+               "change_pct": -1.2, "asof": "2026-06-08T07:50:00+09:00", "kind": "crypto"}]
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, market=market, now=NOW)
+    sec = _section(specs[0], "市況（前日終値）")
+    rows = [_texts(c) for c in sec if c["type"] == "box"]
+    assert rows == [["日経平均", "45,210", "+1.21%"],
+                    ["ビットコイン", "$118,235", "+2.31%"],
+                    ["イーサリアム", "$4,322", "-1.20%"]]
+    # 注記は市況ブロックの末尾(最後の行の直後)に1つだけ
+    last_row = max(i for i, c in enumerate(sec) if c["type"] == "box")
+    assert sec[last_row + 1]["text"] == CRYPTO_NOTE and sec[last_row + 1]["size"] == "xxs"
+    assert _texts(specs[0]["contents"]).count(CRYPTO_NOTE) == 1
+    # 仮想通貨が無ければ注記は出さない
+    plain = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, market=[_NIKKEI], now=NOW)
+    assert CRYPTO_NOTE not in _texts(plain[0]["contents"])
+
+
+def _ev(at, label: str, name: str, **kw) -> dict:
+    ev = {"at": at, "time_label": label, "kind": "indicator", "country": "US", "name": name,
+          "forecast": "", "previous": "", "result": "", "importance": 3}
+    ev.update(kw)
+    return ev
+
+
+def _schedule_lines(spec: dict) -> list[tuple[str, list[str]]]:
+    """予定ブロックの各行を (時刻, [名前, 予想・前回]) に。"""
+    return [(c["contents"][0]["text"], _texts(c["contents"][1]))
+            for c in _section(spec, "今日の予定") if c["type"] == "box"]
+
+
+def test_schedule_block_order_past_and_figures():
+    schedule = [
+        _ev(None, "未定", "時刻未定A"),
+        _ev("2026-06-08T21:30:00+09:00", "21:30", "米 雇用統計", forecast="3.0%", previous="2.9%"),
+        _ev("2026-06-08T07:59:00+09:00", "07:59", "過ぎた予定"),          # now より前は出さない
+        _ev("2026-06-08T08:00:00+09:00", "08:00", "ちょうど今", previous="1.0%"),
+        _ev(None, "寄り前", "時刻未定B", forecast="10円"),
+        _ev("2026-06-09T03:00:00+09:00", "翌03:00", "FOMC"),
+        _ev("2026-06-08T00:00:00+00:00", "09:00", "UTC表記"),            # = 09:00 JST
+    ]
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, schedule=schedule,
+                            now=NOW)
+    assert _schedule_lines(specs[0]) == [
+        ("08:00", ["ちょうど今", "前回 1.0%"]),
+        ("09:00", ["UTC表記"]),
+        ("21:30", ["米 雇用統計", "予想 3.0%｜前回 2.9%"]),
+        ("翌03:00", ["FOMC"]),
+        ("未定", ["時刻未定A"]),          # at が無い予定は最後、元の順のまま
+        ("寄り前", ["時刻未定B", "予想 10円"]),
+    ]
+    # 見出しは市況と同じ体裁で、前に区切り線
+    body = specs[0]["contents"]["body"]["contents"]
+    i = next(k for k, c in enumerate(body) if c.get("text") == "今日の予定")
+    assert body[i - 1]["type"] == "separator"
+    assert (body[i]["size"], body[i]["weight"]) == ("sm", "bold")
+
+
+def test_schedule_block_max_12_and_none_when_empty():
+    timed = [_ev(f"2026-06-08T{9 + k:02d}:00:00+09:00", f"{9 + k:02d}:00", f"予定{k:02d}")
+             for k in range(13)]
+    untimed = [_ev(None, "未定", f"未定{k}") for k in range(3)]
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D,
+                            schedule=untimed + timed, now=NOW)
+    lines = _schedule_lines(specs[0])
+    assert [names[0] for _t, names in lines] == [f"予定{k:02d}" for k in range(12)]
+    # 0件・全部過ぎた予定ならブロックごと出さない
+    for sched in ([], None, [_ev("2026-06-08T07:00:00+09:00", "07:00", "過去")]):
+        s = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, schedule=sched, now=NOW)
+        assert "今日の予定" not in _texts(s[0]["contents"])
+
+
+def test_advice_note_only_with_market_or_schedule():
+    future = [_ev("2026-06-08T21:30:00+09:00", "21:30", "米 雇用統計")]
+    past = [_ev("2026-06-08T07:00:00+09:00", "07:00", "過去")]
+    cases = [([_NIKKEI], None, True), ([], future, True), ([_NIKKEI], future, True),
+             ([], None, False), (None, past, False)]
+    for market, schedule, shown in cases:
+        specs = lc.digest_specs({"AI": [_big()], "株": [_small(0)]}, slot="morning", digest_date=D,
+                                market=market, schedule=schedule, now=NOW)
+        texts = _texts(specs[0]["contents"])
+        assert (ADVICE_NOTE in texts) is shown, (market, schedule)
+        if shown:  # 末尾(スワイプ案内の前)に極小で
+            assert texts[-2:] == [ADVICE_NOTE, "ジャンル別の記事は次のカードを横にスワイプ →"]
+            note = next(c for c in specs[0]["contents"]["body"]["contents"]
+                        if c.get("text") == ADVICE_NOTE)
+            assert note["size"] == "xxs"
+
+
+def test_new_genre_colors_use_genre_label():
+    grouped = {"暗号資産": [_big("暗号資産")], "話題": [_big("話題")]}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    heads = [b["header"] for b in specs[1]["contents"]["contents"]]
+    assert [h["backgroundColor"] for h in heads] == ["#B45309", "#A21CAF"]
+    assert [_texts(h)[0] for h in heads] == [lc._genre_label("暗号資産"), lc._genre_label("話題")]
+
+
 def test_digest_specs_empty():
     specs = lc.digest_specs({"AI": []}, greeting=True)
     assert len(specs) == 1 and specs[0]["type"] == "text"
@@ -198,14 +316,38 @@ def test_small_rows_listed_with_label_and_meta():
     specs = lc.digest_specs({"株": [big, s0, s1]}, slot="morning", digest_date=D, now=NOW)
     body = specs[1]["contents"]["contents"][0]["body"]["contents"]
     texts = _texts(body)
-    assert "ほかの見出し" in texts
+    assert "ほかのニュース" in texts
     assert "@v・2日前" in texts
     smalls = [c for c in body if c.get("type") == "box" and c.get("action")]
     assert [c["action"]["data"] for c in smalls] == ["detail:20260608:morning:株:1",
                                                     "detail:20260608:morning:株:2"]
-    # small だけのジャンルには「ほかの見出し」を出さない(大ニュースとの区切りが無いため)
+    # small だけのジャンルには「ほかのニュース」を出さない(大ニュースとの区切りが無いため)
     only_small = lc.digest_specs({"株": [_small(0)]}, slot="morning", digest_date=D, now=NOW)
-    assert "ほかの見出し" not in _texts(only_small[1]["contents"])
+    assert "ほかのニュース" not in _texts(only_small[1]["contents"])
+
+
+def test_small_row_shows_summary_truncated_and_keeps_tap():
+    """小ニュースも 見出し → 要約(100字超は「…」) → 出典・時刻 の順に出す。要約が空なら出さない。"""
+    s_short, s_long, s_exact, s_empty = _small(1), _small(2), _small(3), _small(4)
+    s_short.summary = "短い要約"
+    s_long.summary = "あ" * 100 + "いう"
+    s_exact.summary = "え" * 100
+    s_empty.summary = ""
+    specs = lc.digest_specs({"株": [s_short, s_long, s_exact, s_empty]}, slot="morning",
+                            digest_date=D, now=NOW)
+    body = specs[1]["contents"]["contents"][0]["body"]["contents"]
+    rows = [c for c in body if c.get("type") == "box" and c.get("action")]
+    assert [_texts(r) for r in rows] == [
+        ["小さな話題1", "短い要約", "@v"],
+        ["小さな話題2", "あ" * 100 + "…", "@v"],
+        ["小さな話題3", "え" * 100, "@v"],          # ちょうど100字は切らない
+        ["小さな話題4", "@v"],                       # 要約が空なら行ごと出さない
+    ]
+    summary = rows[0]["contents"][1]
+    assert (summary["size"], summary["color"], summary["wrap"]) == ("xs", "#666666", True)
+    # 行のタップで詳細を開く動作は残す
+    assert [r["action"]["data"] for r in rows] == [f"detail:20260608:morning:株:{i}" for i in (1, 2, 3, 4)]
+    assert s_long.summary == "あ" * 100 + "いう"     # 元データは変えない
 
 
 def test_big_block_has_detail_tap():
@@ -275,6 +417,77 @@ def test_bulk_4_genres_x20_fits_and_keeps_every_item():
         for it in items:
             assert f"detail:20260608:morning:{g}:{it.rank}" in car_datas
     assert "件は省略" not in json.dumps(specs, ensure_ascii=False)
+
+
+def _heavy() -> dict[str, list[NewsItem]]:
+    """重い日の実例: 特大3・AI35(big5+small30)・株25・暗号資産20・テクノロジー25・話題25。
+    見出し40字前後・big の要約150字・small の要約100字・出典つき(big 3件・small 2件)。"""
+    plan = [("特大", 3, 0), ("AI", 5, 30), ("株", 3, 22), ("暗号資産", 3, 17),
+            ("テクノロジー", 3, 22), ("話題", 3, 22)]
+    out: dict[str, list[NewsItem]] = {}
+    for g, n_big, n_small in plan:
+        items = []
+        for r in range(n_big + n_small):
+            big = r < n_big
+            srcs = [{"author": "媒体A", "media": "サンプル経済新聞", "kind": "news",
+                     "url": f"https://example.com/news/{r}/article-{r:04d}",
+                     "created_at": "2026-06-07T21:00:00+00:00"},
+                    {"author": "acc", "media": "@sample_acc", "kind": "x",
+                     "url": f"https://x.com/sample_acc/status/19{r:017d}",
+                     "created_at": "2026-06-07T22:00:00+00:00"}]
+            if big:
+                srcs.append({"author": "w", "media": "Sample Wire", "kind": "news",
+                             "url": f"https://example.org/{r}", "created_at": "2026-06-07T20:00:00+00:00"})
+            items.append(NewsItem(
+                genre=g, importance="big" if big else "small", rank=r, score=90 - r,
+                title=f"{g}見出し{r:02d}" + "あ" * (35 - len(g)),
+                summary=("大要約" * 50) if big else ("要" * 100),
+                source_urls=[s["url"] for s in srcs], source_tweets=srcs))
+        out[g] = items
+    return out
+
+
+_HEAVY_MARKET = [
+    {"key": k, "label": label, "close": close, "change": 1.0, "change_pct": 0.5,
+     "asof": "2026-06-05", "kind": kind}
+    for k, label, close, kind in [
+        ("nikkei", "日経平均", 45210.35, "index"), ("sp500", "S&P500", 6512.4, "index"),
+        ("nasdaq", "ナスダック総合", 21512.4, "index"), ("dow", "NYダウ", 45210.3, "index"),
+        ("usdjpy", "ドル円", 149.5, "fx"), ("us10y", "米10年債", 4.25, "yield"),
+        ("btc", "ビットコイン", 118234.5, "crypto"), ("eth", "イーサリアム", 4321.8, "crypto")]]
+_HEAVY_SCHEDULE = [
+    _ev(f"2026-06-08T{9 + k:02d}:30:00+09:00", f"{9 + k:02d}:30",
+        f"米 経済指標その{k:02d}（前月比・季節調整済み）", forecast="0.3%", previous="0.2%")
+    for k in range(12)]
+
+
+def test_heavy_day_fits_5_messages_without_omission():
+    """要約つきの小ニュースが大量の日でも、5メッセージ以内・省略なし・各上限内に収まる。"""
+    grouped = _heavy()
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
+                            schedule=_HEAVY_SCHEDULE, now=NOW)
+    _check_limits_and_coverage(grouped, specs)
+    assert "件は省略" not in json.dumps(specs, ensure_ascii=False)
+    car_datas = {a["data"] for car in _carousels(specs) for a in _actions(car)
+                 if a["type"] == "postback"}
+    assert car_datas == {f"detail:20260608:morning:{g}:{it.rank}"
+                         for g, items in grouped.items() for it in items}
+    # 小ニュースの要約も切り詰められず全部出る
+    texts = _texts(_carousels(specs))
+    assert texts.count("要" * 100) == sum(1 for v in grouped.values() for it in v
+                                          if it.importance != "big")
+    # 要点バブル: 予定12行・市況8行を載せても上限内(切り詰め・差し替えなし)
+    assert len(_schedule_lines(specs[0])) == 12
+    assert len([c for c in _section(specs[0], "市況（前日終値）") if c["type"] == "box"]) == 8
+    assert _bytes(specs[0]["contents"]) <= lc.BUBBLE_MAX_BYTES
+
+
+def test_genre_kept_whole_when_greedy_packing_fits():
+    """ジャンル単位で詰めて収まる日は、空きを埋めるための分割をしない(従来どおり1ジャンル1枚)。"""
+    grouped = _bulk(["特大", "AI", "株", "テクノロジー"], 8)
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    heads = [_texts(b["header"])[0] for car in _carousels(specs) for b in car["contents"]]
+    assert heads == ["特大", "AI", "株", "テクノロジー"]
 
 
 def test_large_genre_splits_into_numbered_bubbles():
@@ -463,3 +676,195 @@ def test_untrimmable_summary_does_not_break_push():
     assert _texts(specs[0]["contents"]) == [lc.TOO_LARGE_NOTE]
     datas = {a["data"] for a in _actions(_carousels(specs)) if a["type"] == "postback"}
     assert datas == {f"detail:20260608:morning:AI:{r}" for r in range(5)}  # 記事カードは届く
+
+
+def test_schedule_block_keeps_important_events_over_many_early_ones():
+    """早い時刻の重要度3が12件あっても、翌03:00 の重要度5(FOMC)は表示に残る。"""
+    early = [_ev(f"2026-06-08T{9 + k:02d}:00:00+09:00", f"{9 + k:02d}:00", f"決算{k:02d}")
+             for k in range(12)]
+    fomc = _ev("2026-06-09T03:00:00+09:00", "翌03:00", "FOMC 政策金利発表", importance=5)
+    names = [n[0] for _t, n in _schedule_lines(lc.digest_specs(
+        {"AI": [_big()]}, slot="morning", digest_date=D, schedule=early + [fomc], now=NOW)[0])]
+    assert len(names) == 12 and names[-1] == "FOMC 政策金利発表" and "決算11" not in names
+
+
+def test_schedule_block_keeps_approx_time_for_grace_period():
+    """「昼ごろ」の予定は近似時刻(at)を過ぎても3時間は出す。確定時刻の予定は過ぎたら出さない。"""
+    sched = [_ev("2026-06-08T06:00:00+09:00", "昼ごろ", "日銀 結果発表"),
+             _ev("2026-06-08T06:00:00+09:00", "06:00", "過去の指標")]
+    names = [n[0] for _t, n in _schedule_lines(lc.digest_specs(
+        {"AI": [_big()]}, slot="morning", digest_date=D, schedule=sched, now=NOW)[0])]
+    assert names == ["日銀 結果発表"]
+
+
+# --- X クレジット消費の行(要点バブル末尾) ---
+
+def _usage_node(x_usage):
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, now=NOW, x_usage=x_usage)
+    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if "X取得" in n["text"]]
+    return specs, nodes
+
+
+def test_x_usage_line_normal():
+    specs, nodes = _usage_node({"used": 9870, "remaining": 3_040_677})
+    assert [n["text"] for n in nodes] == [
+        "X取得 今回 9,870クレジット(約$0.10)・残り 3,040,677(約$30.41・あと約308日)"]
+    assert nodes[0]["size"] == "xxs" and nodes[0]["color"] == lc.META_COLOR
+    assert all(s["type"] == "flex" for s in specs)
+
+
+def test_x_usage_line_warns_under_7_days():
+    _specs, nodes = _usage_node({"used": 10_000, "remaining": 69_999})  # 6.99 日分 → あと約6日
+    assert [n["text"] for n in nodes] == [
+        "要チャージ: X取得 今回 10,000クレジット(約$0.10)・残り 69,999(約$0.70・あと約6日)"]
+    assert nodes[0]["color"] == lc.UP_COLOR
+    _specs, nodes = _usage_node({"used": 10_000, "remaining": 70_000})  # ちょうど7日分は警告しない
+    assert nodes[0]["text"].startswith("X取得") and nodes[0]["color"] == lc.META_COLOR
+
+
+def test_x_usage_line_hidden_when_none():
+    specs, nodes = _usage_node(None)
+    assert nodes == []
+    assert not any("X取得" in t for t in _texts(specs[0]["contents"]))
+
+
+def test_x_usage_line_used_zero_omits_days():
+    _specs, nodes = _usage_node({"used": 0, "remaining": 3_040_677})
+    assert [n["text"] for n in nodes] == ["X取得 今回 0クレジット(約$0.00)・残り 3,040,677(約$30.41)"]
+    assert nodes[0]["color"] == lc.META_COLOR
+
+
+def test_x_usage_line_no_empty_text_nodes():
+    specs, _ = _usage_node({"used": 9870, "remaining": 3_040_677})
+    assert all(t for t in _texts(specs[0]["contents"]))
+
+
+# --- LINE 今月の残り通数の行(X取得行の直下) ---
+
+def _quota_specs(line_quota, x_usage=None):
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, now=NOW,
+                            x_usage=x_usage, line_quota=line_quota)
+    nodes = [n for n in lc._text_nodes(specs[0]["contents"]) if "LINE 今月" in n["text"]]
+    return specs, nodes
+
+
+def test_line_quota_line_normal():
+    _specs, nodes = _quota_specs({"limit": 200, "used": 45, "cost": 3})
+    assert [n["text"] for n in nodes] == ["LINE 今月 残り 152/200通（今回 3通・あと約50回）"]
+    assert nodes[0]["size"] == "xxs" and nodes[0]["color"] == lc.META_COLOR
+
+
+def test_line_quota_line_hidden_when_none():
+    specs, nodes = _quota_specs(None)
+    assert nodes == []
+    assert not any("LINE 今月" in t for t in _texts(specs[0]["contents"]))
+
+
+def test_line_quota_line_warns_under_7_runs():
+    # 残り 20 / cost 3 → あと約6回(7回未満)
+    _specs, nodes = _quota_specs({"limit": 200, "used": 177, "cost": 3})
+    assert [n["text"] for n in nodes] == ["要注意: LINE 今月 残り 20/200通（今回 3通・あと約6回）"]
+    assert nodes[0]["color"] == lc.UP_COLOR
+    # 残り 21 / cost 3 → ちょうど7回は警告しない
+    _specs, nodes = _quota_specs({"limit": 200, "used": 176, "cost": 3})
+    assert nodes[0]["text"].startswith("LINE 今月") and nodes[0]["color"] == lc.META_COLOR
+
+
+def test_line_quota_line_remaining_never_negative():
+    _specs, nodes = _quota_specs({"limit": 200, "used": 199, "cost": 3})
+    assert [n["text"] for n in nodes] == ["要注意: LINE 今月 残り 0/200通（今回 3通・あと約0回）"]
+
+
+def test_line_quota_line_is_right_after_x_usage_row():
+    specs, _ = _quota_specs({"limit": 200, "used": 45, "cost": 3},
+                            x_usage={"used": 9870, "remaining": 3_040_677})
+    texts = [n["text"] for n in lc._text_nodes(specs[0]["contents"])]
+    i = next(k for k, t in enumerate(texts) if t.startswith("X取得"))
+    assert texts[i + 1].startswith("LINE 今月")
+
+
+# --- LineMessenger.fetch_quota (SDK を差し替え。実 API は叩かない) ---
+
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class _FakeApi:
+    def __init__(self, qtype="limited", value=200, usage=45, members=3, fail=None):
+        self.qtype, self.value, self.usage, self.members, self.fail = qtype, value, usage, members, fail
+        self.calls: list[tuple] = []
+        self.timeouts: list = []
+
+    def _go(self, name, *a):
+        self.calls.append((name, *a))
+        if self.fail == name:
+            raise RuntimeError("boom")
+
+    def get_message_quota(self, **kw):
+        self.timeouts.append(kw.get("_request_timeout"))
+        self._go("quota")
+        return _Obj(type=_Obj(value=self.qtype), value=self.value)
+
+    def get_message_quota_consumption(self, **kw):
+        self.timeouts.append(kw.get("_request_timeout"))
+        self._go("consumption")
+        return _Obj(total_usage=self.usage)
+
+    def get_group_member_count(self, gid, **kw):
+        self.timeouts.append(kw.get("_request_timeout"))
+        self._go("group", gid)
+        return _Obj(count=self.members)
+
+    def get_room_member_count(self, rid, **kw):
+        self.timeouts.append(kw.get("_request_timeout"))
+        self._go("room", rid)
+        return _Obj(count=self.members)
+
+
+def _messenger_with(monkeypatch, api):
+    m = lc.LineMessenger("dummy-token")
+    monkeypatch.setattr(m, "_api", lambda: api)
+    return m
+
+
+def test_fetch_quota_group_cost_is_member_count(monkeypatch):
+    api = _FakeApi(members=3)
+    assert _messenger_with(monkeypatch, api).fetch_quota("Cabc") == {"limit": 200, "used": 45, "cost": 3}
+    assert ("group", "Cabc") in api.calls
+
+
+def test_fetch_quota_room_cost_is_member_count(monkeypatch):
+    api = _FakeApi(members=5)
+    assert _messenger_with(monkeypatch, api).fetch_quota("Rabc")["cost"] == 5
+    assert ("room", "Rabc") in api.calls
+
+
+def test_fetch_quota_user_cost_is_one(monkeypatch):
+    api = _FakeApi(members=9)
+    assert _messenger_with(monkeypatch, api).fetch_quota("U123") == {"limit": 200, "used": 45, "cost": 1}
+    assert not any(c[0] in ("group", "room") for c in api.calls)
+
+
+def test_fetch_quota_unlimited_returns_none(monkeypatch):
+    assert _messenger_with(monkeypatch, _FakeApi(qtype="none")).fetch_quota("U123") is None
+
+
+def test_fetch_quota_returns_none_on_any_failure(monkeypatch):
+    for name in ("quota", "consumption", "group"):
+        assert _messenger_with(monkeypatch, _FakeApi(fail=name)).fetch_quota("Cabc") is None
+
+    def broken():
+        raise RuntimeError("no network")
+    m = lc.LineMessenger("dummy-token")
+    monkeypatch.setattr(m, "_api", broken)
+    assert m.fetch_quota("U123") is None
+
+
+def test_fetch_quota_passes_timeout_to_every_call(monkeypatch):
+    # 応答停止で配信(push)まで止めないよう、取得系の全呼び出しに timeout を渡す
+    for to, n in (("Cabc", 3), ("Rabc", 3), ("U123", 2)):
+        api = _FakeApi()
+        _messenger_with(monkeypatch, api).fetch_quota(to)
+        assert api.timeouts == [lc._QUOTA_TIMEOUT] * n
+    assert lc._QUOTA_TIMEOUT == (5, 10)

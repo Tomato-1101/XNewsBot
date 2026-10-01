@@ -31,6 +31,8 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   **1回の配信で3通**。メッセージを分けて push を2回に分けると倍になる。速報を日次5件で回した結果 18通/日 → 11日で枯渇し、
   2026-07-22〜31 の10日間は全 push が 429 で不着だった。新しい送信経路を足すときは必ずこの計算をする。
   残枠は `GET /v2/bot/message/quota/consumption`、日別実績は `GET /v2/bot/insight/message/delivery?date=YYYYMMDD` で確認できる（無料）。
+  要点バブルの末尾に「X取得 今回/残りクレジット・あと約N日」と「LINE 今月 残り N/200通（今回3通）」を毎回出す（10-02 追加。
+  X は収集前後の残高差 `pipeline.compute_x_usage`→`XUsageSnapshot`、LINE は push 直前に `LineMessenger.fetch_quota`。取得失敗は行を出さないだけ）。
 - **速報リアルタイム配信**（2026-07-02 追加・2026-08-02 停止, `scripts/monitor_breaking.py` / `-breaking` plist）: 無料(Google ニュースRSS+GDELT補助)で
   速報を検出し「今のグループ」(DB `subscriber.push_to` のグループ)へ即 push。乱造防止=重複排除(SQLite `breaking_sent`)+日次上限
   (`breaking_max_per_day`,既定5=LINE無料枠200通/月を守る)+鮮度窓 の3重。積極度=`breaking_level`(strict/medium/broad)。
@@ -45,7 +47,15 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   - ニュース: 直取り RSS(`feeds`)＋Google ニュース(日本語/英語で別枠)。株価の銘柄ページは除外。
     直リンク記事は本文を取得して先頭を `body` に入れる(`xnewsbot/articles.py`、有料媒体は対象外)。
   - 市況: Yahoo chart(鍵なし)で前日終値(`xnewsbot/market.py`)。TOPIX は取れないので出さない。
+    ビットコイン・イーサリアムは CoinGecko(鍵なし)の直近値と24時間比。
+  - 今日の予定(`xnewsbot/schedule.py`、10-02 追加): みんかぶ経済指標・Fed calendar.json・日銀・Nasdaq/IR BANK の決算予定を
+    要点バブルに表示し、直近24hの指標結果は raw の `indicator_results` でキュレーションに渡す(予想比と評価の矢印を書く材料)。
+    スクレイピングなので構造が変わると空になるだけ(配信は続く)。
+  - 話題ジャンル(10-02 追加): X のバズ投稿(`x_queries`)＋急上昇ワード(`trend_sources`=Yahoo!リアルタイム/Google トレンド/はてブ、
+    `xnewsbot/trends.py`)＋総合 RSS。仮想通貨はキー「暗号資産」・表示名「仮想通貨」。
   - 再掲防止: 直近3日の配信見出しを raw の `recent_titles` で渡し、続報だけ採る。RPA ジャンルは 10-01 に廃止。
+- raw が 300KB 以上なら `pipeline.py split` でジャンルを2組（`CURATE_GROUPS`）に分け、claude を並列実行して `merge` する
+  （489KB を1セッションで読むと文脈があふれた）。組をまたぐ同じ出来事は1件にまとめられないので、重なりやすいジャンルは同じ組に入れる。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル
   (evening_enabled) は残してあり、`-deliver` plist の StartCalendarInterval に 20:45 dict を戻せば再開できる。
 - 配信時刻を変えるときは **plist の StartCalendarInterval（45分前）と `ops/deliver.sh` の MORNING_HHMM（定刻）の両方**を更新。
@@ -58,5 +68,6 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 触らないもの
 
-- XAgent / x-research のコード（鍵は Keychain `twitterapi_io_key` を共有するがコードは独立）
+- XAgent / x-research のコード（コードは独立）。twitterapi.io の鍵は `.key` と中央 Keychain `TWITTERAPI_IO_KEY`/`shared`（…3e15）。
+  旧 Keychain 項目 `twitterapi_io_key`（残高切れの…d015）は 2026-10-02 に削除済み（xclient の参照は残っているが無害）。
 - `.env` / 秘密情報（読まない・出さない・コミットしない）

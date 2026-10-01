@@ -136,7 +136,10 @@ def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: st
         grouped = mockdata.get_or_seed(session)
         messenger.reply(reply_token,
                         [lc.text_spec(mockdata.WARNING)]
-                        + lc.digest_specs(grouped, greeting=False, market=mockdata.MOCK_MARKET))
+                        + lc.digest_specs(grouped, greeting=False, market=mockdata.MOCK_MARKET,
+                                          schedule=mockdata.MOCK_SCHEDULE,
+                                          x_usage=mockdata.MOCK_X_USAGE,
+                                          line_quota=mockdata.MOCK_LINE_QUOTA))
         return True
     if text in _DELIVER_WORDS:
         # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。
@@ -414,7 +417,9 @@ def _help_spec() -> dict:
         "【XNewsBotの使い方】\n"
         "毎日、設定した時間に X(Twitter)から集めたニュースをお届けします。\n"
         "・大ニュースは要約付きで表示\n"
-        "・そのほかは見出しのみ → タップで詳細\n\n"
+        "・そのほかも短い要約付き → タップで詳細\n"
+        "・最初のカードに今日の要点・市況（仮想通貨を含む）・今日の予定（経済指標や決算など）\n"
+        "・ジャンルは「仮想通貨」「話題」なども選べます\n\n"
         "「メニュー」と送ると、ジャンルや朝/夜の時刻をいつでも変更できます。",
         lc.menu_quick_reply(),
     )

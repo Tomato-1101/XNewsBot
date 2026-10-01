@@ -141,3 +141,29 @@ def test_deliver_pushes_when_present(session, messenger):
     )
     assert specs and messenger.pushes
     assert sub.last_morning_on == D
+
+
+# ----------------------------------------------------------------- 今日の予定の保存(マージ)
+
+def _ev(name, at, **kw):
+    return {"at": at, "time_label": "", "kind": "policy", "country": "US", "name": name,
+            "forecast": "", "previous": "", "result": "", "importance": 3, **kw}
+
+
+def test_save_schedule_merges_and_keeps_missing(session):
+    """再収集で一部の取得元が失敗しても、新しい結果に無い既存の予定(FOMC)は残る。"""
+    fomc = _ev("FOMC 政策金利", "2026-06-09T03:00:00+09:00", importance=5)
+    nke = _ev("Nike（NKE）決算", None, kind="earnings")
+    digest.save_schedule(session, D, "morning", [fomc, nke])
+    nke2 = {**nke, "result": "増収"}
+    newer = _ev("米 雇用統計", "2026-06-08T21:30:00+09:00", kind="indicator")
+    digest.save_schedule(session, D, "morning", [nke2, newer])  # FOMC の取得元が失敗した再収集
+    got = digest.get_schedule(session, D, "morning")
+    assert got == [fomc, nke2, newer]  # FOMC は残り、同じ予定は新しい値に、新規は追加
+
+
+def test_save_schedule_empty_keeps_existing(session):
+    fomc = _ev("FOMC 政策金利", "2026-06-09T03:00:00+09:00")
+    digest.save_schedule(session, D, "morning", [fomc])
+    digest.save_schedule(session, D, "morning", [])
+    assert digest.get_schedule(session, D, "morning") == [fomc]

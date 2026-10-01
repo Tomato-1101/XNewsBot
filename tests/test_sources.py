@@ -84,6 +84,7 @@ def test_row_rounding_and_contract_keys():
 def test_fetch_market_skips_failed_symbols(monkeypatch):
     good = _chart([D29, D30], [100.0, 101.0])
     monkeypatch.setattr(market, "_fetch_chart", lambda sym: None if sym == "^DJI" else good)
+    monkeypatch.setattr(market, "_fetch_crypto", lambda: None)
     rows = market.fetch_market()
     assert [r["key"] for r in rows] == ["N225", "GSPC", "IXIC", "USDJPY", "TNX"]
     assert {r["kind"] for r in rows} == {"index", "fx", "yield"}
@@ -92,7 +93,43 @@ def test_fetch_market_skips_failed_symbols(monkeypatch):
 
 def test_fetch_market_all_failed_returns_empty(monkeypatch):
     monkeypatch.setattr(market, "_fetch_chart", lambda sym: None)
+    monkeypatch.setattr(market, "_fetch_crypto", lambda: None)
     assert market.fetch_market() == []
+
+
+# CoinGecko simple/price の実応答(2026-10-01 取得)
+_CG = {"bitcoin": {"usd": 83979, "usd_24h_change": 0.08777272612729912},
+       "ethereum": {"usd": 2702.05, "usd_24h_change": 0.3190850864792539}}
+
+
+def test_parse_crypto_latest_and_24h_change():
+    rows = market.parse_crypto(_CG, "2026-10-01")
+    assert [(r["key"], r["label"], r["kind"]) for r in rows] == [
+        ("BTC", "ビットコイン", "crypto"), ("ETH", "イーサリアム", "crypto")]
+    assert set(rows[0]) == {"key", "label", "close", "change", "change_pct", "asof", "kind"}
+    assert (rows[0]["close"], rows[0]["change_pct"], rows[0]["asof"]) == (83979.0, 0.09, "2026-10-01")
+    assert rows[0]["change"] == 73.65   # 24時間前の値(逆算)との差
+    # 値の欠けた通貨は入れない
+    assert [r["key"] for r in market.parse_crypto({"bitcoin": {"usd": 1}}, "2026-10-01")] == []
+
+
+def test_fetch_market_appends_crypto_after_indices(monkeypatch):
+    good = _chart([D29, D30], [100.0, 101.0])
+    monkeypatch.setattr(market, "_fetch_chart", lambda sym: good)
+    monkeypatch.setattr(market, "_fetch_crypto", lambda: _CG)
+    rows = market.fetch_market()
+    assert [r["key"] for r in rows] == ["N225", "GSPC", "IXIC", "DJI", "USDJPY", "TNX", "BTC", "ETH"]
+
+
+def test_fetch_market_crypto_failure_keeps_other_rows(monkeypatch, capsys):
+    monkeypatch.setattr(market, "_fetch_chart", lambda sym: None)
+    monkeypatch.setattr(market, "_fetch_crypto", lambda: _CG)
+    assert [r["kind"] for r in market.fetch_market()] == ["crypto", "crypto"]
+    good = _chart([D29, D30], [100.0, 101.0])
+    monkeypatch.setattr(market, "_fetch_chart", lambda sym: good)
+    monkeypatch.setattr(market, "_fetch_crypto", lambda: None)
+    assert len(market.fetch_market()) == 6
+    assert "仮想通貨" in capsys.readouterr().err
 
 
 # --- articles: 本文取得の対象判定と並列取得 ---
@@ -498,6 +535,9 @@ def test_dump_raw_one_candidate_per_line_with_index():
     """1行1候補・`i` はジャンル内の位置。JSON として読み戻せ、Read が切る2000字を超える行が無い。"""
     out = {"date": "2026-10-01", "tz": "Asia/Tokyo", "slot": "morning",
            "market": [{"key": "N225", "close": 1}],
+           "schedule": [{"time_label": "21:30", "name": "米 雇用統計（非農業部門雇用者数）"},
+                        {"time_label": "翌03:00", "name": "米 FOMC 政策金利発表"}],
+           "indicator_results": [{"name": "米 ADP雇用者数", "result": "9.0万人"}],
            "recent_titles": {"AI": ["前日の見出し"], "株": []},
            "genres": {"AI": [{"text": "a" * 900, "body": "本" * 600}, {"text": "b"}], "株": []}}
     text = pl._dump_raw(out)
@@ -506,10 +546,14 @@ def test_dump_raw_one_candidate_per_line_with_index():
     assert [{k: v for k, v in c.items() if k != "i"} for c in back["genres"]["AI"]] == out["genres"]["AI"]
     assert back["genres"]["株"] == [] and back["recent_titles"] == out["recent_titles"]
     assert back["market"] == out["market"]
+    assert back["schedule"] == out["schedule"] and back["indicator_results"] == out["indicator_results"]
+    assert '{"time_label": "翌03:00", "name": "米 FOMC 政策金利発表"}' in text.splitlines()  # 1件1行
     assert sum('"i": ' in line for line in text.splitlines()) == 2
     assert max(len(line) for line in text.splitlines()) < 2000
-    empty = {**out, "market": [], "recent_titles": {}, "genres": {}}
-    assert json.loads(pl._dump_raw(empty))["genres"] == {}
+    empty = {**out, "market": [], "schedule": [], "indicator_results": [], "recent_titles": {},
+             "genres": {}}
+    back = json.loads(pl._dump_raw(empty))
+    assert back["genres"] == {} and back["schedule"] == [] and back["indicator_results"] == []
 
 
 def test_cap_x_keeps_all_official_then_top_views():
@@ -529,6 +573,96 @@ def test_merge_news_round_robin_and_dedup():
     assert [c["text"] for c in out] == ["日銀が利上げ", "Fed holds rates", "株価が反落", "ＮＶＩＤＩＡ決算", "東証が新記録"]
     assert all(c["source"] == "news" and c["body"] == "" for c in out)
     assert len(pl.merge_news([ja, en, feed], limit=2)) == 2
+
+
+def test_merge_news_accepts_trend_candidates_first():
+    """trends の候補(dict・trend 付き)も混ぜられる。同じ記事なら先に並べた trend 付きが残る。"""
+    trend = nf.as_candidate(_fi("話題の記事", "https://t/1"))
+    trend["trend"] = {"source": "hatena", "bookmarks": 300}
+    feed = [_fi("話題の記事", "https://t/1"), _fi("別の記事", "https://t/2")]
+    out = pl.merge_news([[trend], feed])
+    assert [c["text"] for c in out] == ["話題の記事", "別の記事"]
+    assert out[0]["trend"] == {"source": "hatena", "bookmarks": 300} and "trend" not in out[1]
+
+
+def test_newsfeed_candidates_adds_trend_sources_and_news_max(monkeypatch, capsys):
+    """trend_sources のあるジャンルは話題の候補を先に足す(未知の名前は飛ばす)。上限は news_max。"""
+    def fake_trend(hours):
+        out = []
+        for i in range(3):
+            c = nf.as_candidate(_fi(f"話題{i}", f"https://t/{i}"))
+            c["trend"] = {"source": "hatena", "bookmarks": 100 - i, "hours": hours}
+            out.append(c)
+        return out
+
+    monkeypatch.setitem(pl.trends.SOURCES, "hatena", fake_trend)
+    monkeypatch.setattr(pl, "trend_sources", lambda g: ["hatena", "no_such_source"])
+    monkeypatch.setattr(pl, "keywords", lambda g: [])
+    monkeypatch.setattr(pl, "keywords_en", lambda g: [])
+    monkeypatch.setattr(pl, "feeds", lambda g: [{"url": "https://f/plain", "name": "P", "filter": False}])
+    monkeypatch.setattr(pl.newsfeeds, "fetch_feed", lambda url, name, within_hours=24: [
+        _fi(f"媒体記事{i}", f"https://f/{i}", hours_ago=i) for i in range(5)])
+    monkeypatch.setattr(pl, "news_max", lambda g: 4)
+    settings = SimpleNamespace(collect_use_newsfeeds=True, collect_hours=24)
+
+    out = pl._newsfeed_candidates("話題", settings)
+    assert [c["text"] for c in out] == ["話題0", "媒体記事0", "話題1", "媒体記事1"]
+    assert out[0]["trend"]["hours"] == 24
+    assert "no_such_source" in capsys.readouterr().err
+    monkeypatch.setattr(pl, "news_max", lambda g: None)   # 未指定は既定の上限
+    assert len(pl._newsfeed_candidates("話題", settings)) == 8
+
+
+def _collect_env(monkeypatch, tmp_path, sched):
+    monkeypatch.setattr(pl, "get_settings", lambda: SimpleNamespace(default_tz="Asia/Tokyo"))
+    monkeypatch.setattr(pl.xclient, "load_keys", lambda settings: ["k"])
+    monkeypatch.setattr(pl.xclient, "collect", lambda g, settings=None, keys=None: [])
+    monkeypatch.setattr(pl, "_newsfeed_candidates", lambda g, settings: [
+        {"source": "news", "text": "見出し", "url": "https://n/1", "body": "本文あり"}])
+    monkeypatch.setattr(pl.articles, "enrich_bodies", lambda cands: None)
+    monkeypatch.setattr(pl.market, "fetch_market", lambda: [])
+    monkeypatch.setattr(pl.schedule, "fetch", sched)
+    monkeypatch.setattr(pl, "_recent_titles", lambda genres, day: {g: [] for g in genres})
+    out = tmp_path / "raw.json"
+    pl.cmd_collect(SimpleNamespace(user=None, due=False, genres="株", slot="morning", out=str(out)))
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_collect_writes_schedule_and_indicator_results(monkeypatch, tmp_path):
+    calls = []
+    ev = {"at": None, "time_label": "未定", "kind": "earnings", "country": "US", "name": "Nike（NKE）決算",
+          "forecast": "", "previous": "", "result": "", "importance": 3}
+    res = {**ev, "kind": "indicator", "name": "米 ADP雇用者数", "result": "9.0万人"}
+    raw = _collect_env(monkeypatch, tmp_path,
+                       lambda: calls.append(1) or {"schedule": [ev], "results": [res]})
+    assert calls == [1]                                    # 全体で1回だけ
+    assert raw["schedule"] == [ev] and raw["indicator_results"] == [res]
+
+
+def test_collect_schedule_failure_gives_empty(monkeypatch, tmp_path, capsys):
+    def boom():
+        raise RuntimeError("down")
+    raw = _collect_env(monkeypatch, tmp_path, boom)
+    assert raw["schedule"] == [] and raw["indicator_results"] == []
+    assert raw["genres"]["株"][0]["text"] == "見出し"      # 予定が取れなくても収集は続く
+    assert "今日の予定: 取得失敗" in capsys.readouterr().err
+
+
+def test_ingest_saves_schedule(monkeypatch, tmp_path, session):
+    from xnewsbot import digest
+    ev = {"at": "2026-10-01T21:30:00+09:00", "time_label": "21:30", "kind": "indicator",
+          "country": "US", "name": "米 雇用統計（失業率）", "forecast": "4.3%", "previous": "4.3%",
+          "result": "", "importance": 5}
+    raw = tmp_path / "raw.json"
+    raw.write_text(json.dumps({"date": "2026-10-01", "slot": "morning", "market": [],
+                               "schedule": [ev], "genres": {"株": []}}), encoding="utf-8")
+    cur = tmp_path / "cur.json"
+    cur.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(pl, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(pl, "init_db", lambda: None)
+    monkeypatch.setattr(pl, "get_session", lambda: contextlib.nullcontext(session))
+    pl.cmd_ingest(SimpleNamespace(raw=str(raw), curated=str(cur), date=None, slot=None))
+    assert digest.get_schedule(session, date(2026, 10, 1), "morning") == [ev]
 
 
 def test_quote_pages_are_dropped():
@@ -620,3 +754,36 @@ def test_recent_titles_db_error_returns_empty(monkeypatch):
 
     monkeypatch.setattr(pl, "init_db", boom)
     assert pl._recent_titles(["AI"], date(2026, 10, 1)) == {"AI": []}
+
+
+# --- X クレジット消費(収集前後の残高差) ---
+
+def test_total_balance_sums_only_positive_keys(monkeypatch):
+    """残高マイナスの鍵(常に 402)は合計に入れない。"""
+    bal = {"k0": -500, "k1": 3_000_000, "k2": 40_677}
+    monkeypatch.setattr(pl.xclient, "fetch_balance", lambda k: bal[k])
+    assert pl._total_balance(["k0", "k1", "k2"]) == 3_040_677
+
+
+def test_total_balance_none_when_any_key_fails(monkeypatch):
+    """1つでも取れなければ None(足す鍵の集合が前後でずれて使用量が狂うのを防ぐ)。"""
+    bal = {"k1": 3_000_000, "k2": None}
+    monkeypatch.setattr(pl.xclient, "fetch_balance", lambda k: bal[k])
+    assert pl._total_balance(["k1", "k2"]) is None
+
+
+def test_compute_x_usage():
+    assert pl.compute_x_usage(3_050_547, 3_040_677) == {"used": 9870, "remaining": 3_040_677}
+    assert pl.compute_x_usage(100, 100) == {"used": 0, "remaining": 100}
+    assert pl.compute_x_usage(100, 150) == {"used": 0, "remaining": 150}  # チャージ等で増えたら 0
+    assert pl.compute_x_usage(None, 100) is None
+    assert pl.compute_x_usage(100, None) is None
+
+
+def test_dump_raw_includes_x_usage_on_one_line():
+    base = {"date": "2026-10-01", "tz": "Asia/Tokyo", "slot": "morning", "market": [], "schedule": [],
+            "indicator_results": [], "recent_titles": {}, "genres": {}}
+    text = pl._dump_raw({**base, "x_usage": {"used": 9870, "remaining": 3_040_677}})
+    assert json.loads(text)["x_usage"] == {"used": 9870, "remaining": 3_040_677}
+    assert '"x_usage": {"used": 9870, "remaining": 3040677},' in text.splitlines()
+    assert json.loads(pl._dump_raw({**base, "x_usage": None}))["x_usage"] is None

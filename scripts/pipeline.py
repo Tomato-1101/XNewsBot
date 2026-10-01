@@ -34,13 +34,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import select  # noqa: E402
 
 from xnewsbot import digest, newsfeeds, xclient  # noqa: E402
-from xnewsbot import articles, market  # noqa: E402
+from xnewsbot import articles, market, schedule, trends  # noqa: E402
 from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
 from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, keywords  # noqa: E402
-from xnewsbot.genres import feeds, keywords_en  # noqa: E402
+from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.models import GenreDigest, NewsItem  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
@@ -83,6 +83,7 @@ def _trim(t: dict) -> dict:
 # X 候補の上限。公式は全部残し、それ以外を viewCount 降順で合計この数まで。
 X_PER_GENRE = 50
 # ニュース候補の上限(Google ニュース日本語+英語+直取り RSS を重複除去した後)。
+# genres.toml の news_max があればそちらを使う(媒体の多い AI・話題は 60)。
 NEWS_PER_GENRE = 40
 GN_JA_MAX = 10      # Google ニュース日本語の上限(以前は ja を先に詰めて英語が押し出されていた)
 GN_EN_MAX = 8       # Google ニュース英語の上限(日本語とは別枠)
@@ -135,7 +136,8 @@ def _feed_items(feed: dict, terms: list[str], hours) -> list:
 
 def merge_news(sources: list[list], limit: int = NEWS_PER_GENRE) -> list[dict]:
     """ソースごとの記事列を1件ずつ順番に取り出し(ラウンドロビン)、URL と正規化見出しで重複を除いて
-    limit 件までの候補にする。1つのソースが枠を埋めて他の媒体・英語が押し出されないように。"""
+    limit 件までの候補にする。1つのソースが枠を埋めて他の媒体・英語が押し出されないように。
+    要素は FeedItem か、候補の形の dict(trends の候補。trend キー付き)のどちらでもよい。"""
     seen_url: set[str] = set()
     seen_title: set[str] = set()
     out: list[dict] = []
@@ -145,13 +147,14 @@ def merge_news(sources: list[list], limit: int = NEWS_PER_GENRE) -> list[dict]:
             if i >= len(src) or len(out) >= limit:
                 continue
             it = src[i]
-            nt = _norm_title(it.title)
-            if it.url in seen_url or (nt and nt in seen_title):
+            c = it if isinstance(it, dict) else newsfeeds.as_candidate(it)
+            nt = _norm_title(c["text"])
+            if c["url"] in seen_url or (nt and nt in seen_title):
                 continue
-            seen_url.add(it.url)
+            seen_url.add(c["url"])
             if nt:
                 seen_title.add(nt)
-            out.append(newsfeeds.as_candidate(it))
+            out.append(c)
     return out
 
 
@@ -166,7 +169,8 @@ def _safe_source(fn) -> list:
 
 def _newsfeed_candidates(genre: str, settings) -> list[dict]:
     """無料ニュースをジャンルの候補に足す: Google ニュース 日本語(keywords)・英語(keywords_en)
-    ＋ 直取り RSS(genres.toml の feeds)。失敗したソースは空(=残りで続ける・無害)。
+    ＋ 直取り RSS(genres.toml の feeds) ＋ 話題の取得元(trend_sources。xnewsbot/trends.py)。
+    失敗したソースは空(=残りで続ける・無害)。
     本文(body)はここでは取らず、cmd_collect が全ジャンル分まとめて articles.enrich_bodies で埋める。
     """
     if not settings.collect_use_newsfeeds:
@@ -174,6 +178,12 @@ def _newsfeed_candidates(genre: str, settings) -> list[dict]:
     hours = settings.collect_hours
     kws, kws_en = keywords(genre), keywords_en(genre)
     jobs = []
+    # 話題の候補を先に並べる(同じ記事が RSS にもあれば、話題の大きさ(trend)付きの方を残す)
+    for name in trend_sources(genre):
+        if name not in trends.SOURCES:
+            print(f"  {genre}: 未知の trend_sources をスキップ: {name}", file=sys.stderr)
+            continue
+        jobs.append(lambda fn=trends.SOURCES[name]: fn(hours))
     if kws:
         jobs.append(lambda: _not_quote_page(
             newsfeeds.google_news(_gn_query(kws), within_hours=hours))[:GN_JA_MAX])
@@ -187,7 +197,7 @@ def _newsfeed_candidates(genre: str, settings) -> list[dict]:
         return []
     with ThreadPoolExecutor(max_workers=min(6, len(jobs))) as pool:
         sources = list(pool.map(_safe_source, jobs))
-    return merge_news(sources)
+    return merge_news(sources, limit=news_max(genre) or NEWS_PER_GENRE)
 
 
 def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
@@ -218,6 +228,28 @@ def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
     return out
 
 
+def _total_balance(keys: list[str]) -> int | None:
+    """全鍵の残クレジットのうち「残高が正の鍵」の合計。1つでも取得に失敗したら None。
+
+    残高マイナスの鍵(常に 402 で使われない)は合計に入れない。失敗を飛ばして足すと
+    収集の前後で足す鍵の集合が変わり、差(使用量)が狂うので None にして x_usage ごと出さない。"""
+    total = 0
+    for k in keys:
+        b = xclient.fetch_balance(k)
+        if b is None:
+            return None
+        if b > 0:
+            total += b
+    return total
+
+
+def compute_x_usage(before: int | None, after: int | None) -> dict | None:
+    """収集前後の残高から {"used","remaining"}。どちらか取れていなければ None。"""
+    if before is None or after is None:
+        return None
+    return {"used": max(before - after, 0), "remaining": after}
+
+
 def _dump_raw(out: dict) -> str:
     """raw を「1行1候補」の JSON で書く。各候補の先頭に、そのジャンル内の番号 `i` を付ける。
 
@@ -233,7 +265,10 @@ def _dump_raw(out: dict) -> str:
             ["]" + ("" if last else ",")]
 
     lines = ["{"] + [f"{d(k)}: {d(out[k])}," for k in ("date", "tz", "slot")]
+    lines.append(f'"x_usage": {d(out.get("x_usage"))},')
     lines += ['"market": ['] + block(out["market"], last=False)
+    lines += ['"schedule": ['] + block(out["schedule"], last=False)
+    lines += ['"indicator_results": ['] + block(out["indicator_results"], last=False)
     lines.append('"recent_titles": {')
     rt = list(out["recent_titles"].items())
     for n, (g, titles) in enumerate(rt):
@@ -298,6 +333,7 @@ def cmd_collect(args) -> None:
     # 鍵は不変。ジャンルごとに load_keys()→Keychain サブプロセスを叩くのは無駄かつ並列で多重に
     # security を起動するので、ここで1度だけ取得して各収集に渡す(優先度順・フォールバック用)。
     keys = xclient.load_keys(settings)
+    balance_before = _total_balance(keys)  # X クレジット消費の算出用(残高 API は課金されない)
 
     # ジャンル収集は I/O 待ち(twitterapi.io)。直列だと数分かかるので並列化するが、同一APIキーへ
     # 多並列(以前は6)だと混雑→同時多発タイムアウトを招くため 3 に抑える(xclient 側で再試行もする)。
@@ -320,6 +356,13 @@ def cmd_collect(args) -> None:
             cands_by_genre[g] = cands
             stats[g] = (n_x, n_off, news)
 
+    x_usage = compute_x_usage(balance_before, _total_balance(keys))
+    if x_usage:
+        print(f"  X クレジット: 今回 {x_usage['used']:,} 使用・残り {x_usage['remaining']:,}",
+              file=sys.stderr)
+    else:
+        print("  X クレジット: 残高を取得できず表示を省略", file=sys.stderr)
+
     # 本文は全ジャンル分まとめて1回(同じ記事が複数ジャンルにあっても取得1回・時間上限も1つ)。
     all_cands = [c for cs in cands_by_genre.values() for c in cs]
     n_target = len({c["url"] for c in all_cands if articles.is_target(c)})
@@ -335,8 +378,18 @@ def cmd_collect(args) -> None:
 
     mkt = market.fetch_market()
     print(f"  市況: {len(mkt)} 件", file=sys.stderr)
+    # 今日の予定(次の配信まで)と直近24時間の指標の結果。取れなくても配信は続ける(空で渡す)。
+    try:
+        sched = schedule.fetch()
+    except Exception as e:
+        print(f"  今日の予定: 取得失敗のため省略 ({type(e).__name__}: {e})", file=sys.stderr)
+        sched = {"schedule": [], "results": []}
+    print(f"  今日の予定: {len(sched['schedule'])} 件 (直近の指標結果 {len(sched['results'])} 件)",
+          file=sys.stderr)
     out = {"date": day.isoformat(), "tz": settings.default_tz, "slot": args.slot,
-           "market": mkt, "recent_titles": _recent_titles(genres, day),
+           "x_usage": x_usage,
+           "market": mkt, "schedule": sched["schedule"], "indicator_results": sched["results"],
+           "recent_titles": _recent_titles(genres, day),
            "genres": cands_by_genre}
 
     text = _dump_raw(out)
@@ -364,11 +417,14 @@ def cmd_ingest(args) -> None:
     if slot not in SLOTS:
         sys.exit(f"未知のスロット: {slot}  有効: {list(SLOTS)}")
 
+    # 全ジャンルの解析を DB 更新の前に済ませる(途中のジャンルで落ちて、前のジャンルだけ書き換わるのを防ぐ)
+    parsed = {genre: parse_curated(cur_genres.get(genre, [])) for genre in raw["genres"]}
+
     init_db()
     with get_session() as session:
         for genre, tweets in raw["genres"].items():
-            items = parse_curated(cur_genres.get(genre, []))
-            d = digest.ingest_curated(session, genre, local_date, slot, items, tweets)
+            items = parsed[genre]
+            d = digest.ingest_curated(session, genre, local_date, slot, items, tweets, commit=False)
             stored = digest.items_of_digest(session, d.id)
             n_big = sum(1 for it in stored if it.importance == "big")
             if not items and stored:
@@ -378,8 +434,75 @@ def cmd_ingest(args) -> None:
             else:
                 note = ""
             print(f"  {genre}: {len(stored)} 件 (大{n_big}){note}", file=sys.stderr)
+        session.commit()  # 全ジャンルを1トランザクションで確定する
         digest.save_market(session, local_date, slot, raw.get("market") or [])
-    print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件)", file=sys.stderr)
+        digest.save_x_usage(session, local_date, slot, raw.get("x_usage"))
+        digest.save_schedule(session, local_date, slot, raw.get("schedule") or [])
+    print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件, "
+          f"予定 {len(raw.get('schedule') or [])} 件)", file=sys.stderr)
+
+
+# キュレーションを並列に分けるときのジャンルの組。同じ出来事が重なりやすいジャンルを同じ組に入れる
+# 組をまたぐ同じ出来事は1件にまとめられない。試走5で重複した5件中4件がテクノロジーと話題の間だったので同じ組にする。
+CURATE_GROUPS = [["特大", "AI", "株"], ["暗号資産", "テクノロジー", "話題"]]
+# raw がこれ未満なら分割しない。1セッションで読み切れる大きさなら、組をまたぐ重複を避けられる
+# 1セッションの方がよい(288KB では問題なく、489KB で文脈があふれ自動圧縮が走った。2026-10-02 実測)。
+SPLIT_MIN_BYTES = 300_000
+_SPLIT_KEEP_KEYS = ("date", "tz", "slot", "market", "schedule", "indicator_results")
+
+
+def split_raw(raw: dict) -> list[dict]:
+    """raw をジャンルの組ごとの raw に分ける。候補の配列(と `i`)は変えない。0ジャンルの組は出さない。"""
+    genres = raw["genres"]
+    size = {g: len(json.dumps(c, ensure_ascii=False).encode()) for g, c in genres.items()}
+    groups = [[g for g in grp if g in genres] for grp in CURATE_GROUPS]
+    known = {g for grp in CURATE_GROUPS for g in grp}
+    for g in genres:
+        if g not in known:  # 組に無いジャンルは、その時点で小さい方の組へ(偏りを抑える)
+            min(groups, key=lambda grp: sum(size[x] for x in grp)).append(g)
+    parts = []
+    for grp in groups:
+        if not grp:
+            continue
+        part = {k: raw[k] for k in _SPLIT_KEEP_KEYS}
+        part["recent_titles"] = {g: t for g, t in raw.get("recent_titles", {}).items() if g in grp}
+        part["genres"] = {g: c for g, c in genres.items() if g in grp}
+        parts.append(part)
+    return parts
+
+
+def cmd_split(args) -> None:
+    src = Path(args.raw)
+    if src.stat().st_size < SPLIT_MIN_BYTES:
+        print(src)
+        return
+    raw = json.loads(src.read_text(encoding="utf-8"))
+    base = str(src)[:-len(".json")] if src.name.endswith(".json") else str(src)
+    for n, part in enumerate(split_raw(raw)):
+        dst = Path(f"{base}.p{n}.json")
+        dst.write_text(_dump_raw(part), encoding="utf-8")
+        print(dst)
+
+
+def cmd_merge(args) -> None:
+    merged: dict = {}
+    for p in args.parts:
+        try:
+            g = json.loads(Path(p).read_text(encoding="utf-8")).get("genres")
+        except (OSError, ValueError, AttributeError) as e:
+            sys.exit(f"merge: {p} を読めません: {e}")
+        if not isinstance(g, dict):
+            sys.exit(f"merge: {p} の genres が dict ではありません")
+        # 中身の型もここで弾く(通すと ingest が途中のジャンルで落ち、DB が部分更新になる)
+        bad = [k for k, v in g.items() if not isinstance(v, list) or not all(isinstance(x, dict) for x in v)]
+        if bad:
+            sys.exit(f"merge: {p} のジャンルの値が「dict の配列」ではありません: {bad}")
+        dup = merged.keys() & g.keys()
+        if dup:
+            sys.exit(f"merge: ジャンルが重複しています: {sorted(dup)} ({p})")
+        merged.update(g)
+    Path(args.out).write_text(json.dumps({"genres": merged}, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
 
 
 def cmd_push(args) -> None:
@@ -518,10 +641,19 @@ def main() -> None:
     pa = sub.add_parser("alert", help="運用アラートを購読者本人へ LINE で1通送る")
     pa.add_argument("--text", required=True, help="送信する本文")
 
+    ps = sub.add_parser("split", help="raw をジャンルの組ごとに分け、書いたパスを1行ずつ出す(小さければ元のパスだけ)")
+    ps.add_argument("--raw", required=True, help="collect が出した raw JSON")
+
+    pm = sub.add_parser("merge", help="組ごとの curated JSON を1つにまとめる")
+    pm.add_argument("--out", required=True, help="まとめた curated JSON の出力先")
+    pm.add_argument("parts", nargs="+", help="組ごとの curated JSON")
+
     args = p.parse_args()
     {
         "collect": cmd_collect,
         "ingest": cmd_ingest,
+        "split": cmd_split,
+        "merge": cmd_merge,
         "push": cmd_push,
         "pending": cmd_pending,
         "alert": cmd_alert,

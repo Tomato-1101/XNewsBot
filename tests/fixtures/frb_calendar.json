@@ -1,0 +1,84 @@
+﻿{
+ "events": [
+  {},
+  {
+   "description": "&lt;p&gt;Two-day meeting, December 8 - 9&lt;/p&gt;&#10;&#10;&lt;p&gt;Press Conference&lt;/p&gt;",
+   "title": "FOMC Meeting",
+   "time": "2:00 p.m.",
+   "month": "2026-12",
+   "days": "9",
+   "type": "FOMC"
+  },
+  {
+   "description": "&lt;p&gt;Two-day meeting, October 27 - 28&lt;/p&gt;&#10;&#10;&lt;p&gt;Press Conference&lt;/p&gt;",
+   "title": "FOMC Meeting",
+   "time": "2:00 p.m.",
+   "month": "2026-10",
+   "days": "28",
+   "type": "FOMC"
+  },
+  {
+   "link": "https://www.federalreserve.gov/live-broadcast.htm",
+   "title": "FOMC Press Conference",
+   "time": "2:30 p.m.",
+   "month": "2026-10",
+   "days": "28",
+   "type": "FOMC"
+  },
+  {
+   "description": "&lt;p&gt;Meeting of September 15-16&lt;/p&gt;",
+   "title": "FOMC Minutes",
+   "time": "2:00 p.m.",
+   "month": "2026-10",
+   "days": "7",
+   "type": "FOMC"
+  },
+  {
+   "description": "Brief Award Acceptance Remarks",
+   "location": "At the American Society for Public Administration (ASPA) Annual Conference: Paul A. Volcker Public Integrity Award Ceremony (virtual)",
+   "title": "Speech - Chair Jerome H. Powell",
+   "time": "1:30 p.m.",
+   "month": "2026-03",
+   "days": "21",
+   "type": "Speeches"
+  },
+  {
+   "description": "Semiannual Monetary Policy Report to Congress",
+   "live": "https://financialservices.house.gov/",
+   "location": "Before the U.S. House Financial Services Committee",
+   "title": "Testimony - Chairman Kevin Warsh",
+   "time": "10:00 a.m.",
+   "month": "2026-07",
+   "days": "14",
+   "type": "Testimony"
+  },
+  {
+   "description": "U.S. Economy and Monetary Policy",
+   "live": "https://darden-virginia.zoom.us/j/92232791521",
+   "location": "At a Talk and Q&amp;A with Federal Reserve Board Vice Chair Philip N. Jefferson, Charlottesville, Va.",
+   "title": "Speech - Vice Chair Philip N. Jefferson",
+   "time": "1:30 p.m.",
+   "month": "2026-10",
+   "days": "1",
+   "type": "Speeches"
+  },
+  {
+   "description": "Federal Reserve Economic Data",
+   "live": "https://www.youtube.com/live/1fK5omRbOvM?si=9mToIa7-cn6iDC9F",
+   "location": "At FRED Con: Navigating Trust, AI &amp; Storytelling in a World of Data, St. Louis, Mo.",
+   "title": "Speech - Governor Christopher J. Waller",
+   "time": "10:00 a.m.",
+   "month": "2026-10",
+   "days": "1",
+   "type": "Speeches"
+  },
+  {
+   "title": "G.5 - Foreign Exchange Rates",
+   "time": "4:15 p.m.",
+   "month": "2026-10",
+   "days": "1",
+   "type": "Stat"
+  }
+ ],
+ "announcement": []
+}

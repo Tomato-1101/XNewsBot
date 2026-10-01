@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -191,3 +192,87 @@ def test_deliver_to_subscriber_includes_market(session, messenger):
     blob = json.dumps(specs, ensure_ascii=False)
     assert "市況（前日終値）" in blob and "45,000" in blob and "+0.22%" in blob
     assert specs[0]["alt"].startswith("朝のニュース｜大ニュース0")
+
+
+def test_deliver_to_subscriber_includes_schedule(session, messenger):
+    """当日・当スロットの「今日の予定」を要点バブルに渡す(配信時刻より前の予定は出さない)。"""
+    import json
+
+    digest.ingest_curated(session, "AI", D, "morning",
+                          parse_curated(curated_items(1, 1)), make_tweets(3))
+    ev = {"kind": "indicator", "country": "US", "result": "", "importance": 5}
+    digest.save_schedule(session, D, "morning", [
+        dict(ev, at="2026-06-08T21:30:00+09:00", time_label="21:30",
+             name="米 雇用統計（非農業部門雇用者数）", forecast="12.0万人", previous="14.2万人"),
+        dict(ev, at="2026-06-08T07:00:00+09:00", time_label="07:00",
+             name="過ぎた指標", forecast="", previous=""),
+    ])
+    digest.save_schedule(session, D, "evening", [
+        dict(ev, at=None, time_label="未定", name="夜スロットの予定", forecast="", previous="")])
+    sub = _onboarded(line_user_id="U12")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger,
+                                            now_local=now, mark_delivered=False)
+    blob = json.dumps(specs[0], ensure_ascii=False)
+    assert "今日の予定" in blob and "米 雇用統計（非農業部門雇用者数）" in blob
+    assert "予想 12.0万人｜前回 14.2万人" in blob
+    assert "過ぎた指標" not in blob and "夜スロットの予定" not in blob
+
+
+def test_save_get_x_usage_does_not_overwrite_with_none(session):
+    assert digest.get_x_usage(session, D, "morning") is None
+    digest.save_x_usage(session, D, "morning", {"used": 9870, "remaining": 3_040_677})
+    assert digest.get_x_usage(session, D, "morning") == {"used": 9870, "remaining": 3_040_677}
+    digest.save_x_usage(session, D, "morning", None)  # 取得失敗の再実行で良い値を消さない
+    assert digest.get_x_usage(session, D, "morning") == {"used": 9870, "remaining": 3_040_677}
+    digest.save_x_usage(session, D, "morning", {"used": 1, "remaining": 2})  # 同日同スロットは置き換え
+    assert digest.get_x_usage(session, D, "morning") == {"used": 1, "remaining": 2}
+    assert digest.get_x_usage(session, D, "evening") is None
+
+
+def test_deliver_to_subscriber_shows_saved_x_usage(session, messenger):
+    digest.ingest_curated(session, "AI", D, "morning",
+                          parse_curated(curated_items(1, 2)), make_tweets(5))
+    digest.save_x_usage(session, D, "morning", {"used": 9870, "remaining": 3_040_677})
+    sub = _onboarded(line_user_id="U9")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
+    assert "X取得 今回 9,870クレジット(約$0.10)" in json.dumps(specs[0], ensure_ascii=False)
+
+
+def test_deliver_to_subscriber_passes_line_quota(session, messenger):
+    digest.ingest_curated(session, "AI", D, "morning",
+                          parse_curated(curated_items(1, 2)), make_tweets(5))
+    sub = _onboarded(line_user_id="U9")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+    asked: list[str] = []
+
+    def fetch_quota(to):
+        asked.append(to)
+        return {"limit": 200, "used": 45, "cost": 3}
+
+    messenger.fetch_quota = fetch_quota
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
+    assert asked == [sub.push_target]
+    assert "LINE 今月 残り 152/200通（今回 3通・あと約50回）" in json.dumps(specs[0], ensure_ascii=False)
+
+
+def test_deliver_to_subscriber_without_fetch_quota_hides_line_row(session, messenger):
+    digest.ingest_curated(session, "AI", D, "morning",
+                          parse_curated(curated_items(1, 2)), make_tweets(5))
+    sub = _onboarded(line_user_id="U9")
+    session.add(sub)
+    session.commit()
+    session.refresh(sub)
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
+    assert "LINE 今月" not in json.dumps(specs[0], ensure_ascii=False)
