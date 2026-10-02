@@ -310,6 +310,7 @@ def _dump_raw(out: dict) -> str:
     lines += ['"market": ['] + block(out["market"], last=False)
     lines += ['"schedule": ['] + block(out["schedule"], last=False)
     lines += ['"indicator_results": ['] + block(out["indicator_results"], last=False)
+    lines += ['"earnings_surprises": ['] + block(out.get("earnings_surprises") or [], last=False)
     lines.append('"recent_titles": {')
     rt = list(out["recent_titles"].items())
     for n, (g, titles) in enumerate(rt):
@@ -348,7 +349,7 @@ def _user_genres(settings, line_user_id: str) -> list[str]:
 
 
 def _with_always(genres: list[str]) -> list[str]:
-    """常時ジャンル(特大など)を必ず含めた表示順のリストにする。"""
+    """常時ジャンル(genres.toml の selectable=false。2026-10-02 時点で該当なし)を必ず含めた表示順のリストにする。"""
     chosen = set(genres) | set(ALWAYS_KEYS)
     return [g for g in GENRE_KEYS if g in chosen]
 
@@ -438,9 +439,10 @@ def cmd_collect(args) -> None:
         sched = schedule.fetch()
     except Exception as e:
         print(f"  今日の予定: 取得失敗のため省略 ({type(e).__name__}: {e})", file=sys.stderr)
-        sched = {"schedule": [], "results": []}
-    print(f"  今日の予定: {len(sched['schedule'])} 件 (直近の指標結果 {len(sched['results'])} 件)",
-          file=sys.stderr)
+        sched = {"schedule": [], "results": [], "surprises": []}
+    n_notable = sum(1 for x in sched["schedule"] if x.get("kind") == "earnings" and x.get("notable"))
+    print(f"  今日の予定: {len(sched['schedule'])} 件 (直近の指標結果 {len(sched['results'])} 件, "
+          f"注目決算 {n_notable} 件・サプライズ {len(sched.get('surprises') or [])} 件)", file=sys.stderr)
     # 監視アカウントの取得期間。全アカウントの取得に成功したときだけ載せ、ingest がこれで状態を進める
     # (失敗した日は載せない=状態が進まず、次回に同じ範囲を取り直す)。
     watch_window = None
@@ -453,6 +455,7 @@ def cmd_collect(args) -> None:
     out = {"date": day.isoformat(), "tz": settings.default_tz, "slot": args.slot,
            "x_usage": x_usage, "watch": watch_window,
            "market": mkt, "schedule": sched["schedule"], "indicator_results": sched["results"],
+           "earnings_surprises": sched.get("surprises") or [],
            "recent_titles": _recent_titles(genres, day),
            "genres": cands_by_genre}
 
@@ -501,10 +504,13 @@ def cmd_ingest(args) -> None:
         session.commit()  # 全ジャンルを1トランザクションで確定する
         digest.save_market(session, local_date, slot, raw.get("market") or [])
         digest.save_x_usage(session, local_date, slot, raw.get("x_usage"))
-        digest.save_schedule(session, local_date, slot, raw.get("schedule") or [])
+        # 決算サプライズも予定と同じ表に入れる(表示側は kind で描き分ける)
+        digest.save_schedule(session, local_date, slot,
+                             (raw.get("schedule") or []) + (raw.get("earnings_surprises") or []))
     _advance_watch_state(raw, cur_genres, local_date)
     print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件, "
-          f"予定 {len(raw.get('schedule') or [])} 件)", file=sys.stderr)
+          f"予定 {len(raw.get('schedule') or [])} 件, "
+          f"サプライズ {len(raw.get('earnings_surprises') or [])} 件)", file=sys.stderr)
 
 
 def _advance_watch_state(raw: dict, cur_genres: dict, local_date: date) -> None:
@@ -535,11 +541,14 @@ def _advance_watch_state(raw: dict, cur_genres: dict, local_date: date) -> None:
 # 組をまたぐ同じ出来事は1件にまとめられない。試走5で重複した5件中4件がテクノロジーと話題の間だったので同じ組にする。
 # 監視アカウントのジャンル(watch=true)はここに入れない。登録アカウントが増えても他のジャンルの
 # キュレーションを圧迫しないよう、候補があれば raw の大きさに関わらず必ず独立した組にする(split_raw)。
-CURATE_GROUPS = [["特大", "AI", "株"], ["暗号資産", "テクノロジー", "話題"]]
+# 2026-10-02 特大を廃止して話題へ統合。重なりの実績があるテクノロジーと話題を同じ組に保ち、10-02 朝の raw(522KB)で
+# 大きさが釣り合う分け方にした(AI+株+暗号資産 257KB / テクノロジー+話題(旧特大込み) 237KB)。
+CURATE_GROUPS = [["AI", "株", "暗号資産"], ["テクノロジー", "話題"]]
 # raw がこれ未満なら分割しない。1セッションで読み切れる大きさなら、組をまたぐ重複を避けられる
 # 1セッションの方がよい(288KB では問題なく、489KB で文脈があふれ自動圧縮が走った。2026-10-02 実測)。
 SPLIT_MIN_BYTES = 300_000
-_SPLIT_KEEP_KEYS = ("date", "tz", "slot", "market", "schedule", "indicator_results")
+_SPLIT_KEEP_KEYS = ("date", "tz", "slot", "market", "schedule", "indicator_results",
+                    "earnings_surprises")
 
 
 def split_raw(raw: dict, whole: bool = False) -> list[dict]:
@@ -565,7 +574,7 @@ def split_raw(raw: dict, whole: bool = False) -> list[dict]:
     for grp in groups:
         if not grp:
             continue
-        part = {k: raw[k] for k in _SPLIT_KEEP_KEYS}
+        part = {k: raw[k] for k in _SPLIT_KEEP_KEYS if k in raw}  # 古い raw には earnings_surprises が無い
         part["recent_titles"] = {g: t for g, t in raw.get("recent_titles", {}).items() if g in grp}
         part["genres"] = {g: c for g, c in genres.items() if g in grp}
         parts.append(part)

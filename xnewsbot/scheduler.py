@@ -45,8 +45,9 @@ def slot_for_now(now_local: datetime) -> str:
 
 
 def missing_for_delivery(session: Session, sub: Subscriber, local_date, slot: str) -> list[str]:
-    """配信前の揃い判定。実際に配信するのは購読ジャンル+常時ジャンル(特大)なので、
-    判定も同じ集合で行う(購読分だけ見ると特大が欠けたまま配信されてしまう)。"""
+    """配信前の揃い判定。実際に配信するのは購読ジャンル+常時ジャンル(selectable=false。
+    2026-10-02 に特大を廃止して現在は無し)なので、判定も同じ集合で行う
+    (購読分だけ見ると常時ジャンルが欠けたまま配信されてしまう)。"""
     return digest.missing_genres(session, display_genres(sub.enabled_genres), local_date, slot)
 
 

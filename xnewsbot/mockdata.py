@@ -28,7 +28,7 @@ WARNING = (
     "実際のニュースではありません(内容はすべて架空)。"
 )
 
-# 架空の市況(要点バブルの市況ブロック確認用)。値はすべて架空。
+# 架空の市況(1通目のマーケットのカードの市況確認用)。値はすべて架空。
 MOCK_MARKET: list[dict] = [
     {"key": "nikkei", "label": "日経平均", "close": 45210.35, "change": 540.12, "change_pct": 1.21,
      "asof": MOCK_DATE.isoformat(), "kind": "index"},
@@ -50,19 +50,15 @@ MOCK_X_USAGE: dict = {"used": 9870, "remaining": 3_040_677}
 # 架空の LINE 無料枠の使用状況(要点バブルの「LINE 今月」行の確認用)。値は架空。
 MOCK_LINE_QUOTA: dict = {"limit": 200, "used": 45, "cost": 3}
 
-# 架空の「今日の予定」(要点バブルの予定ブロック確認用)。数値・企業名はすべて架空。
+# 架空の「今日の予定」(1通目のマーケットのカードの確認用)。数値・企業名・銘柄コードはすべて架空。
+# 予定(指標・政策・発言)・注目決算(日本/米国。代用の例を1つ)・決算サプライズ(日本/米国の上昇と下落)を
+# 1つずつ入れて、全部の節が出るようにしてある。
 # at は入れない: モックの日付は過去の固定日(MOCK_DATE)なので、時刻を入れると「過ぎた予定」として
 # 全部消えてしまう。at が無い予定はこの並びのまま出る。
 MOCK_SCHEDULE: list[dict] = [
-    {"at": None, "time_label": "寄り前", "kind": "earnings", "country": "JP",
-     "name": "サンプル商事 決算（4〜9月期）", "forecast": "", "previous": "", "result": "",
-     "importance": 3},
     {"at": None, "time_label": "08:50", "kind": "indicator", "country": "JP",
      "name": "日 機械受注（前月比）", "forecast": "1.2%", "previous": "-0.5%", "result": "",
      "importance": 3},
-    {"at": None, "time_label": "引け後", "kind": "earnings", "country": "JP",
-     "name": "テスト自動車 決算（4〜9月期）", "forecast": "", "previous": "", "result": "",
-     "importance": 4},
     {"at": None, "time_label": "21:30", "kind": "indicator", "country": "US",
      "name": "米 雇用統計（非農業部門雇用者数）", "forecast": "12.0万人", "previous": "14.2万人",
      "result": "", "importance": 5},
@@ -71,9 +67,28 @@ MOCK_SCHEDULE: list[dict] = [
     {"at": None, "time_label": "翌03:00", "kind": "policy", "country": "US",
      "name": "米 FOMC 政策金利発表", "forecast": "4.25%", "previous": "4.50%", "result": "",
      "importance": 5},
-    {"at": None, "time_label": "未定", "kind": "earnings", "country": "US",
-     "name": "Sample Cloud 決算（7〜9月期）", "forecast": "", "previous": "", "result": "",
-     "importance": 3},
+    {"at": None, "time_label": "15:00", "kind": "earnings", "country": "JP",
+     "name": "サンプル商事（9999）決算", "forecast": "", "previous": "", "result": "",
+     "importance": 3, "notable": True},
+    {"at": None, "time_label": "引け後", "kind": "earnings", "country": "JP",
+     "name": "テスト自動車（9998）決算", "forecast": "", "previous": "", "result": "",
+     "importance": 3, "notable": True, "fallback": True},
+    {"at": None, "time_label": "引け後", "kind": "earnings", "country": "US",
+     "name": "Sample Cloud（SMPL）決算", "forecast": "", "previous": "", "result": "",
+     "importance": 3, "notable": True},
+    {"at": None, "time_label": "", "kind": "surprise", "country": "JP",
+     "name": "サンプル電機（9997）", "move_pct": 14.8, "move_label": "PTS",
+     "headline": "サンプル電機、今期経常を一転増益に上方修正", "forecast": "", "previous": "",
+     "result": "", "importance": 3},
+    {"at": None, "time_label": "", "kind": "surprise", "country": "JP",
+     "name": "テスト食品（9996）", "move_pct": -7.2, "move_label": "PTS", "headline": "",
+     "forecast": "", "previous": "", "result": "", "importance": 3},
+    {"at": None, "time_label": "", "kind": "surprise", "country": "US",
+     "name": "Sample Robotics（SRBT）", "move_pct": 9.3, "move_label": "時間外", "headline": "",
+     "forecast": "", "previous": "", "result": "", "importance": 3},
+    {"at": None, "time_label": "", "kind": "surprise", "country": "US",
+     "name": "Demo Apparel（DAPL）", "move_pct": -8.6, "move_label": "当日", "headline": "",
+     "forecast": "", "previous": "", "result": "", "importance": 3},
 ]
 
 # 架空の出典 (表示名, 種別)。大ニュースは3件・小ニュースは1件を順に割り当てる。
@@ -85,7 +100,7 @@ _MOCK_SOURCES: list[tuple[str, str]] = [
 # (genre, importance, score, title, summary, detail) —
 #   summary=一覧/inline用の簡潔要約、detail=「詳細を見る」で出す長め解説。すべて架空。
 _MOCK: list[tuple[str, str, int, str, str, str]] = [
-    ("特大", "big", 95, "首都圏で大規模停電、約200万世帯に影響 復旧を急ぐ",
+    ("話題", "big", 95, "首都圏で大規模停電、約200万世帯に影響 復旧を急ぐ",
      "送電設備のトラブルが原因とみられ、鉄道や信号にも影響が出ている。電力会社は数時間以内の復旧を見込むと発表した。",
      "午後3時ごろ、変電所の設備故障をきっかけに東京・神奈川・埼玉の広い範囲で停電が発生した。電力会社によると影響は約200万世帯にのぼり、一部の鉄道は運転を見合わせ、主要交差点では信号が消灯して警察官による手信号が行われている。病院など重要施設は非常用電源で対応中。復旧は数時間以内を見込むとしているが、原因設備の特定を急いでおり、再発防止策もあわせて調査している。気象や需給の急変が原因ではないとみられる。"),
     ("AI", "big", 88, "OpenAIが新モデル「GPT-X」を発表 推論速度が従来比2倍に",

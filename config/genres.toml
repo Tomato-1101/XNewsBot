@@ -22,11 +22,11 @@
 # - news_max  : 任意。ニュース候補(Google ニュース+feeds+trend_sources を重複除去した後)の上限。省略時は 40。
 # - exclude   : 任意。この語を含む投稿を除外(スパム・別話題対策)。
 # - exclude_accounts: 任意。使い回し・煽り系アカウントの denylist(@ なし・大文字小文字は無視)。
-# - min_faves : 任意。日本語クエリの最低いいね数(ニッチは下げ、特大は上げる)。省略時は設定の既定値。
+# - min_faves : 任意。日本語クエリの最低いいね数(ニッチは下げ、話題の速報語は上げる)。省略時は設定の既定値。
 #               ※いいね下限を満たさなくても表示回数が多い速報は採用します(config の collect_min_views_floor)。
 # - min_faves_en: 任意。英語クエリの最低いいね数(省略時は max(min_faves, 500))。
 # - selectable: 任意(既定 true)。false にするとオンボーディングの選択肢に出さず、
-#               全員に常時収集・常時配信する「常時ジャンル」になる(例: 特大ニュース)。
+#               全員に常時収集・常時配信する「常時ジャンル」になる(2026-10-02 に特大を廃止し、現在は該当なし)。
 # - watch     : 任意(既定 false)。true にすると keywords・feeds 等を使わず、管理画面の「監視アカウント」に
 #               登録した X アカウントの全投稿(前回の取り込みから今回まで。引用・自分のスレッドの続きを含み、
 #               リポストと他人への返信は除く)を集める。
@@ -40,40 +40,7 @@
 #   金融政策・為替など市場に直結するマクロ要因は「株」ジャンルが吸収。
 # ※2026-10-01 「RPA」を廃止(本人の決定)。取得を「日本語/英語/公式アカウント」の3クエリ＋直取り RSS に刷新。
 # ※2026-10-01 「話題」を追加し、「暗号資産」の表示名を「仮想通貨」に。並びを 特大/AI/株/仮想通貨/テクノロジー/話題/他 に変更。
-
-[[genre]]
-key = "特大"
-selectable = false
-min_faves = 300
-min_faves_en = 3000
-note = "ジャンル横断の特大ニュース。選択ジャンルに関わらず常に収集。本当に速報級・大事件のときだけ出す(無ければ0件)。芸能・スポーツの速報は exclude で落とす。"
-keywords = [
-  "ニュース速報", "号外", "緊急地震速報", "震度5強", "震度6弱", "震度6強", "震度7", "大地震", "津波", "噴火",
-  "特別警報", "死去", "訃報", "首相", "総選挙", "辞任表明",
-  "テロ", "墜落", "脱線", "大規模停電", "緊急事態宣言",
-]
-# 「BREAKING」「breaking news」「just in」「earthquake」は外した(スポーツ速報・小さな地震・
-# 「Late-Breaking」などに一致して特大の英語候補の大半がノイズだった。2026-10-01 試走で確認)。
-# 英語の速報は accounts の Reuters/AP/BBCBreaking と Google News(US) のトップで拾う。
-keywords_en = [
-  "tsunami", "major earthquake", "plane crash", "assassinated",
-  "state of emergency", "martial law", "coup",
-]
-exclude = ["スタメン", "試合速報", "号ホームラン", "本塁打", "熱愛", "主演", "ガチャ", "プレゼント企画",
-           "選手", "球団", "ドラフト", "試合"]
-accounts = ["nhk_news", "Reuters", "AP", "BBCBreaking", "kyodo_official", "jijicom"]
-exclude_accounts = [
-  "WhaleNewsDaily", "DeepLeaksHQ", "nicksortor", "MarioNawfal", "Breaking911",
-  "visegrad24", "DiscloseTV", "PopBase", "PopCrave", "dom_lucre", "AutismCapital",
-  "Osint613", "TheBabylonBee", "BRICSinfo", "WatcherGuru", "unusual_whales",
-  "Polymarket", "Kalshi",
-  # スポーツ速報(「BREAKING」「訃報」で一致していた。2026-10-01 試走で 特大 X 一般の大半)
-  "FabrizioRomano", "TouchlineX", "433", "SkySportsNews", "gnomotoke",
-]
-feeds = [
-  { url = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja", name = "Google ニュース(日本)" },
-  { url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", name = "Google News(US)" },
-]
+# ※2026-10-02 「特大」を廃止(本人の決定)。速報級の大事件を拾う語・公式アカウント・総合 RSS は「話題」へ統合。
 
 [[genre]]
 key = "AI"
@@ -241,20 +208,50 @@ feeds = [
 
 [[genre]]
 key = "話題"
-note = "X や世の中で大きく話題になっていること(政治・芸能・スポーツ・ライフスタイル・グルメ・旅行も)。キーワードは持たず、いいねが極端に多い日本語の投稿(x_queries)・急上昇ワード(trend_sources)・総合ニュースの RSS から集める。"
+note = "X や世の中で大きく話題になっていること(政治・芸能・スポーツ・ライフスタイル・グルメ・旅行も)と、社会全体の大事件・災害・速報級のニュース(旧「特大」を 2026-10-02 に統合)。いいねが極端に多い日本語の投稿(x_queries)・急上昇ワード(trend_sources)・総合ニュースの RSS・速報語のキーワードと報道機関の公式アカウントから集める。"
+# 速報語のキーワード(旧「特大」)の日本語・英語クエリのいいね下限。x_queries は各自の min_faves が効く。
+min_faves = 300
+min_faves_en = 3000
+# 速報級の大事件を拾う語(旧「特大」から統合)。
+keywords = [
+  "ニュース速報", "号外", "緊急地震速報", "震度5強", "震度6弱", "震度6強", "震度7", "大地震", "津波", "噴火",
+  "特別警報", "死去", "訃報", "首相", "総選挙", "辞任表明",
+  "テロ", "墜落", "脱線", "大規模停電", "緊急事態宣言",
+]
+# 「BREAKING」「breaking news」「just in」「earthquake」は外した(スポーツ速報・小さな地震・
+# 「Late-Breaking」などに一致して英語候補の大半がノイズだった。2026-10-01 試走で確認)。
+# 英語の速報は accounts の Reuters/AP/BBCBreaking と Google News(US) のトップで拾う。
+keywords_en = [
+  "tsunami", "major earthquake", "plane crash", "assassinated",
+  "state of emergency", "martial law", "coup",
+]
+accounts = ["nhk_news", "Reuters", "AP", "BBCBreaking", "kyodo_official", "jijicom"]
 # 日本語のバズ投稿。キーワードが無いので「いいね2万以上・返信以外」だけで絞る(クライアント側でも確定的に)。
 x_queries = [
   { query = "lang:ja min_faves:20000 -filter:replies", max = 40, min_faves = 20000 },
 ]
 # いいねの多い投稿はプレゼント企画(フォロー&RT)が多いので落とす。
-exclude = ["プレゼント企画", "フォロー&RT", "フォロー＆RT", "フォローとRT", "抽選で", "応募方法", "#PR"]
+# 旧「特大」の exclude のうちスポーツ・芸能の語(試合・選手・熱愛など)は、話題の範囲(芸能・スポーツも含む)と
+# 衝突してバズ投稿まで落とすので統合しない。ガチャ(ゲーム内イベント)だけ足す。
+exclude = ["プレゼント企画", "フォロー&RT", "フォロー＆RT", "フォローとRT", "抽選で", "応募方法", "#PR", "ガチャ"]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "nicksortor", "MarioNawfal", "Breaking911",
+  "visegrad24", "DiscloseTV", "PopBase", "PopCrave", "dom_lucre", "AutismCapital",
+  "Osint613", "TheBabylonBee", "BRICSinfo", "WatcherGuru", "unusual_whales",
+  "Polymarket", "Kalshi",
+  # スポーツ速報(「BREAKING」「訃報」で一致していた。2026-10-01 試走で旧「特大」X 一般の大半)
+  "FabrizioRomano", "TouchlineX", "433", "SkySportsNews", "gnomotoke",
+]
 trend_sources = ["yahoo_realtime", "google_trends", "hatena"]
-news_max = 60
+# 旧「特大」の Google ニュース(キーワード日英・トップ日米)が加わるので 60 → 70(取得元4つ増に対し控えめ)。
+news_max = 70
 feeds = [
   { url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml", name = "Yahoo!ニュース" },
   { url = "https://news.livedoor.com/topics/rss/top.xml", name = "livedoor ニュース" },
   { url = "https://travel.watch.impress.co.jp/data/rss/1.0/trw/feed.rdf", name = "トラベル Watch" },
   { url = "https://gigazine.net/news/rss_2.0/", name = "GIGAZINE" },
+  { url = "https://news.google.com/rss?hl=ja&gl=JP&ceid=JP:ja", name = "Google ニュース(日本)" },
+  { url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", name = "Google News(US)" },
 ]
 
 [[genre]]

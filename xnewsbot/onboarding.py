@@ -144,7 +144,9 @@ def _try_command(session, messenger, sub: Subscriber, text: str, reply_token: st
                         + lc.digest_specs(grouped, greeting=False, market=mockdata.MOCK_MARKET,
                                           schedule=mockdata.MOCK_SCHEDULE,
                                           x_usage=mockdata.MOCK_X_USAGE,
-                                          line_quota=mockdata.MOCK_LINE_QUOTA))
+                                          line_quota=mockdata.MOCK_LINE_QUOTA,
+                                          # 先頭の警告文と合わせて reply の上限(5通)に収める
+                                          max_messages=lc.MAX_MESSAGES - 1))
         return True
     if text in _DELIVER_WORDS:
         # 「今すぐ配信」ボタンと同じ。今この瞬間の最新を収集→キュレーション→送信する。

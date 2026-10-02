@@ -273,12 +273,12 @@ def _raw(gs: dict) -> dict:
 
 
 def test_split_raw_watch_is_own_group_and_skipped_when_empty():
-    gs = {"特大": [{"text": "t"}], "AI": [{"text": "a"}], "暗号資産": [{"text": "c"}], WG: [{"text": "w"}]}
+    gs = {"AI": [{"text": "a"}], "暗号資産": [{"text": "c"}], "テクノロジー": [{"text": "t"}], WG: [{"text": "w"}]}
     parts = pl.split_raw(_raw(gs))
-    assert [list(p["genres"]) for p in parts] == [["特大", "AI"], ["暗号資産"], [WG]]
-    assert [list(p["genres"]) for p in pl.split_raw(_raw(gs), whole=True)] == [["特大", "AI", "暗号資産"], [WG]]
+    assert [list(p["genres"]) for p in parts] == [["AI", "暗号資産"], ["テクノロジー"], [WG]]
+    assert [list(p["genres"]) for p in pl.split_raw(_raw(gs), whole=True)] == [["AI", "暗号資産", "テクノロジー"], [WG]]
     gs[WG] = []
-    assert [list(p["genres"]) for p in pl.split_raw(_raw(gs), whole=True)] == [["特大", "AI", "暗号資産"]]
+    assert [list(p["genres"]) for p in pl.split_raw(_raw(gs), whole=True)] == [["AI", "暗号資産", "テクノロジー"]]
     assert [list(p["genres"]) for p in pl.split_raw(_raw({WG: [{"text": "w"}]}), whole=True)] == [[WG]]
 
 

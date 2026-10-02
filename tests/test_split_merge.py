@@ -32,20 +32,20 @@ def _write_raw(tmp_path: Path, raw: dict) -> Path:
 
 
 def test_split_raw_groups_and_unknown_goes_to_smaller():
-    genres = {"特大": [{"text": "x" * 10}], "AI": [{"text": "a" * 5000}],
+    genres = {"テクノロジー": [{"text": "x" * 10}], "AI": [{"text": "a" * 5000}],
               "暗号資産": [{"text": "s"}], "話題": [], "新ジャンル": [{"text": "n"}]}
     parts = pl.split_raw(_raw(genres))
-    assert [list(p["genres"]) for p in parts] == [["特大", "AI"], ["暗号資産", "話題", "新ジャンル"]]
+    assert [list(p["genres"]) for p in parts] == [["AI", "暗号資産"], ["テクノロジー", "話題", "新ジャンル"]]
     # recent_titles はその組のジャンルだけ。共通キーはそのまま
-    assert list(parts[1]["recent_titles"]) == ["暗号資産", "話題", "新ジャンル"]
+    assert list(parts[1]["recent_titles"]) == ["テクノロジー", "話題", "新ジャンル"]
     for p in parts:
         for k in ("date", "tz", "slot", "market", "schedule", "indicator_results"):
             assert p[k] == _raw(genres)[k]
 
 
 def test_split_raw_skips_empty_group():
-    parts = pl.split_raw(_raw({"暗号資産": [{"text": "s"}], "話題": []}))
-    assert len(parts) == 1 and list(parts[0]["genres"]) == ["暗号資産", "話題"]
+    parts = pl.split_raw(_raw({"テクノロジー": [{"text": "s"}], "話題": []}))
+    assert len(parts) == 1 and list(parts[0]["genres"]) == ["テクノロジー", "話題"]
 
 
 def test_cmd_split_small_raw_is_not_split(tmp_path, capsys):
@@ -58,7 +58,7 @@ def test_cmd_split_small_raw_is_not_split(tmp_path, capsys):
 def test_cmd_split_large_raw_keeps_candidates_and_i(tmp_path, capsys):
     big = "本" * 2000  # 1候補 約6KB
     genres = {g: [{"text": f"{g}{j}", "body": big} for j in range(10)]
-              for g in ("特大", "AI", "株", "暗号資産", "テクノロジー", "話題")}
+              for g in ("AI", "株", "暗号資産", "テクノロジー", "話題")}
     raw = _raw(genres)
     p = _write_raw(tmp_path, raw)
     assert p.stat().st_size >= pl.SPLIT_MIN_BYTES
@@ -68,8 +68,8 @@ def test_cmd_split_large_raw_keeps_candidates_and_i(tmp_path, capsys):
                      str(tmp_path / "xnews_morning_raw.p1.json")]
     whole = json.loads(p.read_text(encoding="utf-8"))
     p0, p1 = (json.loads(Path(x).read_text(encoding="utf-8")) for x in paths)
-    assert list(p0["genres"]) == ["特大", "AI", "株"]
-    assert list(p1["genres"]) == ["暗号資産", "テクノロジー", "話題"]
+    assert list(p0["genres"]) == ["AI", "株", "暗号資産"]
+    assert list(p1["genres"]) == ["テクノロジー", "話題"]
     for part in (p0, p1):
         for g, cands in part["genres"].items():
             assert cands == whole["genres"][g]  # 候補も `i` も元の raw と同じ

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
 from xnewsbot import schedule as sc
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -112,23 +114,22 @@ def test_parse_boj_last_days_and_events():
 def test_parse_nasdaq_cap_cut_and_labels():
     d = date(2026, 10, 1)
     out = sc.parse_nasdaq(_fx("nasdaq_earnings_2026-10-01.json"), d)
-    # 200億ドル未満(McCormick 130億ドルなど)は落とす。法人格の語は落とす
-    assert [(it["name"], it["label"], it["at"]) for it in out] == [
-        ("Accenture（ACN）決算", "寄り前", _at(d, 22)),
-        ("Nike（NKE）決算", "引け後", _at(date(2026, 10, 2), 5, 30)),
-    ]
+    # 注目決算は500億ドル以上(Nike 525億ドルは入る・McCormick 125億ドルは対象外)。法人格の語は落とす
+    assert [(it["name"], it["label"], it["at"], it["notable"]) for it in out] == [
+        ("Accenture（ACN）決算", "寄り前", _at(d, 22), True),
+        ("Nike（NKE）決算", "引け後", _at(date(2026, 10, 2), 5, 30), True)]
 
 
-def test_parse_nasdaq_top8_dedupe_and_undecided():
+def test_parse_nasdaq_no_limit_dedupe_and_undecided():
     import json
-    rows = [{"name": f"Big{i} Corp.", "symbol": f"B{i}", "marketCap": f"${(30 + i) * 10**9:,}",
+    rows = [{"name": f"Big{i} Corp.", "symbol": f"B{i}", "marketCap": f"${(130 + i) * 10**9:,}",
              "time": "time-not-supplied"} for i in range(10)]
-    rows.append({"name": "Big9 Corp.", "symbol": "B9.X", "marketCap": "$39,000,000,000",
+    rows.append({"name": "Big9 Corp.", "symbol": "B9.X", "marketCap": "$139,000,000,000",
                  "time": "time-pre-market"})   # 同名の別クラス株
     body = json.dumps({"data": {"rows": rows}}).encode()
     out = sc.parse_nasdaq(body, date(2026, 10, 1))
-    assert len(out) == sc.EARNINGS_MAX
-    assert out[0]["name"] == "Big9（B9）決算" and out[-1]["name"] == "Big2（B2）決算"
+    assert len(out) == 10                       # 上限なし(8社で切らない)
+    assert out[0]["name"] == "Big9（B9）決算" and out[-1]["name"] == "Big0（B0）決算"
     assert all(it["at"] is None and it["label"] == "未定" for it in out)
 
 
@@ -203,7 +204,7 @@ def test_select_boj_day():
 
 def test_select_marks_next_day_and_keeps_fixed_labels():
     d = date(2026, 10, 1)
-    items = (sc.parse_nasdaq(_fx("nasdaq_earnings_2026-10-01.json"), d)
+    items = (sc.parse_nasdaq(_fx("nasdaq_earnings_2026-10-01.json"), d, min_cap=sc.SURPRISE_US_MIN_CAP)
              + sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), d)
              + sc.indicators(sc.parse_minkabu(_fx("minkabu_2026-09-30.html"))))
     out = sc.select(items, _at(d, 7, 15))
@@ -230,7 +231,16 @@ _FILES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _fast_fetch(monkeypatch):
+    """fetch は株探・Yahoo にも触る。待ち時間とネットワークを無効にする(決算サプライズは別ファイルで検証)。"""
+    monkeypatch.setattr(sc, "KABUTAN_GAP", 0)
+    monkeypatch.setattr(sc, "_yahoo_chart", lambda sym: None)
+
+
 def _fake_get(url):
+    if "kabutan.jp" in url:
+        return None                      # 株探は取れない(日本の注目決算は IRBANK の上位で代用される)
     for host, name in _FILES.items():
         if host in url:
             return _fx(name)
@@ -242,8 +252,9 @@ def test_fetch_combines_sources(monkeypatch):
     monkeypatch.setattr(sc, "_get", lambda url: seen.append(url) or _fake_get(url))
     got = sc.fetch(datetime(2026, 10, 1, 7, 15))   # tz 無しは JST とみなす
     names = [x["name"] for x in got["schedule"]]
-    assert "米 ISM製造業景気指数" in names and "Nike（NKE）決算" in names
-    assert "平和堂（8276）決算" in names
+    assert "米 ISM製造業景気指数" in names and "Accenture（ACN）決算" in names
+    assert "Nike（NKE）決算" in names          # 注目決算は500億ドル以上(Nike 525億ドルは入る)
+    assert "平和堂（8276）決算" in names       # 株探が取れないので IRBANK の上位で代用
     assert [x["name"] for x in got["results"]][0] == "米 ADP雇用者数"
     # みんかぶは前日から3日分、決算は配信日の日付で引く
     assert any("date=2026-09-30&days=3" in u for u in seen)
@@ -270,7 +281,7 @@ def test_fetch_source_failure_is_isolated(monkeypatch, capsys):
 
 def test_fetch_all_failed_returns_empty(monkeypatch):
     monkeypatch.setattr(sc, "_get", lambda url: None)
-    assert sc.fetch(datetime(2026, 10, 1, 7, 15, tzinfo=J)) == {"schedule": [], "results": []}
+    assert sc.fetch(datetime(2026, 10, 1, 7, 15, tzinfo=J)) == {"schedule": [], "results": [], "surprises": []}
 
 
 def test_select_keeps_approx_time_for_grace_period():

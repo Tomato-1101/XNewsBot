@@ -143,18 +143,21 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
-    # 先頭は「架空」警告、続いて現行レイアウト(要点バブル + 主なニュース + 注目ニュース + その他の見出し)
+    # 先頭は「架空」警告、続いて現行レイアウト(要点+マーケットの2枚 → ジャンルごとのカルーセル)
     assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
-    assert specs[1]["type"] == "flex" and specs[1]["contents"]["type"] == "bubble"
-    assert specs[2]["type"] == "flex" and specs[2]["contents"]["type"] == "carousel"
-    assert specs[2]["alt"].startswith("主なニュース（")
-    assert specs[3]["type"] == "flex" and specs[3]["contents"]["type"] == "carousel"
-    assert specs[3]["alt"].startswith("注目ニュース（")
-    assert len(specs) <= 5  # reply 上限内
+    first = specs[1]["contents"]
+    assert specs[1]["type"] == "flex" and first["type"] == "carousel" and len(first["contents"]) == 2
+    assert len(specs) <= 5  # reply 上限内(警告文の分だけジャンルの通数を減らす)
     import json
     blob = json.dumps(specs, ensure_ascii=False)
+    # 全ジャンルが目次に出て、どのジャンルも省略されない
+    genres_shown = [b["header"]["contents"][0]["text"] for s in specs[2:] for b in s["contents"]["contents"]]
+    assert {"AI", "株", "仮想通貨", "テクノロジー", "話題"} <= set(genres_shown)
+    assert "件は省略" not in blob and "特大" not in blob
     assert "市況（前日終値）" in blob  # 架空の市況も出る
     assert "RPA" not in blob          # 配信ジャンルから廃止済み
+    # 目次の通番は警告文の1通を数えた実際の位置(ジャンルは3通目から)
+    assert "→ 3" in blob and "→ 2" not in blob
 
 
 def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
@@ -167,18 +170,21 @@ def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
     assert len(specs) <= 5
-    summary = json.dumps(specs[1], ensure_ascii=False)
+    summary = json.dumps(specs[1], ensure_ascii=False)  # 要点 + マーケットの2枚
     assert "今日の予定" in summary and "米 FOMC 政策金利発表" in summary
+    # 注目決算(日本・米国、代用の注記つき)・決算サプライズの節もモックで全部出る
+    assert "注目決算（時価総額上位で代用）" in summary and "決算サプライズ" in summary
+    assert "▲ +14.8%" in summary and "▼ -8.6%" in summary
     assert "$118,235" in summary and "仮想通貨は直近値・24時間比" in summary
     assert "評価は一般的な傾向で、投資助言ではありません" in summary
     assert "残り使用量" in summary
     assert "X（ニュース取得）  残り 3,040,677クレジット（約$30.41）・あと約308日／今回 9,870" in summary
     assert "LINE（配信）  今月 残り 152/200通・あと約50回／今回 3通" in summary
-    assert "主なニュース" in json.dumps(specs[2], ensure_ascii=False)
-    assert "注目 " in json.dumps(specs[3], ensure_ascii=False)
-    # 小ニュースの要約が一覧に出る(タップしなくても読める)
-    small = next(r for r in mockdata._MOCK if r[1] == "small" and r[0] == "AI")
-    assert small[4] in json.dumps(specs[3], ensure_ascii=False)
+    cards = json.dumps(specs[2:], ensure_ascii=False)
+    assert '"注目"' in cards and '"その他の見出し"' in cards
+    # 注目(score >= 50)の小ニュースは要約が一覧に出る(タップしなくても読める)
+    small = next(r for r in mockdata._MOCK if r[1] == "small" and r[0] == "AI" and r[2] >= 50)
+    assert small[4] in cards
 
 
 def test_help_mentions_schedule_and_new_genres(session, messenger):

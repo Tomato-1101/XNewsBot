@@ -203,6 +203,26 @@ def test_news_view_shows_items(wired):
     assert "要約サマリDEF" in r.text
 
 
+def test_news_view_shows_items_of_removed_genre(wired):
+    """廃止したジャンル(2026-10-02 の特大)の過去記事も、DB のジャンル名のまま落ちずに出る。"""
+    for genre, title in (("AI", "AIの見出しXYZ"), ("特大", "過去の特大見出しQRS")):
+        gd = GenreDigest(digest_date=date(2026, 9, 30), slot="morning", genre=genre)
+        wired.session.add(gd)
+        wired.session.commit()
+        wired.session.refresh(gd)
+        wired.session.add(NewsItem(
+            genre_digest_id=gd.id, genre=genre, genres=[genre], importance="big", rank=0,
+            title=title, summary="要約", source_urls=[], source_tweets=[], top_view_count=1,
+        ))
+    wired.session.commit()
+
+    with TestClient(app) as c:
+        r = c.get("/?date_str=2026-09-30&slot=morning", auth=AUTH)
+    assert r.status_code == 200
+    assert "AIの見出しXYZ" in r.text and "過去の特大見出しQRS" in r.text
+    assert r.text.index("AIの見出しXYZ") < r.text.index("過去の特大見出しQRS")  # 廃止ジャンルは後ろ
+
+
 def test_news_view_shows_usage(wired, monkeypatch):
     for d, used, remaining in [(date(2026, 9, 30), 9000, 3_020_000), (date(2026, 10, 1), 11000, 3_009_000)]:
         wired.session.add(XUsageSnapshot(digest_date=d, slot="morning", used=used, remaining=remaining))

@@ -104,13 +104,16 @@ def _schedule_rows(schedule: list[dict], now: datetime) -> list[dict]:
         if not ev.get("name"):
             continue
         at = lc._parse_time(ev["at"]) if ev.get("at") else None
+        # 決算サプライズは予定と同じ表に保存される(時刻なし)。予定と見分けられるよう騰落率を結果欄に出す
+        surprise = ev.get("kind") == "surprise" and isinstance(ev.get("move_pct"), (int, float))
         rows.append({
             "at": at,
-            "time": str(ev.get("time_label") or "未定"),
+            "time": "決算反応" if surprise else str(ev.get("time_label") or "未定"),
             "name": str(ev["name"]),
             "forecast": ev.get("forecast") or "",
             "previous": ev.get("previous") or "",
-            "result": ev.get("result") or "",
+            "result": (f"{ev.get('move_label') or ''} {ev['move_pct']:+.1f}%".strip() if surprise
+                       else ev.get("result") or ""),
             "major": int(ev.get("importance") or 0) >= 5,
             "past": bool(at and at < now),
         })
@@ -238,7 +241,11 @@ def news_index(
             guess = slot_for_now(now_local)
             cur_slot = guess if guess in avail_slots or not avail_slots else avail_slots[0]
 
-        grouped = assemble_for_genres(session, GENRE_KEYS, local_date, cur_slot)
+        # 廃止したジャンル(特大・RPA など)の過去記事も、genres.toml の後ろに DB の名前のまま出す
+        stored = session.exec(select(GenreDigest.genre).where(
+            GenreDigest.digest_date == local_date, GenreDigest.slot == cur_slot)).all()
+        genres = GENRE_KEYS + sorted(set(stored) - set(GENRE_KEYS))
+        grouped = assemble_for_genres(session, genres, local_date, cur_slot)
         grouped = {g: items for g, items in grouped.items() if items}
         main, others = lc._split_main_others(grouped)
         points = [{"id": it.id, "title": it.title, "genre": GENRES.get(it.genre, {}).get("label", it.genre),
