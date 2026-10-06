@@ -140,7 +140,7 @@ if [ "$MODE" = recover ]; then
     log "未配信チェックに失敗 (exit=$PEND_RC)。安全側に倒して配信を試みる"
   fi
   # 何が原因で落ちたのかをリカバリのログ行に残す(あとから原因分布を追えるようにする)
-  LAST_FAIL=$(grep -E "キュレーション\(claude\)に失敗|collect に失敗|collect 全滅|ingest に失敗|キュレーション結果が空" "$LOG" | tail -1)
+  LAST_FAIL=$(grep -E "claude 未ログイン|キュレーション\(claude\)に失敗|collect に失敗|collect 全滅|ingest に失敗|キュレーション結果が空" "$LOG" | tail -1)
   log "リカバリ実行: 当日 $SLOT が未配信。直近の失敗: ${LAST_FAIL:-記録なし(起動自体を逃した可能性)}"
 fi
 
@@ -163,6 +163,15 @@ wait_until() {
     log "定刻 ${hhmm} を過ぎているため待たずに即送信(超過 $((-wait))s)"
   fi
 }
+
+# 0) Claude Code のログイン確認。ログインが切れていると収集後のキュレーションが必ず失敗し、
+#    X のクレジットだけ消費する(2026-10-06 に4回分・約3.7万を無駄にした)ので、収集より先に止める。
+#    auth status はログアウト中でも exit 0 なので、JSON の loggedIn を見る。
+if ! (cd /tmp && "$CLAUDE" auth status 2>/dev/null) | grep -q '"loggedIn": true'; then
+  log "claude 未ログイン(認証切れ)のため収集せず中止。ターミナルで claude auth login を実行してください"
+  osascript -e 'display notification "Claude Code のログインが切れています。ターミナルで claude auth login を実行してください。" with title "XNewsBot 配信停止"' >/dev/null 2>&1
+  exit 1
+fi
 
 # 1) 収集(購読者の有効ジャンル + 常時ジャンル[特大]。対象が無ければ正常スキップ)
 if [ -n "$USER_ID" ]; then
