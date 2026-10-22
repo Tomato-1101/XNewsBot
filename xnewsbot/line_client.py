@@ -1218,9 +1218,10 @@ class LineMessenger:
             ReplyMessageRequest(replyToken=reply_token, messages=messages)
         )
 
-    def push(self, to: str, specs: list[dict]) -> None:
+    def push(self, to: str, specs: list[dict], *, retry_key: str | None = None) -> None:
         from linebot.v3.messaging import PushMessageRequest
         if not specs:
             return
         messages = [_spec_to_message(s) for s in specs[:5]]
-        self._api().push_message(PushMessageRequest(to=to, messages=messages))
+        kwargs = {"x_line_retry_key": retry_key} if retry_key else {}
+        self._api().push_message(PushMessageRequest(to=to, messages=messages), **kwargs)

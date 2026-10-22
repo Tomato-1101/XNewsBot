@@ -156,6 +156,12 @@ class WatchedAccount(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class DeliveryAlert(SQLModel, table=True):
+    """日付と本人の組で障害通知を1通に制限する。"""
+    key: str = Field(primary_key=True)
+    sent: bool = False
+
+
 class NewsExplanation(SQLModel, table=True):
     """記事ごとの「AI解説」(ヘッドレス Claude がウェブ検索して作る)。作成済みは使い回す。
 

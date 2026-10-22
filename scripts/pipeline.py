@@ -42,7 +42,7 @@ from xnewsbot.db import get_session, init_db  # noqa: E402
 from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, is_watch, keywords  # noqa: E402
 from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources, x_queries  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
-from xnewsbot.models import GenreDigest, NewsItem  # noqa: E402
+from xnewsbot.models import DeliveryAlert, GenreDigest, NewsItem  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
 
 
@@ -507,7 +507,8 @@ def cmd_ingest(args) -> None:
         # 決算サプライズも予定と同じ表に入れる(表示側は kind で描き分ける)
         digest.save_schedule(session, local_date, slot,
                              (raw.get("schedule") or []) + (raw.get("earnings_surprises") or []))
-    _advance_watch_state(raw, cur_genres, local_date)
+    if curated.get("curation_route") != "original":
+        _advance_watch_state(raw, cur_genres, local_date)
     print(f"ingest 完了 ({local_date} / {slot}, 市況 {len(raw.get('market') or [])} 件, "
           f"予定 {len(raw.get('schedule') or [])} 件, "
           f"サプライズ {len(raw.get('earnings_surprises') or [])} 件)", file=sys.stderr)
@@ -646,6 +647,7 @@ def cmd_push(args) -> None:
                 select(Subscriber).where(Subscriber.is_onboarded == True)  # noqa: E712
             ).all()
             sent = 0
+            failed = 0
             for sub in subs:
                 now_local = datetime.now(ZoneInfo(sub.tz))
                 if not sub.enabled_genres or not sub.slot_enabled(default_slot):
@@ -664,8 +666,11 @@ def cmd_push(args) -> None:
                     sent += 1
                     print(f"  push → {sub.line_user_id} slot={default_slot}", file=sys.stderr)
                 except Exception as e:  # 1人の失敗で全体を止めない
+                    failed += 1
                     print(f"  push 失敗 {sub.line_user_id}: {e}", file=sys.stderr)
             print(f"push(due) 完了 slot={default_slot} ({sent} 名)", file=sys.stderr)
+            if failed:
+                sys.exit(1)
         else:
             sys.exit("--user または --due を指定してください。")
 
@@ -716,12 +721,48 @@ def cmd_alert(args) -> None:
     if not targets:
         print("アラート対象なし", file=sys.stderr)
         sys.exit(EXIT_NO_TARGET)
+    from sqlalchemy.exc import IntegrityError
+    from uuid import NAMESPACE_URL, uuid5
+    failed = False
     for to in targets:
+        # pushに成功した通知だけを日単位で記録。並行プロセスは一意キーで排除する。
+        key = f"{_today(settings).isoformat()}:{to}"
+        with get_session() as session:
+            row = DeliveryAlert(key=key)
+            session.add(row)
+            try:
+                session.commit()
+            except IntegrityError:
+                session.rollback()
+                existing = session.get(DeliveryAlert, key)
+                if existing and existing.sent:
+                    print("当日の障害通知は送信済み", file=sys.stderr)
+                    continue
+                # 送信途中の停止からも同じretry keyで復旧できる。
         try:
-            messenger.push(to, [lc.text_spec(args.text)])
+            retry_key = str(uuid5(NAMESPACE_URL, f"xnewsbot-delivery-alert:{key}"))
+            try:
+                messenger.push(to, [lc.text_spec(args.text)], retry_key=retry_key)
+            except Exception as e:
+                # LINEは同じretry keyを受理済みなら409を返す。応答だけ失われた再試行でも重複させない。
+                if getattr(e, "status", None) != 409:
+                    raise
+            with get_session() as session:
+                row = session.get(DeliveryAlert, key)
+                row.sent = True
+                session.add(row)
+                session.commit()
             print(f"アラート送信 → {to}", file=sys.stderr)
         except Exception as e:  # 通知が落ちても呼び出し元(リカバリ)の後始末は続ける
+            failed = True
+            with get_session() as session:
+                row = session.get(DeliveryAlert, key)
+                if row and not row.sent:
+                    session.delete(row)
+                    session.commit()
             print(f"アラート送信 失敗 {to}: {e}", file=sys.stderr)
+    if failed:
+        sys.exit(1)
 
 
 def main() -> None:

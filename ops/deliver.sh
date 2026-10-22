@@ -95,26 +95,56 @@ acquire_lock() {
   return 1
 }
 
-# リカバリが失敗したまま黙って終わると、当日分が落ちたことに誰も気づけない。
-# 当日最後の試行(20時以降=21:00の回)で失敗したときだけ LINE に1通知らせる。
-# 途中の回(12:30/17:00)で送らないのは、そのあと自動で再試行して復旧する見込みがあるため
-# (無料枠200通/月を、確定した失敗1件につき1通に抑える。宛先は本人=1通・グループ宛は3通課金)。
-# macOS 通知は無料なので毎回出す(Mac が起きていればその場で気づける)。
+# 配信失敗・代替経路への切替理由を本人へ通知。日次の重複排除は pipeline alert が担う。
 notify_recover_failure() {
-  local rc=$?
-  [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"   # 自分が取ったロックだけ返す
-  [ -n "${CLAUDE_CWD:-}" ] && rm -rf "$CLAUDE_CWD"   # キュレーション用の一時 cwd(mktemp -d)を片付ける
-  [ -n "${CLAUDE_OUT:-}" ] && rm -f "$CLAUDE_OUT"
-  [ -n "${TMP_PARTS:-}" ] && rm -f "${TMP_PARTS[@]}"   # 分割キュレーションのパート raw/curated/出力
-  if [ "$MODE" = recover ] && [ "$rc" -ne 0 ]; then
-    osascript -e 'display notification "朝のダイジェストを再送できませんでした。~/Library/Logs/xnewsbot-deliver.log を確認してください。" with title "XNewsBot リカバリ失敗"' >/dev/null 2>&1
-    if [ "$(date +%H)" -ge 20 ]; then
-      "$PY" scripts/pipeline.py alert --text "XNewsBot: 本日のダイジェストを配信できませんでした。自動リトライ(12:30/17:00/21:00)も全て失敗しています。
-直近のエラー: ${LAST_FAIL:-記録なし(起動自体を逃した可能性)}
-ログ: ~/Library/Logs/xnewsbot-deliver.log" >> "$LOG" 2>&1
-      log "LINE へ失敗を通知(当日最終試行)"
+  local rc=$? reason="" text=""
+  [ -s "${REASON_FILE:-}" ] && reason=$(cat "$REASON_FILE")
+  if [ "$rc" -ne 0 ] && [ -n "${LOG_START_LINE:-}" ]; then
+    # 生のHTTP応答には識別子等がありうるため、通知へは判別できた原因の分類だけを出す。
+    local detail
+    detail=$("$PY" - "$LOG" "$LOG_START_LINE" <<'PY'
+import sys
+from pathlib import Path
+s = "\n".join(Path(sys.argv[1]).read_text(errors="replace").splitlines()[int(sys.argv[2]):]).lower()
+for patterns, label in [
+    (("nodename nor servname", "failed to resolve", "nameresolutionerror"), "DNS名前解決に失敗（ネット接続を確認）"),
+    (("monthly limit", "monthly message limit", "quota exceeded"), "LINE等の月間利用上限"),
+    (("weekly limit",), "Claudeの週間利用上限"),
+    (("session limit",), "Claudeのセッション利用上限"),
+    (("oauth session expired", "failed to authenticate", "unauthorized"), "認証切れ・認証エラー"),
+    (("timed out", "timeoutexpired", "exit=142", "exit=124"), "外部サービス応答待ちのタイムアウト"),
+]:
+    if any(p in s for p in patterns):
+        print(label)
+        break
+PY
+)
+    [ -n "$detail" ] && reason="${reason:+$reason
+}$detail"
+  fi
+  if [ "$OWN_LOCK" = 1 ] && [ "$MODE" != refresh ]; then
+    if [ "$rc" -ne 0 ]; then
+      text="XNewsBot: 本日のニュースを配信できませんでした。
+理由: ${LAST_FAIL:-処理中にエラーが発生しました}${reason:+
+$reason}
+自動リカバリで再試行します。"
+    elif [ -n "$reason" ]; then
+      text="XNewsBot: 要約処理に失敗したため、代替経路でニュースを配信しました。
+理由: $reason"
+    fi
+    if [ -n "$text" ]; then
+      if "$PY" scripts/pipeline.py alert --text "$text" >> "$LOG" 2>&1; then
+        log "障害通知処理が正常終了(日次重複排除あり)"
+      else
+        log "LINE への障害通知も失敗(通信・LINE残枠等を確認)"
+      fi
     fi
   fi
+  [ "$OWN_LOCK" = 1 ] && rm -rf "$LOCK_DIR"
+  [ -n "${CLAUDE_CWD:-}" ] && rm -rf "$CLAUDE_CWD"
+  [ -n "${CLAUDE_OUT:-}" ] && rm -f "$CLAUDE_OUT"
+  [ -n "${REASON_FILE:-}" ] && rm -f "$REASON_FILE"
+  [ -n "${TMP_PARTS:-}" ] && rm -f "${TMP_PARTS[@]}"
   return 0
 }
 trap notify_recover_failure EXIT
@@ -127,6 +157,9 @@ if ! acquire_lock; then
 fi
 
 log "==== deliver start slot=$SLOT mode=$MODE target=${USER_ID:--} ===="
+LOG_START_LINE=$(wc -l < "$LOG")
+REASON_FILE=$(mktemp) || exit 1
+LAST_FAIL="ニュース収集処理の失敗"
 
 # リカバリ: 当日分が既に届いていれば何もしない(収集も Claude も呼ばずに終わる)。
 # これがあるので launchd から1日に何度起動されても、失敗した日だけ再試行される。
@@ -164,13 +197,11 @@ wait_until() {
   fi
 }
 
-# 0) Claude Code のログイン確認。ログインが切れていると収集後のキュレーションが必ず失敗し、
-#    X のクレジットだけ消費する(2026-10-06 に4回分・約3.7万を無駄にした)ので、収集より先に止める。
-#    auth status はログアウト中でも exit 0 なので、JSON の loggedIn を見る。
+# Claudeが未ログインでもCodex・記事原文で配信を継続する。
+CLAUDE_AVAILABLE=1
 if ! (cd /tmp && "$CLAUDE" auth status 2>/dev/null) | grep -q '"loggedIn": true'; then
-  log "claude 未ログイン(認証切れ)のため収集せず中止。ターミナルで claude auth login を実行してください"
-  osascript -e 'display notification "Claude Code のログインが切れています。ターミナルで claude auth login を実行してください。" with title "XNewsBot 配信停止"' >/dev/null 2>&1
-  exit 1
+  CLAUDE_AVAILABLE=0
+  log "claude 未ログイン。収集後にCodexへ切り替える"
 fi
 
 # 1) 収集(購読者の有効ジャンル + 常時ジャンル[特大]。対象が無ければ正常スキップ)
@@ -295,26 +326,27 @@ if wait <= 2700:
     print(int(max(wait, 0)) + 60)
 ' "$1" 2>/dev/null
 }
-if ! run_curation; then
-  # 待って再試行するのは自動実行(定刻・リカバリ)だけ。手動の「今すぐ」は待たせずに失敗を返す。
-  LIMIT_WAIT=""
-  if [ "$MODE" = due ] || [ "$MODE" = recover ]; then LIMIT_WAIT=$(limit_reset_wait "$CLAUDE_OUT"); fi
-  if [ -z "$LIMIT_WAIT" ]; then
-    log "キュレーション(claude)に失敗 or タイムアウト"; exit 1
-  fi
-  log "Claude のセッション上限。解除まで ${LIMIT_WAIT}s 待って1回だけ再試行"
-  sleep "$LIMIT_WAIT"
-  if ! run_curation; then
-    log "キュレーション(claude)に失敗 or タイムアウト(上限解除後の再試行)"; exit 1
-  fi
+# 通常経路が失敗したら待たずCodexへ、さらに失敗したら記事原文へ切り替える。
+FALLBACK_ARGS=()
+if [ "$CLAUDE_AVAILABLE" != 1 ]; then
+  FALLBACK_ARGS=(--claude-failed --claude-reason "Claude未ログインのためCodexへ切替")
+elif ! run_curation; then
+  CLAUDE_FAIL_REASON="Claudeのキュレーション失敗またはタイムアウト"
+  if grep -qi "weekly limit" "$CLAUDE_OUT"; then CLAUDE_FAIL_REASON="Claudeの週間利用上限";
+  elif grep -qi "session limit" "$CLAUDE_OUT"; then CLAUDE_FAIL_REASON="Claudeのセッション利用上限"; fi
+  FALLBACK_ARGS=(--claude-failed --claude-reason "$CLAUDE_FAIL_REASON")
 fi
-# claude が exit 0 でも __CUR__ を書かない/空のことがある。空のまま ingest すると
-# 既存ダイジェストは保持されるが当該実行は無意味なので、ここで止めて原因を切り分けやすくする。
-if [ ! -s "$CUR" ]; then
-  log "キュレーション結果が空($CUR)。配信を中止"; exit 1
+LAST_FAIL="Claude・Codex・記事原文のキュレーションに失敗"
+# bash 3.2/set -uでは空配列の展開が失敗するため、追加引数の有無で分ける。
+if [ "${#FALLBACK_ARGS[@]}" -gt 0 ]; then
+  "$PY" scripts/curate_fallback.py --raw "$RAW" --out "$CUR" --reason-out "$REASON_FILE" "${FALLBACK_ARGS[@]}" >> "$LOG" 2>&1
+else
+  "$PY" scripts/curate_fallback.py --raw "$RAW" --out "$CUR" --reason-out "$REASON_FILE" >> "$LOG" 2>&1
 fi
+if [ "$?" -ne 0 ]; then log "$LAST_FAIL"; exit 1; fi
 
 # 3) 取り込み(slot は raw から自動)
+LAST_FAIL="ニュースのDB取り込み失敗"
 if ! "$PY" scripts/pipeline.py ingest --raw "$RAW" --curated "$CUR" >> "$LOG" 2>&1; then
   log "ingest に失敗"; exit 1
 fi
@@ -326,6 +358,7 @@ fi
 #  日付は YYYY-MM-DD で空白を含まないためクォートなし展開で安全)
 DDATE=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['date'])" "$RAW" 2>/dev/null)
 DATE_OPT=""; [ -n "$DDATE" ] && DATE_OPT="--date $DDATE"
+LAST_FAIL="LINE送信失敗(通信障害・月間上限・宛先設定等をログで確認)"
 case "$MODE" in
   user)
     # 今すぐ配信(個人): 待たずに即送信(その瞬間の最新を届ける)
@@ -349,4 +382,6 @@ case "$MODE" in
     "$PY" scripts/pipeline.py push --due --slot "$SLOT" $DATE_OPT >> "$LOG" 2>&1
     ;;
 esac
+PUSH_RC=$?
+if [ "$PUSH_RC" -ne 0 ]; then log "$LAST_FAIL (exit=$PUSH_RC)"; exit "$PUSH_RC"; fi
 log "==== deliver done slot=$SLOT mode=$MODE ===="
