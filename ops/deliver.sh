@@ -1,5 +1,5 @@
 #!/bin/bash
-# XNewsBot 配信ジョブ。配信時刻ちょうどに「最新収集 → Claudeキュレーション → LINE送信」を
+# XNewsBot 配信ジョブ。配信時刻ちょうどに「最新収集 → Claudeキュレーション → Codexレビュー → LINE送信」を
 # 一気通貫で実行する(=リアルタイム。古いDBを送らない)。
 #
 # 使い方:
@@ -18,6 +18,8 @@
 # 役割分担(分業): 収集(twitterapi.io)と送信(LINE)はこのスクリプト=プログラムが行い、
 #   記事の選別・日本語見出し・要約の生成だけをヘッドレス Claude Code が担う。
 #   安全のため Claude に許すツールは Read / Write のみ(Bash や任意操作は不可)。
+#   配信前に Codex が全ジャンルを通して見て、組をまたぐ重複の統合と不要記事の除外を決め、
+#   scripts/review_digest.py が機械的に適用する(失敗時は未レビューのまま配信。XNEWS_REVIEW=0 で省略)。
 set -uo pipefail
 
 PROJ="/Users/tomato/Project/XNewsBot"
@@ -80,7 +82,7 @@ run_with_timeout() {
 # mkdir は同名ディレクトリの同時作成に必ず1つしか成功しないのでロックとして使う
 # (macOS の bash 3.2 に flock は無い)。異常終了で残ったロックは mtime で回収する。
 LOCK_DIR="/tmp/xnewsbot-deliver.lock"
-LOCK_STALE_SEC=9000   # 最長の正常実行(収集10分 + claude 30分 + 上限解除待ち45分 + 再試行30分 + 送信)より長い値
+LOCK_STALE_SEC=9900   # 最長の正常実行(収集10分 + claude 30分 + 上限解除待ち45分 + 再試行30分 + Codexレビュー15分 + 送信)より長い値
 OWN_LOCK=0
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then OWN_LOCK=1; echo $$ > "$LOCK_DIR/pid" 2>/dev/null; return 0; fi
@@ -344,6 +346,45 @@ else
   "$PY" scripts/curate_fallback.py --raw "$RAW" --out "$CUR" --reason-out "$REASON_FILE" >> "$LOG" 2>&1
 fi
 if [ "$?" -ne 0 ]; then log "$LAST_FAIL"; exit 1; fi
+
+# 2.5) 配信前の Codex レビュー(全モード)。組ごとの並列キュレーションでは組をまたぐ同じ出来事を
+# まとめられないので、確定した curated を全ジャンル通して見せ、重複の統合と不要記事の除外だけを適用する。
+# review_digest.py は失敗しても curated を元のまま残して exit 0 する。それでも異常終了・ハングしたときに
+# 配信が止まらないよう、ここでも結果を問わず先へ進む(内部のタイムアウト + 余裕1分で打ち切る)。
+# 定刻配信はレビューで定刻を過ぎないよう、内部のタイムアウトを「定刻までの残り − 60秒」と 900秒 の小さい方にし、
+# 残りが 120秒未満なら省略する(recover・今すぐ系は定刻が無いので 900秒のまま)。
+# 定刻までの残り秒 → レビューの内部タイムアウト秒。120秒未満は何も出さない(=省略)
+review_timeout() {
+  local left="$1"
+  [ "$left" -lt 120 ] && return 0
+  if [ $((left - 60)) -lt 900 ]; then echo $((left - 60)); else echo 900; fi
+}
+REVIEW_TIMEOUT=900
+REVIEW_SKIP=""
+if [ "$MODE" = due ]; then
+  if [ "$SLOT" = morning ]; then DUE_HHMM="$MORNING_HHMM"; else DUE_HHMM="$EVENING_HHMM"; fi
+  DUE_EPOCH=$(date -j -f "%Y-%m-%d %H%M%S" "$(date +%Y-%m-%d) ${DUE_HHMM}00" +%s 2>/dev/null)
+  if [ -n "$DUE_EPOCH" ]; then
+    LEFT=$((DUE_EPOCH - $(date +%s)))
+    REVIEW_TIMEOUT=$(review_timeout "$LEFT")
+    [ -z "$REVIEW_TIMEOUT" ] && REVIEW_SKIP="定刻 ${DUE_HHMM} まで残り${LEFT}秒(120秒未満)のため"
+  fi
+fi
+if [ "${XNEWS_REVIEW:-1}" = 0 ]; then
+  log "Codex レビューを省略(XNEWS_REVIEW=0)"
+elif [ -n "$REVIEW_SKIP" ]; then
+  log "Codex レビューを省略(${REVIEW_SKIP})。未レビューのまま先へ進む"
+else
+  REVIEW_DIR="$HOME/Library/Logs/xnewsbot-review"
+  RDATE=$("$PY" -c "import json,sys; print(json.load(open(sys.argv[1]))['date'])" "$RAW" 2>/dev/null)
+  mkdir -p "$REVIEW_DIR"
+  # 同じ日の再実行(今すぐ配信・recover)で前の report を上書きしないよう、ファイル名に時刻を足す
+  REVIEW_LINE=$(run_with_timeout $((REVIEW_TIMEOUT + 60)) "$PY" scripts/review_digest.py --raw "$RAW" --curated "$CUR" \
+    --timeout "$REVIEW_TIMEOUT" --report "$REVIEW_DIR/${RDATE:-unknown}_${SLOT}_$(date +%H%M).json" 2>>"$LOG")
+  REVIEW_RC=$?
+  [ -n "$REVIEW_LINE" ] && log "$REVIEW_LINE"
+  [ "$REVIEW_RC" -ne 0 ] && log "Codex レビューが異常終了(終了コード $REVIEW_RC)。未レビューのまま先へ進む"
+fi
 
 # 3) 取り込み(slot は raw から自動)
 LAST_FAIL="ニュースのDB取り込み失敗"

@@ -44,6 +44,10 @@ def _normalize(ev) -> dict | None:
 
     if isinstance(ev, JoinEvent):  # ボットがグループ/ルームに参加(user_id 無し)
         return {**base, "kind": "join"}
+    # 記事の評価だけは user_id が来ないグループのメンバーからも受ける(onboarding._handle_feedback)
+    if (not uid and isinstance(ev, PostbackEvent)
+            and (ev.postback.data or "").startswith(("rate:", "fb:"))):
+        return {**base, "kind": "postback", "data": ev.postback.data}
     if not uid:
         return None
     if isinstance(ev, FollowEvent):
@@ -79,6 +83,8 @@ def _process(body: str, signature: str) -> None:
                              explain_start=explain_start)
             except Exception:
                 log.exception("イベント処理に失敗: %s", norm.get("kind"))
+                # 失敗したイベントの書きかけを捨てる(残すと同じ session の次のイベントまで失敗する)
+                session.rollback()
 
 
 @router.post("/line/callback")

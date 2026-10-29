@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from sqlmodel import select
 
-from .. import digest, explain, quota
+from .. import digest, explain, feedback, quota
 from .. import line_client as lc
 from ..config import get_settings
 from ..db import get_session
@@ -69,6 +69,8 @@ def _item_dict(it: NewsItem, now: datetime) -> dict:
         "ago": lc._ago(it, now),
         "sources": _sources(it),
         "explanation": None,  # AI解説(作成済みのときだけ文字列)
+        "verdict": None,      # 管理画面で付けた評価("good" | "bad")
+        "title_hash": feedback.title_hash(it.title),  # 評価の送信で記事の入れ替わりを見分ける
         "top_view_count": it.top_view_count or 0,
     }
 
@@ -257,10 +259,13 @@ def news_index(
             "main": [_item_dict(it, now_local) for it in main.get(g, [])],
             "others": [_item_dict(it, now_local) for it in others.get(g, [])],
         } for g in grouped]
-        done = explain.done_texts(session, {it.id: it.title for items in grouped.values() for it in items})
+        titles = {it.id: it.title for items in grouped.values() for it in items}
+        done = explain.done_texts(session, titles)
+        rated = feedback.verdicts_of(session, titles, WEB_USER)
         for s in sections:
             for d in s["main"] + s["others"]:
                 d["explanation"] = done.get(d["id"])
+                d["verdict"] = rated.get(d["id"])
         market = _market_rows(digest.get_market(session, local_date, cur_slot))
         schedule = _schedule_rows(digest.get_schedule(session, local_date, cur_slot), now_local)
         usage = usage_context(session, now_local)
@@ -291,6 +296,27 @@ def news_index(
             "total": sum(len(s["main"]) + len(s["others"]) for s in sections),
         },
     )
+
+
+# --- 評価(興味あり/興味なし)。LINE と同じ表に user_id "web" で記録する ---
+
+WEB_USER = "web"
+
+
+@router.post("/feedback/{item_id}/{title_hash}/{verdict}")
+def feedback_create(item_id: int, title_hash: str, verdict: str,
+                    _user: str = Depends(require_auth)) -> dict:
+    """id は取り込み直しで別の記事に使い回されうるので、ページを開いた時の見出しハッシュも送らせ、
+    違えば 409(別の記事に評価を付けない)。"""
+    if verdict not in feedback.VERDICT_LABELS:
+        raise HTTPException(status_code=400, detail="評価が不正です")
+    with get_session() as session:
+        item = session.get(NewsItem, item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="記事が見つかりません")
+        if feedback.title_hash(item.title) != title_hash:
+            raise HTTPException(status_code=409, detail="記事が入れ替わりました。ページを読み込み直してください")
+        return {"verdict": feedback.record(session, item, WEB_USER, verdict).verdict}
 
 
 # --- AI解説(管理UIから押されたとき。LINE には送らないので通数ガードは不要) ---

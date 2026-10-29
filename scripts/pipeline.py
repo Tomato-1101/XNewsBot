@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sqlmodel import select  # noqa: E402
 
 from xnewsbot import digest, newsfeeds, xclient  # noqa: E402
-from xnewsbot import articles, market, schedule, trends, watch  # noqa: E402
+from xnewsbot import articles, feedback, market, schedule, trends, watch  # noqa: E402
 from xnewsbot import line_client as lc  # noqa: E402
 from xnewsbot.config import get_settings  # noqa: E402
 from xnewsbot.curator import parse_curated  # noqa: E402
@@ -268,6 +268,18 @@ def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
     return out
 
 
+def _preferences() -> dict[str, list[dict]]:
+    """読者の評価(興味あり/興味なし)を raw の `preferences` 用に集計する(xnewsbot/feedback.py)。DB は読むだけ。
+    読めなくても収集は続ける(好みなしでキュレーションするだけ)。"""
+    try:
+        init_db()
+        with get_session() as session:
+            return feedback.preferences(session)
+    except Exception as e:
+        print(f"  評価を読めませんでした(好みなしで続行): {type(e).__name__}: {e}", file=sys.stderr)
+        return {"good": [], "bad": []}
+
+
 def _total_balance(keys: list[str]) -> int | None:
     """全鍵の残クレジットのうち「残高が正の鍵」の合計。1つでも取得に失敗したら None。
 
@@ -316,6 +328,8 @@ def _dump_raw(out: dict) -> str:
     for n, (g, titles) in enumerate(rt):
         lines += [f"{d(g)}: ["] + block(titles, last=n == len(rt) - 1)
     lines.append("},")
+    # 古い raw を split し直したときは無いので空で書く(curate_prompt はキーがある前提で読む)
+    lines.append(f'"preferences": {d(out.get("preferences") or {"good": [], "bad": []})},')
     lines.append('"genres": {')
     gs = list(out["genres"].items())
     for n, (g, cands) in enumerate(gs):
@@ -457,6 +471,7 @@ def cmd_collect(args) -> None:
            "market": mkt, "schedule": sched["schedule"], "indicator_results": sched["results"],
            "earnings_surprises": sched.get("surprises") or [],
            "recent_titles": _recent_titles(genres, day),
+           "preferences": _preferences(),
            "genres": cands_by_genre}
 
     text = _dump_raw(out)
@@ -486,15 +501,20 @@ def cmd_ingest(args) -> None:
 
     # 全ジャンルの解析を DB 更新の前に済ませる(途中のジャンルで落ちて、前のジャンルだけ書き換わるのを防ぐ)
     parsed = {genre: parse_curated(cur_genres.get(genre, [])) for genre in raw["genres"]}
+    # 配信前レビュー(scripts/review_digest.py)が全件外したジャンル。収集失敗の空とは違い「空で確定」
+    emptied = set(curated.get("review_emptied") or [])
 
     init_db()
     with get_session() as session:
         for genre, tweets in raw["genres"].items():
             items = parsed[genre]
-            d = digest.ingest_curated(session, genre, local_date, slot, items, tweets, commit=False)
+            d = digest.ingest_curated(session, genre, local_date, slot, items, tweets, commit=False,
+                                      confirmed_empty=not items and genre in emptied)
             stored = digest.items_of_digest(session, d.id)
             n_big = sum(1 for it in stored if it.importance == "big")
-            if not items and stored:
+            if not items and genre in emptied:
+                note = " (レビューで全件除外 → 空で確定)"
+            elif not items and stored:
                 note = " (収集/抽出0件 → 既存を保持・上書きしない)"  # 失敗の空で良い結果を壊さない
             elif not items:
                 note = " (該当ニュースなし)"
@@ -549,7 +569,7 @@ CURATE_GROUPS = [["AI", "株", "暗号資産"], ["テクノロジー", "話題"]
 # 1セッションの方がよい(288KB では問題なく、489KB で文脈があふれ自動圧縮が走った。2026-10-02 実測)。
 SPLIT_MIN_BYTES = 300_000
 _SPLIT_KEEP_KEYS = ("date", "tz", "slot", "market", "schedule", "indicator_results",
-                    "earnings_surprises")
+                    "earnings_surprises", "preferences")
 
 
 def split_raw(raw: dict, whole: bool = False) -> list[dict]:

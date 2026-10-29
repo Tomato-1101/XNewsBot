@@ -67,6 +67,13 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   (`xnewsbot/explain.py`、`ops/explain_prompt.md`)。作成後は押した人のトークへ push(1通×人数)。
 - raw が 300KB 以上なら `pipeline.py split` でジャンルを2組（`CURATE_GROUPS`）に分け、claude を並列実行して `merge` する
   （489KB を1セッションで読むと文脈があふれた）。組をまたぐ同じ出来事は1件にまとめられないので、重なりやすいジャンルは同じ組に入れる。
+- **配信前の Codex レビュー**（10-30 追加, `scripts/review_digest.py`・`ops/review_prompt.md`）: キュレーション(または代替経路)の後、
+  ingest の前に Codex(`gpt-6.1-sol`・high・read-only・ツール無し)が全ジャンル横断で「除外・統合」を出し、curated を書き換える。
+  組をまたぐ重複もここで消える。失敗・タイムアウト(900秒)・60%超の削除提案は未レビューのまま配信(fail-open)。
+  結果はログに「Codex レビュー: N→M件」、明細は `~/Library/Logs/xnewsbot-review/<日付>_<slot>.json`。止めるには `XNEWS_REVIEW=0`。
+- **ニュースの評価**（10-30 追加, `xnewsbot/feedback.py`・DB `newsfeedback`）: LINE の各行の右端「評価する」→「興味あり／興味なし」
+  (postback `rate:<記事キー>`・`fb:<記事キー>:good|bad`、キーは詳細と同じ安定キー。返事は reply=無料)。管理画面にも同じボタン。
+  グループ全員分をまとめて集計し、直近90日・各40件を raw の `preferences` でキュレーションに渡す(`ops/curate_prompt.md` の規則7)。
 - **配信は 1日1回・朝08:00 のみ**（2026-06-24 にコスト節約で夜21:00 スロットを停止）。夜スロットのコード/UIトグル
   (evening_enabled) は残してあり、`-deliver` plist の StartCalendarInterval に 20:45 dict を戻せば再開できる。
 - 配信時刻を変えるときは **plist の StartCalendarInterval（45分前）と `ops/deliver.sh` の MORNING_HHMM（定刻）の両方**を更新。

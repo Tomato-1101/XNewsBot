@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from xnewsbot import explain, quota
+from xnewsbot import explain, feedback, quota
 from xnewsbot import line_client as lc
 from xnewsbot.models import GenreDigest, NewsExplanation, NewsItem, Subscriber
 from xnewsbot.onboarding import handle_event
@@ -494,7 +494,11 @@ def test_fetch_extra_push_without_morning_targets(session):
 def test_detail_spec_has_ai_explain_quick_reply():
     it = NewsItem(id=7, genre="AI", title="t", summary="s")
     spec = lc.detail_spec(it, PAYLOAD)
-    assert spec["quick_reply"] == [{"label": "AI解説", "data": f"explain:{PAYLOAD}"}]
+    # AI解説の後ろに評価(興味あり/興味なし)。評価キーは rank でなく見出しハッシュ(取り込み直しで別の記事に付かない)
+    key = f"20261002:morning:AI:{feedback.title_hash('t')}"
+    fb = [{"label": "興味あり", "data": f"fb:{key}:good"}, {"label": "興味なし", "data": f"fb:{key}:bad"}]
+    assert spec["quick_reply"] == [{"label": "AI解説", "data": f"explain:{PAYLOAD}"}] + fb
+    # id 直指定(モック表示・旧ボタン)は評価を出さない
     assert lc.detail_spec(it)["quick_reply"] == [{"label": "AI解説", "data": "explain:7"}]
 
 
@@ -502,7 +506,7 @@ def test_detail_postback_carries_same_payload(session, messenger):
     _subscriber(session)
     _item(session)
     handle_event(session, messenger, _ev(f"detail:{PAYLOAD}"))
-    assert messenger.last_reply[0]["quick_reply"] == [{"label": "AI解説", "data": f"explain:{PAYLOAD}"}]
+    assert messenger.last_reply[0]["quick_reply"][0] == {"label": "AI解説", "data": f"explain:{PAYLOAD}"}
 
 
 @pytest.fixture

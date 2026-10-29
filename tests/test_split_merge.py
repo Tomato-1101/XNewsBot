@@ -190,3 +190,15 @@ def test_ingest_ok_and_empty_genre_keeps_existing(monkeypatch, tmp_path, session
                        {"genres": {"AI": [{"title": "新AI", "source_idxs": [0]}], "株": []}})
     pl.cmd_ingest(args)
     assert _titles(session) == {"AI": ["新AI"], "株": ["既存株"]}  # 空の株は既存を上書きしない
+
+
+def test_ingest_review_emptied_genre_replaces_with_empty(monkeypatch, tmp_path, session, capsys):
+    """配信前レビューが全件外したジャンル(review_emptied)だけは空で確定して前の回の記事を消す。
+    review_emptied に無い空のジャンル(収集失敗)は今までどおり既存を残す。"""
+    _seed(session)
+    args = _ingest_env(monkeypatch, tmp_path, session,
+                       {"genres": {"AI": [], "株": []}, "review_emptied": ["AI"]})
+    pl.cmd_ingest(args)
+    assert _titles(session) == {"AI": [], "株": ["既存株"]}
+    out = capsys.readouterr().err
+    assert "レビューで全件除外 → 空で確定" in out and "既存を保持" in out

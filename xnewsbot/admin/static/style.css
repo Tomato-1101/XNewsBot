@@ -260,6 +260,17 @@ a { color: var(--link); }
 }
 .explain-out::before { content: "AI解説"; display: block; font-size: 12px; font-weight: 700; color: var(--link); margin-bottom: 4px; }
 
+/* --- 評価(興味あり/興味なし) --- */
+.story-actions .feedback { order: 1; display: inline-flex; gap: 6px; }
+.fb-btn {
+  font: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; padding: 1px 9px;
+  border: 1px solid var(--rule); border-radius: 999px; background: none; color: var(--ink-3);
+}
+.fb-btn:hover { color: var(--ink-2); border-color: var(--ink-3); }
+.fb-btn[aria-pressed="true"] { color: var(--paper); background: var(--link); border-color: var(--link); font-weight: 700; }
+.fb-btn[data-verdict="bad"][aria-pressed="true"] { background: var(--ink-3); border-color: var(--ink-3); }
+.feedback.is-error .fb-btn { border-color: var(--warn); }
+
 /* --- 残り使用量 --- */
 .meter-card { padding: 14px 0 16px; border-bottom: 1px solid var(--rule); }
 .meter-card:first-of-type { padding-top: 2px; }

@@ -22,6 +22,11 @@
       <p class="explain-status" role="status" hidden></p>
       <div class="explain-out" {% if not item.explanation %}hidden{% endif %}>{{ item.explanation or "" }}</div>
     </div>
+    {# 評価: 翌朝のキュレーションに好みとして渡す(app.js が data-feedback-id で送る) #}
+    <div class="feedback" data-feedback-id="{{ item.id }}" data-feedback-hash="{{ item.title_hash }}" role="group" aria-label="この記事の評価">
+      <button type="button" class="fb-btn" data-verdict="good" aria-pressed="{{ 'true' if item.verdict == 'good' else 'false' }}">興味あり</button>
+      <button type="button" class="fb-btn" data-verdict="bad" aria-pressed="{{ 'true' if item.verdict == 'bad' else 'false' }}">興味なし</button>
+    </div>
   </div>
 {% endmacro %}
 

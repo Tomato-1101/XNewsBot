@@ -5,6 +5,7 @@
 - NewsItem   : GenreDigest 配下の1ニュース(大/小、見出し・要約・元ツイート)。
 - MarketSnapshot: 「日×スロット」単位の市況(前日終値)。要点バブルの市況ブロックに出す。
 - WatchedAccount: 「監視アカウント」ジャンルで全投稿を集める X アカウント。
+- NewsFeedback: 読者がニュースに付けた評価(興味あり/興味なし)。
 """
 
 from __future__ import annotations
@@ -160,6 +161,24 @@ class DeliveryAlert(SQLModel, table=True):
     """日付と本人の組で障害通知を1通に制限する。"""
     key: str = Field(primary_key=True)
     sent: bool = False
+
+
+class NewsFeedback(SQLModel, table=True):
+    """読者がニュースに付けた評価(興味あり/興味なし)。翌朝のキュレーションに好みとして渡す。
+
+    ダイジェストの取り込み直しで NewsItem は消えて作り直されるので、外部キーにはせず、
+    ジャンル・見出し・配信日を押した時点の写しで持つ(記事が消えても評価は好みとして残る)。
+    同じ人が同じ記事を押し直したら上書きする(記事の同一性は newsitem_id と見出しで見る。xnewsbot/feedback.py)。"""
+    id: int | None = Field(default=None, primary_key=True)
+    newsitem_id: int = Field(index=True)
+    user_id: str = Field(index=True)   # LINE の userId。取れないときは "group"、管理画面は "web"
+    verdict: str = "good"              # "good"=興味あり | "bad"=興味なし
+    genre: str = ""
+    title: str = ""
+    digest_date: date | None = None
+    # NewsExplanation と同じく naive UTC で入れる(SQLite は tz を落とすため)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC).replace(tzinfo=None))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC).replace(tzinfo=None))
 
 
 class NewsExplanation(SQLModel, table=True):

@@ -12,6 +12,7 @@ JST = ZoneInfo("Asia/Tokyo")
 D = date(2026, 6, 8)  # 月曜
 NOW = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
 DETAIL_RE = re.compile(r"^detail:(\d+|None|\d{8}:(morning|evening):[^:]+:\d+)$")
+RATE_RE = re.compile(r"^rate:\d{8}:(morning|evening):[^:]+:[0-9a-f]{8}$")  # 評価は見出しハッシュで引く
 
 
 def _big(genre: str = "AI", rank: int = 0, score: int = 80, title: str = "大きな出来事") -> NewsItem:
@@ -502,15 +503,15 @@ def test_notable_row_shows_summary_truncated_and_keeps_tap():
     body = specs[1]["contents"]["contents"][0]["body"]["contents"]
     rows = [c for c in body if c.get("type") == "box" and c.get("action")]
     assert [_texts(r) for r in rows] == [
-        ["小さな話題1", "短い要約", "@v"],
-        ["小さな話題2", "あ" * 100 + "…", "@v"],
-        ["小さな話題3", "え" * 100, "@v"],          # ちょうど100字は切らない
-        ["小さな話題4", "@v"],                       # 要約が空なら行ごと出さない
+        ["小さな話題1", "短い要約", "@v", "評価する"],
+        ["小さな話題2", "あ" * 100 + "…", "@v", "評価する"],
+        ["小さな話題3", "え" * 100, "@v", "評価する"],          # ちょうど100字は切らない
+        ["小さな話題4", "@v", "評価する"],                       # 要約が空なら行ごと出さない
     ]
-    title, summary, meta = rows[0]["contents"]
+    title, summary, meta_row = rows[0]["contents"]
     assert (title["size"], title["weight"], title["color"]) == ("sm", "bold", lc.TITLE_COLOR)
     assert (summary["size"], summary["color"], summary["wrap"]) == ("xs", "#555555", True)
-    assert meta["size"] == "xxs"
+    assert meta_row["contents"][0]["size"] == "xxs"
     # 行のタップで詳細を開く動作は残す
     assert [r["action"]["data"] for r in rows] == [f"detail:20260608:morning:株:{i}" for i in (1, 2, 3, 4)]
     assert s_long.summary == "あ" * 100 + "いう"     # 元データは変えない
@@ -574,7 +575,9 @@ def _check_limits_and_coverage(grouped, specs) -> None:
             assert b["size"] == "giga"
             assert _bytes(b) <= lc.BUBBLE_MAX_BYTES
     datas = [a["data"] for a in _actions(specs) if a["type"] == "postback"]
-    assert datas and all(DETAIL_RE.match(d) for d in datas)
+    # 記事の行の postback は「詳細」か、末尾の「評価する」(rate:<記事キー>)のどちらか
+    assert datas and all(DETAIL_RE.match(d) or RATE_RE.match(d) for d in datas)
+    assert any(DETAIL_RE.match(d) for d in datas)
     _check_genres_contiguous(grouped, specs)
     _check_toc_matches(grouped, specs)
 
@@ -813,7 +816,9 @@ def test_oversized_single_item_is_truncated_not_dropped():
 
 
 def _bubble_datas(bubble) -> list[str]:
-    return [a["data"] for a in _actions(bubble) if a["type"] == "postback"]
+    """記事の「詳細」postback だけ(行末の「評価する」= rate: は除く)。"""
+    return [a["data"] for a in _actions(bubble) if a["type"] == "postback"
+            and not a["data"].startswith("rate:")]
 
 
 def test_genre_cards_ordered_big_then_notable_then_brief():
@@ -911,10 +916,11 @@ def test_page_weight_and_position_header():
     assert [len(_bubble_datas(b)) for b in brief] == [15, 16]
     assert brief[1]["body"]["contents"][0].get("text") == "その他の見出し"
     rows = [c for c in brief[1]["body"]["contents"] if c.get("action")]
-    assert all(_texts(r) == [f"小さな話題{i}", "@v"] for i, r in enumerate(rows, 15))
+    assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する"] for i, r in enumerate(rows, 15))
     assert "小要約" not in _texts(brief)
-    title, meta = rows[0]["contents"]
+    title, meta_row = rows[0]["contents"]
     assert (title["size"], title["color"], "weight" in title) == ("sm", lc.TEXT_COLOR, False)
+    meta = meta_row["contents"][0]
     assert meta["size"] == "xxs" and not meta.get("wrap")  # 出典・時刻は1行
 
 
@@ -941,7 +947,8 @@ def test_heavy_7_genres_x30_within_limits_for_any_tier_mix():
         _check_limits_and_coverage(grouped, specs)
         _check_accounting(grouped, specs)
         if kind == "brief":
-            assert _omitted(specs) == 0  # 見出しだけなら 189件でも収まる
+            # 見出しだけなら 189件でも収まる(「評価する」付きで省略が出る日は評価なしで組み直す)
+            assert _omitted(specs) == 0
 
 
 # ---- 詳細 ----
@@ -1080,7 +1087,7 @@ def test_untrimmable_summary_does_not_break_push():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert _texts(specs[0]["contents"]) == [lc.TOO_LARGE_NOTE]
-    datas = {a["data"] for a in _actions(_carousels(specs)) if a["type"] == "postback"}
+    datas = {d for car in _carousels(specs) for d in _bubble_datas(car)}
     assert datas == {f"detail:20260608:morning:AI:{r}" for r in range(5)}  # 記事カードは届く
 
 

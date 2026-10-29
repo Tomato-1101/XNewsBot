@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, select
 
-from . import digest, explain, mockdata, quota
+from . import digest, explain, feedback, mockdata, quota
 from . import line_client as lc
 from .genres import GENRE_KEYS, SELECTABLE_KEYS
 from .models import SLOT_LABEL, GenreDigest, NewsItem, Subscriber
@@ -93,6 +93,13 @@ def handle_event(
         return
 
     uid = ev.get("line_user_id")
+    if kind == "postback" and ev.get("data", "").startswith(("rate:", "fb:")):
+        # 記事の評価はグループ全員の好みとしてまとめて使うので、配信先のグループのメンバーなら購読者でなくても
+        # 受ける(user_id が来ないメンバーは "group" として数える)。購読者の行は作らない。
+        # 配信先でないグループ・購読者でない人の 1:1 は黙って無視する(転送されたボタン等で好みが汚れないように)。
+        if _feedback_allowed(session, target_id, uid):
+            _handle_feedback(session, messenger, ev["data"], reply_token, uid or "group")
+        return
     if not uid:  # 友だち未追加メンバーの発言などは user_id が来ない → 無視
         return
     sub = get_or_create_subscriber(session, uid, ev.get("display_name"))
@@ -419,6 +426,71 @@ def _handle_explain(session, messenger, sub: Subscriber, payload: str, reply_tok
     except Exception:  # noqa: BLE001 — 確保済みなので、受付の返信に失敗しても生成と push は進める
         log.exception("AI解説の受付返信に失敗 item=%s", item.id)
     explain_start(item.id, token, to)
+
+
+FEEDBACK_MISSING_MSG = "この記事は見つかりませんでした（配信し直されたため評価できません）"
+FEEDBACK_MOCK_MSG = "サンプル記事なので評価は記録されません"
+FEEDBACK_FAILED_MSG = "記録に失敗しました。時間をおいてもう一度押してください"
+
+
+def _feedback_allowed(session, target_id: str | None, uid: str | None) -> bool:
+    """評価を受け付ける送り主か: 配信先のグループ/ルーム(どれかの Subscriber.push_to)、
+    または 1:1 でオンボーディング済みの購読者(途中で離脱した人の行は購読者として扱わない)。"""
+    if target_id:
+        return session.exec(select(Subscriber).where(Subscriber.push_to == target_id)).first() is not None
+    return bool(uid) and session.exec(
+        select(Subscriber).where(Subscriber.line_user_id == uid, Subscriber.is_onboarded)).first() is not None
+
+
+def _handle_feedback(session, messenger, data: str, reply_token: str, user_id: str) -> None:
+    """記事の評価。`rate:<キー>` には見出しと評価ボタンのバブルを、`fb:<キー>:good|bad` には記録した旨を
+    reply(無料)で返す。
+
+    キーは評価用(_resolve_feedback_item。見出しで引く)。取り込み直しで消えた・入れ替わった記事は
+    「見つかりませんでした」と返す。レイアウト確認用のモック記事は記録しない。"""
+    kind, _, rest = data.partition(":")
+    verdict = ""
+    if kind == "fb":
+        rest, _, verdict = rest.rpartition(":")
+    item = _resolve_feedback_item(session, rest)
+    if item is None:
+        messenger.reply(reply_token, [lc.text_spec(FEEDBACK_MISSING_MSG)])
+        return
+    if _is_mock_item(session, item):
+        messenger.reply(reply_token, [lc.text_spec(FEEDBACK_MOCK_MSG)])
+        return
+    if kind == "rate":
+        messenger.reply(reply_token, [lc.feedback_spec(item.title, rest.strip())])
+        return
+    if verdict not in feedback.VERDICT_LABELS:
+        messenger.reply(reply_token, [lc.menu_spec("メニュー")])
+        return
+    try:
+        feedback.record(session, item, user_id, verdict)
+    except Exception:
+        # 無応答にしない。例外は webhook 側(_process)が記録し、session を rollback してから次のイベントへ進む
+        messenger.reply(reply_token, [lc.text_spec(FEEDBACK_FAILED_MSG)])
+        raise
+    messenger.reply(reply_token, [lc.text_spec(f"{feedback.VERDICT_LABELS[verdict]} として記録しました")])
+
+
+def _resolve_feedback_item(session, key: str) -> NewsItem | None:
+    """評価キー "YYYYMMDD:slot:genre:<見出しハッシュ8桁>" の記事。その日・スロット・ジャンルの記事のうち
+    見出しハッシュが一致するもの(rank は使わない。取り込み直しで同じ rank が別の記事を指すため)。
+    数字だけの旧キー(id 直指定)や形の違うキーは None。"""
+    parts = (key or "").strip().split(":")
+    if len(parts) != 4:
+        return None
+    ymd, slot, genre, h = parts
+    try:
+        d = date(int(ymd[0:4]), int(ymd[4:6]), int(ymd[6:8]))
+    except (ValueError, IndexError):
+        return None
+    dg = digest.get_genre_digest(session, genre, d, slot)
+    if dg is None:
+        return None
+    return next((it for it in digest.items_of_digest(session, dg.id) if feedback.title_hash(it.title) == h),
+                None)
 
 
 def _resolve_detail_item(session, payload: str) -> NewsItem | None:

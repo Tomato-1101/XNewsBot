@@ -100,4 +100,50 @@
     });
   }
   document.querySelectorAll(".explain[data-explain-id]").forEach(explainBox);
+
+  // --- 評価(興味あり/興味なし)。押した方を aria-pressed で示す。失敗したら元の状態に戻す ---
+  document.querySelectorAll(".feedback[data-feedback-id]").forEach(function (box) {
+    var id = box.getAttribute("data-feedback-id");
+    var hash = box.getAttribute("data-feedback-hash");
+    var btns = box.querySelectorAll(".fb-btn");
+    var STALE_MSG = "記事が入れ替わりました。ページを読み込み直してください";
+    var note = document.createElement("p");  // AI解説と同じエラー表示(.explain-status.is-error)を流用
+    note.className = "explain-status is-error";
+    note.setAttribute("role", "status");
+    note.hidden = true;
+    box.parentNode.appendChild(note);
+    function show(verdict) {
+      btns.forEach(function (b) {
+        b.setAttribute("aria-pressed", b.getAttribute("data-verdict") === verdict ? "true" : "false");
+      });
+    }
+    btns.forEach(function (b) {
+      b.addEventListener("click", function () {
+        var prev = box.querySelector('.fb-btn[aria-pressed="true"]');
+        var verdict = b.getAttribute("data-verdict");
+        show(verdict);
+        fetch("/feedback/" + encodeURIComponent(id) + "/" + encodeURIComponent(hash) + "/" + verdict, {
+          method: "POST", credentials: "same-origin", headers: { "Accept": "application/json" }
+        }).then(function (r) {
+          if (r.status === 409) {
+            // 取り込み直しで記事が入れ替わった。理由を数秒出して読み込み直しを促す
+            return r.json().catch(function () { return {}; }).then(function (j) {
+              throw new Error((j && typeof j.detail === "string" && j.detail) || STALE_MSG);
+            });
+          }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        }).then(function (st) { show(st.verdict); }).catch(function (e) {
+          show(prev ? prev.getAttribute("data-verdict") : "");
+          var stale = e && e.message && e.message.indexOf("HTTP ") !== 0 ? e.message : "";
+          box.classList.add("is-error");
+          if (stale) { note.textContent = stale; note.hidden = false; }
+          setTimeout(function () {
+            box.classList.remove("is-error");
+            note.hidden = true;
+          }, stale ? 5000 : 1500);
+        });
+      });
+    });
+  });
 })();

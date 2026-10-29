@@ -115,6 +115,7 @@ def ingest_curated(
     curated: list[CuratedItem],
     tweets: list[dict],
     commit: bool = True,
+    confirmed_empty: bool = False,
 ) -> GenreDigest:
     """キュレーション済みアイテムを DB に取り込む。
     当日・当スロット・当ジャンルの既存ダイジェストがあれば置き換える(再実行で冪等)。
@@ -124,9 +125,11 @@ def ingest_curated(
     ダイジェストを空で上書き破壊するのを防ぐため。既存が無い場合は従来どおり空ダイジェストを作る
     (「キュレーション済み・該当ニュースなし」を表し、catch-up の揃い判定が完了とみなせる)。
 
-    commit=False なら確定は呼び出し側に任せる(複数ジャンルを1トランザクションで書くため)。"""
+    commit=False なら確定は呼び出し側に任せる(複数ジャンルを1トランザクションで書くため)。
+    confirmed_empty=True は「空で確定」(配信前レビューで全件を外した)。収集失敗ではないので、
+    空でも既存を置き換えて空ダイジェストにする(前の回の記事を残さない)。"""
     existing = get_genre_digest(session, genre, local_date, slot)
-    if not curated and existing:
+    if not curated and existing and not confirmed_empty:
         return existing
     # 削除と作成は1トランザクションにまとめる(中間 commit を挟むと、その隙にプロセスが落ちた
     # ときに当日分が「消えたまま作られていない」状態で残り、catch-up の揃い判定が永久に揃わない)。

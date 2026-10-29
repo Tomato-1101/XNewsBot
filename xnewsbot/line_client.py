@@ -20,6 +20,7 @@ import urllib.parse
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from .feedback import title_hash
 from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
 from .models import SLOT_LABEL, NewsItem, Subscriber
 
@@ -170,6 +171,44 @@ def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> 
 def _detail_action(item: NewsItem, digest_date: date | None, slot: str | None) -> dict:
     return {"type": "postback", "data": _detail_data(item, digest_date, slot),
             "displayText": f"詳細: {item.title[:30]}"}
+
+
+RATE_LABEL = "評価する"
+
+
+def _rate_key(item: NewsItem, digest_date: date | None, slot: str | None) -> str | None:
+    """評価の記事キー `YYYYMMDD:slot:genre:<見出しハッシュ8桁>`(onboarding._resolve_feedback_item)。
+
+    詳細の rank キーは同じ日に取り込み直すと同じ rank が別の記事を指すので、評価は見出しで引く。
+    日付/スロットが無い文脈(モック表示)は架空の記事なので None(評価を出さない)。"""
+    if digest_date is None or slot is None:
+        return None
+    return f"{digest_date:%Y%m%d}:{slot}:{item.genre}:{title_hash(item.title)}"
+
+
+def _meta_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None,
+              **style) -> dict | None:
+    """出典・時刻の行。rate_key があれば右端に控えめな「評価する」(押すと postback `rate:<記事キー>`、
+    onboarding._handle_feedback)。
+
+    行全体のタップ(詳細)とは別に、この文字だけ押せる。displayText は付けない(グループのトークに
+    「評価する」と流さない)。rate_key が無ければ従来どおり出典・時刻の文字だけ(無ければ None)。
+    style は出典・時刻の文字に足す属性(大きいニュースは wrap、注目は margin を行の側へ)。"""
+    meta = _meta_text(item, now)
+    if rate_key is None:
+        return {"type": "text", "text": meta, "size": "xxs", "color": META_COLOR, **style} if meta else None
+    margin = style.pop("margin", None)
+    rate = {"type": "text", "text": RATE_LABEL, "size": "xxs", "color": META_COLOR, "flex": 0,
+            "action": {"type": "postback", "data": f"rate:{rate_key}"}}
+    if meta:
+        # 横並びの text は既定で flex 1(出典・時刻が残りの幅を取り、「評価する」は右端に寄る)
+        row = {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": meta, "size": "xxs", "color": META_COLOR, **style}, rate]}
+    else:  # 出典も時刻も無い記事は「評価する」だけを右端に
+        row = {**rate, "flex": 1, "align": "end"}
+    if margin:
+        row["margin"] = margin
+    return row
 
 
 def _sep(margin: str = "md", color: str = RULE_COLOR) -> dict:
@@ -670,7 +709,8 @@ TIER_WEIGHT = {"big": 3.0, "notable": 1.5, "brief": 1.0}
 TIER_HEADINGS = {"notable": "注目", "brief": "その他の見出し"}
 
 
-def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
+def _big_block(item: NewsItem, color: str, action: dict, now: datetime,
+               rate_key: str | None = None) -> dict:
     """大ニュース1件: 見出し → 要約 → 出典・時刻 → [詳細を読む][元記事]。"""
     contents: list[dict] = [
         {"type": "text", "text": item.title, "size": "md", "weight": "bold", "color": TITLE_COLOR,
@@ -679,10 +719,9 @@ def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
     if item.summary:
         contents.append({"type": "text", "text": item.summary, "size": "sm", "color": "#444444",
                          "wrap": True, "margin": "sm"})
-    meta = _meta_text(item, now)
+    meta = _meta_row(item, action, now, rate_key, margin="sm", wrap=True)
     if meta:
-        contents.append({"type": "text", "text": meta, "size": "xxs", "color": META_COLOR,
-                         "margin": "sm", "wrap": True})
+        contents.append(meta)
     # 2つのリンクを左に寄せて並べる(flex 0。既定の flex 1 だと「元記事」が中央から始まる)
     links = [{"type": "text", "text": "詳細を読む", "size": "xs", "weight": "bold", "color": color,
               "flex": 0, "action": action}]
@@ -696,7 +735,7 @@ def _big_block(item: NewsItem, color: str, action: dict, now: datetime) -> dict:
     return {"type": "box", "layout": "vertical", "contents": contents}
 
 
-def _notable_row(item: NewsItem, action: dict, now: datetime) -> dict:
+def _notable_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
     """注目ニュースの1行(行全体のタップで詳細): 見出し(太字) → 要約(長ければ「…」) → 出典・時刻。"""
     contents: list[dict] = [
         {"type": "text", "text": item.title, "size": "sm", "weight": "bold", "color": TITLE_COLOR,
@@ -708,23 +747,22 @@ def _notable_row(item: NewsItem, action: dict, now: datetime) -> dict:
             summary = summary[:SMALL_SUMMARY_MAX].rstrip() + "…"
         contents.append({"type": "text", "text": summary, "size": "xs", "color": "#555555",
                          "wrap": True, "margin": "xs"})
-    meta = _meta_text(item, now)
+    meta = _meta_row(item, action, now, rate_key, margin="xs")
     if meta:
-        contents.append({"type": "text", "text": meta, "size": "xxs", "color": META_COLOR,
-                         "margin": "xs"})
+        contents.append(meta)
     return {"type": "box", "layout": "vertical", "margin": "md", "action": action,
             "contents": contents}
 
 
-def _brief_row(item: NewsItem, action: dict, now: datetime) -> dict:
+def _brief_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
     """その他の見出しの1行: 見出し → 出典・時刻(1行)。要約は出さず、タップで詳細(要約と出典)を開く。
     1行を軽くして1枚に8件並べるため。"""
     contents: list[dict] = [
         {"type": "text", "text": item.title, "size": "sm", "color": TEXT_COLOR, "wrap": True},
     ]
-    meta = _meta_text(item, now)
+    meta = _meta_row(item, action, now, rate_key)
     if meta:
-        contents.append({"type": "text", "text": meta, "size": "xxs", "color": META_COLOR})
+        contents.append(meta)
     return {"type": "box", "layout": "vertical", "margin": "md", "action": action,
             "contents": contents}
 
@@ -798,18 +836,26 @@ def _genre_bubble(genre: str, head: str, note: str, body: list[dict]) -> dict:
     }
 
 
+# 「評価する」を付ける範囲(段)。重い日は上の段から順に落として、記事の省略を増やさない
+RATE_NONE, RATE_TOP, RATE_ALL = 0, 1, 2   # なし / big と notable の行だけ / 全行
+
+
 def _genre_pages(genre: str, units: list[tuple[str, NewsItem]], total: int, digest_date, slot,
-                 now: datetime) -> list[Entry]:
+                 now: datetime, rate: int = RATE_ALL) -> list[Entry]:
     """1ジャンルの (段, 記事) 列を、重さ PAGE_WEIGHT_MAX・28000B 以内のカードに記事単位で分ける。
     枚数は最小のまま、各カードの重さをなるべく均す(カルーセルのバブルは一番高いバブルに高さが揃うので、
     最後の1枚だけ短いと下が大きな白い空白になる。2026-10-02 実画面で確認)。
     ヘッダー右は「{total}件 k/n」(1枚なら「{total}件」)。total は省略前のジャンルの件数。
-    単体で上限を超える記事は切り詰める(_fit_component)。"""
+    単体で上限を超える記事は切り詰める(_fit_component)。rate は「評価する」を付ける段(RATE_*)。"""
     label = _genre_label(genre)
     color = _genre_color(genre)
-    builders = {"big": lambda it, a: _big_block(it, color, a, now),
-                "notable": lambda it, a: _notable_row(it, a, now),
-                "brief": lambda it, a: _brief_row(it, a, now)}
+
+    def rk(it: NewsItem, level: int) -> str | None:
+        return _rate_key(it, digest_date, slot) if rate >= level else None
+
+    builders = {"big": lambda it, a: _big_block(it, color, a, now, rk(it, RATE_TOP)),
+                "notable": lambda it, a: _notable_row(it, a, now, rk(it, RATE_TOP)),
+                "brief": lambda it, a: _brief_row(it, a, now, rk(it, RATE_ALL))}
     if not units:
         return []
 
@@ -956,7 +1002,7 @@ def _omit_note(n: int) -> Entry:
 
 
 def _genre_carousels(grouped: dict[str, list[NewsItem]], digest_date, slot, now: datetime,
-                     slots: int) -> list[list[Entry]]:
+                     slots: int, rate: int = RATE_ALL) -> list[list[Entry]]:
     """ジャンルごとのカードを slots 通以内のカルーセルにする。
     入りきらないときは「その他の見出し」を末尾から削る(残りの多いジャンルから1件ずつ。どのジャンルも
     見出しが偏って消えないように)。削った件数は最後のカルーセル末尾に「ほか N 件は省略」と出す
@@ -978,7 +1024,8 @@ def _genre_carousels(grouped: dict[str, list[NewsItem]], digest_date, slot, now:
         for g, us in units.items():
             key = (g, cut[g])
             if key not in cache:
-                cache[key] = _genre_pages(g, us[:len(us) - cut[g]], totals[g], digest_date, slot, now)
+                cache[key] = _genre_pages(g, us[:len(us) - cut[g]], totals[g], digest_date, slot, now,
+                                          rate)
             blocks.append(cache[key])
         return _pack_genres(blocks, slots)
 
@@ -1038,7 +1085,21 @@ def digest_specs(
     if now.tzinfo is None:
         now = now.replace(tzinfo=ZoneInfo(DEFAULT_TZ))
 
-    cars = _genre_carousels(grouped, digest_date, slot, now, max_messages - 1)
+    def shown(cs: list[list[Entry]]) -> int:
+        return sum(e[1] for car in cs for e in car)
+
+    # 「評価する」は記事キーの分だけ重い。省略が出る日は「全行」→「big と notable の行だけ」→「なし」の順に
+    # 組み直し、最も多く載る段のうち評価リンクが最も多い段を採る(評価のために記事の省略を増やさない)。
+    # 日付/スロットが無い文脈(モック)は架空なので評価を出さない。
+    rate = digest_date is not None and slot is not None
+    cars = _genre_carousels(grouped, digest_date, slot, now, max_messages - 1, RATE_ALL if rate else RATE_NONE)
+    if rate:
+        for level in (RATE_TOP, RATE_NONE):
+            if shown(cars) >= total:
+                break
+            trial = _genre_carousels(grouped, digest_date, slot, now, max_messages - 1, level)
+            if shown(trial) > shown(cars):  # 同数なら評価リンクの多い上の段のまま
+                cars = trial
     toc = []
     for g, items in grouped.items():
         if not items:
@@ -1084,7 +1145,8 @@ def detail_spec(item: NewsItem, payload: str | None = None) -> dict:
     無ければ summary)を載せる。出典は本文を載せず、媒体名/@ハンドルと URL だけ残す。
 
     下に「AI解説」のクイックリプライを付ける。payload は詳細タップと同じ記事キー
-    (無ければ id)で、押すと postback `explain:<payload>` が来る(onboarding._handle_explain)。"""
+    (無ければ id)で、押すと postback `explain:<payload>` が来る(onboarding._handle_explain)。
+    続けて評価の「興味あり」「興味なし」(onboarding._handle_feedback)。"""
     lines = [f"【{_tag_text(item)}】{item.title}"]
 
     body = item.detail or item.summary
@@ -1107,7 +1169,40 @@ def detail_spec(item: NewsItem, payload: str | None = None) -> dict:
     if len(text) > DETAIL_MAX_CHARS:
         text = text[:DETAIL_MAX_CHARS] + "…"
     key = payload if payload is not None else str(item.id)
-    return text_spec(text, [_qr("AI解説", f"explain:{key}")])
+    qr = [_qr("AI解説", f"explain:{key}")]
+    parts = key.split(":")
+    if len(parts) == 4:  # 安定キー(日付:スロット:ジャンル:rank)のときだけ。id 直指定はモック・旧ボタン
+        qr += feedback_quick_reply(":".join(parts[:3] + [title_hash(item.title)]))
+    return text_spec(text, qr)
+
+
+def feedback_quick_reply(key: str) -> list[dict]:
+    """「興味あり」「興味なし」のクイックリプライ(postback `fb:<評価キー>:good|bad`。キーは _rate_key と同じ)。"""
+    return [_qr("興味あり", f"fb:{key}:good"), _qr("興味なし", f"fb:{key}:bad")]
+
+
+FEEDBACK_NOTE = "今後の配信の選び方に反映します"
+
+
+def feedback_spec(title: str, key: str) -> dict:
+    """「評価する」への返事: 見出しと「興味あり」「興味なし」のボタンの小さなバブル(reply なので無料)。
+
+    クイックリプライは LINE PC に出ず、グループで誰かが発言すると消えるので、メッセージに残るボタンにする。
+    displayText は付けない(押してもグループのトークに文字を流さない)。"""
+    def button(label: str, verdict: str, style: str) -> dict:
+        return {"type": "button", "style": style, "height": "sm", "flex": 1,
+                "action": {"type": "postback", "label": label, "data": f"fb:{key}:{verdict}"}}
+
+    bubble = {"type": "bubble", "size": "kilo",
+              "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "contents": [
+                  {"type": "text", "text": "この記事の評価", "size": "xxs", "color": META_COLOR},
+                  {"type": "text", "text": title, "size": "sm", "weight": "bold", "color": TITLE_COLOR,
+                   "wrap": True, "margin": "sm"},
+                  {"type": "text", "text": FEEDBACK_NOTE, "size": "xxs", "color": META_COLOR,
+                   "wrap": True, "margin": "md"},
+                  {"type": "box", "layout": "horizontal", "spacing": "sm", "margin": "md", "contents": [
+                      button("興味あり", "good", "primary"), button("興味なし", "bad", "secondary")]}]}}
+    return {"type": "flex", "alt": f"この記事の評価: {title}"[:ALT_MAX_CHARS], "contents": bubble}
 
 
 # ---------------------------------------------------------------- SDK 送信
