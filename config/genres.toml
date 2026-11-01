@@ -261,6 +261,12 @@ watch = true
 note = "管理画面で登録した X アカウント(例: @ClaudeDevs)の、前回の取り込みから今回までの全投稿。要約はキュレーションが行う。"
 
 [[genre]]
+key = "論文"
+# keywords・accounts・feeds が無いので X 検索と Google ニュースは走らない(候補は alphaXiv だけ)。
+trend_sources = ["alphaxiv_hot"]
+note = "alphaXiv の Hot 上位の論文を毎朝数本。専門外の人にも何の研究か分かる日本語の見出しと説明で届ける(2026-11-01 追加)。"
+
+[[genre]]
 key = "ビジネス"
 note = "企業・起業・業界動向(国内/海外スタートアップ含む)。"
 keywords = [

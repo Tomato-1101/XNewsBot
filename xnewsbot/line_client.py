@@ -124,6 +124,7 @@ DOWN_COLOR = "#1565C0"
 SURPRISE_UP_COLOR = "#15803D"
 SURPRISE_DOWN_COLOR = "#B91C1C"
 POINTS_MAX = 5
+POINTS_EXCLUDE = {"論文"}  # 今日の要点に入れないジャンル
 SCHEDULE_MAX = 12        # 今日の予定の最大行数
 # 注目決算・決算サプライズの1国あたりの最大行数(マーケットのカードを PC で縦に長くしすぎないため)
 EARNINGS_MAX_PER_COUNTRY = 8
@@ -348,8 +349,10 @@ def _fit_component(comp, limit: int):
 def _pick_points(grouped: dict[str, list[NewsItem]]) -> list[NewsItem]:
     """今日の要点(最大5本): 常時ジャンル(genres.toml の selectable=false)の big をすべて先頭
     → 他ジャンルの big を score 降順 → 足りなければ small を score 降順。同点はジャンル順・rank 順。
-    2026-10-02 に特大を廃止して常時ジャンルは無くなったので、今は big の score 順 → small の score 順。"""
-    pairs = [(gi, g, it) for gi, (g, items) in enumerate(grouped.items()) for it in items]
+    2026-10-02 に特大を廃止して常時ジャンルは無くなったので、今は big の score 順 → small の score 順。
+    論文ジャンル(POINTS_EXCLUDE)は使わない(ニュースではなく alphaXiv の順位で選んだ論文で、要点の枠を埋めないため)。"""
+    pairs = [(gi, g, it) for gi, (g, items) in enumerate(grouped.items()) if g not in POINTS_EXCLUDE
+             for it in items]
 
     def by_score(rows):
         return [it for _gi, _g, it in sorted(rows, key=lambda r: (-(r[2].score or 0), r[0], r[2].rank))]

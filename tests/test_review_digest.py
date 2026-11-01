@@ -248,3 +248,34 @@ def test_big_merge_into_small_is_ignored(tmp_path, raw, curated):
     answer = {'drop': [], 'merge': [{'into': 'テクノロジー/0', 'from': ['AI/0'], 'summary': '', 'detail': ''}]}
     line, cur, rep, _ = run_cli(tmp_path, raw, curated, answer)
     assert 'OpenAIが資金調達' not in titles(cur, 'AI') and rep['ignored'] == []
+
+
+def test_paper_items_are_never_dropped_or_merged(curated):
+    """論文は alphaXiv の順位で選ぶので drop も merge も機械的に拒否する(論文→AI・AI→論文・論文どうし)。"""
+    curated['genres']['論文'] = [item('論文A', 'small', 52, ['論文']), item('論文B', 'small', 50, ['論文'], (1,))]
+    for answer, reason in [
+            ({'drop': [{'id': '論文/1', 'reason': '範囲外'}], 'merge': []}, '論文の記事は除外しない'),
+            ({'drop': [], 'merge': [{'into': 'AI/1', 'from': ['論文/0'], 'summary': '', 'detail': ''}]},
+             '論文の記事は統合しない'),
+            ({'drop': [], 'merge': [{'into': '論文/0', 'from': ['AI/1'], 'summary': '', 'detail': ''}]},
+             '論文の記事は統合しない'),
+            ({'drop': [], 'merge': [{'into': '論文/0', 'from': ['論文/1'], 'summary': '', 'detail': ''}]},
+             '論文の記事は統合しない')]:
+        drops, merges, ignored = rd.plan(curated, answer)
+        assert drops == [] and merges == [] and [i['reason'] for i in ignored] == [reason]
+    # 論文以外の merge は今までどおり通る
+    drops, merges, ignored = rd.plan(curated, {'drop': [], 'merge': [
+        {'into': 'テクノロジー/0', 'from': ['AI/1'], 'summary': '', 'detail': ''}]})
+    assert len(merges) == 1 and ignored == []
+
+
+def test_small_paper_detail_survives_review(tmp_path, raw, curated):
+    """small の論文の detail は適用後も消えない(review が small の detail を消す経路が無い)。"""
+    raw['genres']['論文'] = raw['genres']['AI']
+    paper = item('論文A', 'small', 52, ['論文'])
+    paper['detail'] = '論文の解説。解説: 用語の説明。'
+    curated['genres']['論文'] = [paper]
+    answer = {'drop': [{'id': 'AI/1', 'reason': '不要'}], 'merge': []}
+    line, cur, rep, _ = run_cli(tmp_path, raw, curated, answer)
+    assert line.startswith('Codex レビュー: 7→6件')
+    assert cur['genres']['論文'][0]['detail'] == '論文の解説。解説: 用語の説明。'

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
-from xnewsbot import newsfeeds, trends
+from xnewsbot import genres, newsfeeds, trends
 from xnewsbot.newsfeeds import FeedItem
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -122,6 +123,103 @@ def test_hatena_unescapes_titles_and_drops_old_entries(monkeypatch):
     assert out[0]["media"] == "example.com"
 
 
+# --- alphaXiv の Hot 論文 ---
+
+def _ax() -> dict:
+    return json.loads(_fx("alphaxiv_hot.json"))
+
+
+def test_parse_alphaxiv_keeps_hot_order_and_builds_candidates():
+    out = trends.parse_alphaxiv(_ax())
+    assert [c["trend"]["id"] for c in out] == ["2610.40564", "2610.40476", "2610.40636", "2610.40647",
+                                               "2610.40325"]   # id の無い要素は飛ばす
+    assert [c["trend"]["rank"] for c in out] == [1, 2, 3, 4, 5]
+    c = out[0]
+    assert set(c) == CAND_KEYS | {"trend"} and c["source"] == "news" and c["media"] == "alphaXiv"
+    assert c["text"] == "Training Foundation Models with a Single Algorithm"
+    assert c["url"] == "https://www.alphaxiv.org/abs/2610.40564"
+    assert c["createdAt"].startswith("Thu Oct 29 17:42:05")
+    assert c["trend"] == {"source": "alphaxiv_hot", "rank": 1, "id": "2610.40564", "votes": 63, "visits": 755,
+                          "topics": ["Computer Science", "cs.LG"],
+                          "orgs": ["Carnegie Mellon University", "Johns Hopkins University", "Aurora Innovation"]}
+    assert c["summary"].startswith("alphaXiv Hot 1位(投票 63・閲覧 755)。所属: Carnegie Mellon University・")
+    assert "GitHub: なし。The authors cast pretraining" in c["summary"]
+    abstract = _ax()["papers"][0]["abstract"]                                       # 要旨を本文に入れる
+    assert c["body"] == " ".join(abstract.split())[:trends.ALPHAXIV_BODY_CHARS] and c["body"]
+    assert "GitHub: あり" in out[3]["summary"]
+    # paper_summary が無い論文は feed_description を使う
+    assert out[2]["summary"].endswith(_ax()["papers"][2]["feed_description"][:trends.ALPHAXIV_SUMMARY_CHARS])
+
+
+def test_alphaxiv_hot_requests_hot_feed_and_caps(monkeypatch, capsys):
+    urls = []
+    monkeypatch.setattr(trends, "_get_json", lambda url, timeout: urls.append(url) or _ax())
+    monkeypatch.setattr(trends, "_delivered_ids", lambda: set())
+    monkeypatch.setattr(trends, "ALPHAXIV_MAX", 2)
+    out = trends.SOURCES["alphaxiv_hot"](24)
+    assert [c["trend"]["rank"] for c in out] == [1, 2]
+    assert urls == ["https://api.alphaxiv.org/papers/v3/feed?pageNum=0&sort=Hot&interval=3%20Days&pageSize=30"]
+    assert capsys.readouterr().err.strip() == "論文: alphaXiv 2件（既出除外 0件）"
+
+
+def test_alphaxiv_hot_skips_delivered_papers_then_takes_top(monkeypatch, capsys):
+    """既出(直近14日に配信した論文)を除いてから上位 ALPHAXIV_MAX 本。rank は Hot の元の順位のまま。"""
+    monkeypatch.setattr(trends, "_get_json", lambda url, timeout: _ax())
+    monkeypatch.setattr(trends, "_delivered_ids", lambda: {"2610.40564", "2610.40636"})
+    monkeypatch.setattr(trends, "ALPHAXIV_MAX", 2)
+    out = trends.SOURCES["alphaxiv_hot"](24)
+    assert [(c["trend"]["id"], c["trend"]["rank"]) for c in out] == [("2610.40476", 2), ("2610.40647", 4)]
+    assert capsys.readouterr().err.strip() == "論文: alphaXiv 2件（既出除外 2件）"
+
+
+def test_delivered_paper_ids_reads_recent_digest_urls(session):
+    """配信済みの判定は DB の出典 URL。前日〜14日前だけ(当日と15日前以前は含めない)・ジャンルを問わない。"""
+    from datetime import date
+
+    from xnewsbot.models import GenreDigest, NewsItem
+
+    day = date(2026, 11, 1)
+    for d, genre, urls in [(1, "論文", ["https://www.alphaxiv.org/abs/2610.1"]),
+                           (14, "AI", ["https://example.com/x", "https://www.alphaxiv.org/abs/2610.2"]),
+                           (0, "論文", ["https://www.alphaxiv.org/abs/2610.3"]),
+                           (15, "論文", ["https://www.alphaxiv.org/abs/2610.4"])]:
+        gd = GenreDigest(digest_date=day - timedelta(days=d), genre=genre)
+        session.add(gd)
+        session.flush()
+        session.add(NewsItem(genre_digest_id=gd.id, genre=genre, title="t", source_urls=urls))
+    session.commit()
+    assert trends.delivered_paper_ids(session, day) == {"2610.1", "2610.2"}
+
+
+def test_delivered_ids_failure_is_no_exclusion(monkeypatch, capsys):
+    import xnewsbot.db as db
+
+    def boom():
+        raise RuntimeError("locked")
+    monkeypatch.setattr(db, "init_db", boom)
+    assert trends._delivered_ids() == set()
+    assert capsys.readouterr().err.strip().startswith("論文: 既出の論文を読めず除外なしで続行")
+
+
+def test_alphaxiv_hot_failure_and_broken_shape_are_empty(monkeypatch):
+    def boom(url, timeout):
+        raise TimeoutError("down")
+    monkeypatch.setattr(trends, "_get_json", boom)
+    assert trends.SOURCES["alphaxiv_hot"](24) == []
+    assert trends.parse_alphaxiv({}) == [] and trends.parse_alphaxiv([]) == []   # type: ignore[arg-type]
+    # null など dict でない要素は飛ばす(残りは順位どおり)
+    broken = {"papers": [None, "x", _ax()["papers"][0]]}
+    assert [c["trend"]["rank"] for c in trends.parse_alphaxiv(broken)] == [1]
+
+
+def test_paper_genre_uses_only_alphaxiv():
+    assert genres.trend_sources("論文") == ["alphaxiv_hot"]
+    assert not genres.keywords("論文") and not genres.keywords_en("論文") and not genres.accounts("論文")
+    assert not genres.feeds("論文") and not genres.x_queries("論文")
+    keys = genres.GENRE_KEYS
+    assert keys.index("論文") == keys.index("監視アカウント") + 1
+
+
 # --- 失敗時 ---
 
 def test_sources_failure_returns_empty_with_one_line(monkeypatch, capsys):
@@ -134,4 +232,4 @@ def test_sources_failure_returns_empty_with_one_line(monkeypatch, capsys):
     _serve(monkeypatch, b"<rss><broken")
     assert trends.SOURCES["google_trends"](24) == [] and trends.SOURCES["hatena"](24) == []
     err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 7 and all(line.strip().startswith("話題:") for line in err)
+    assert len(err) == 8 and all(line.strip().startswith("話題:") for line in err)

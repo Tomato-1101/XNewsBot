@@ -160,6 +160,14 @@ def test_points_order_big_by_score_then_small():
     assert rows[4]["contents"][1]["contents"][0]["text"] == "AI"  # small は AI(90)が株・テック(60)より上
 
 
+def test_points_exclude_paper_genre_even_when_filling_with_small():
+    """論文ジャンルは要点に入れない(big が足りず small で埋めるときも、score が高くても使わない)。"""
+    grouped = {"AI": [_big("AI", 0, score=70, title="AI大"), _small(1, "AI", score=30)],
+               "論文": [_small(i, "論文", score=55) for i in range(5)]}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    assert _point_titles(_summary(specs)) == ["AI大", "小さな話題1"]
+
+
 def test_points_always_genre_first_when_configured(monkeypatch):
     """常時ジャンル(selectable=false)を将来また置いたときは、その big を score に関係なく先頭に。"""
     monkeypatch.setattr(lc, "ALWAYS_KEYS", ["話題"])

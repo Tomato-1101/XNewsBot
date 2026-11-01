@@ -1,0 +1,325 @@
+{
+ "papers": [
+  {
+   "title": "Training Foundation Models with a Single Algorithm",
+   "abstract": "Foundation models are typically trained in stages: pretraining, midtraining, supervised fine-tuning (SFT), and reinforcement learning (RL), with changes in both data and learning algorithms. We show that this algorithmic separation is not fundamental. By deriving suitable RL objectives as maximum-likelihood fitting to model-generated target distributions, we place all of these stages under a single likelihood-based training algorithm, unified training. This perspective turns the foundation-model training lifecycle into a problem of choosing which data to train on, in what proportions, and when, with conventional staged training as a special case. We instantiate this framework in a unified training system that mixes static data and RL generations within a single trainer. Across controlled and real-world experiments, unified training improves the accuracy-compute tradeoff and task coverage while preserving broader capabilities, and provides a stronger starting point for continual learning. This work lays the groundwork for a unified science of foundation-model training, connecting mathematical principles, training infrastructure, and the development of model capabilities.",
+   "feed_description": "Mixing static training data with reward-selected model generations under one likelihood objective can improve reasoning performance while better preserving earlier capabilities.",
+   "universal_paper_id": "2610.40564",
+   "publication_date": "2026-10-29T17:42:05.000Z",
+   "topics": [
+    "Computer Science",
+    "cs.LG"
+   ],
+   "metrics": {
+    "visits_count": {
+     "all": 755,
+     "last_7_days": 755
+    },
+    "total_votes": 39,
+    "public_total_votes": 63
+   },
+   "github_url": null,
+   "github_stars": null,
+   "authors": [
+    "Yuda Song",
+    "Alvin Zhang",
+    "Fahim Tajwar",
+    "Daman Arora",
+    "Jeff Schneider",
+    "Daniel Khashabi",
+    "Ruslan Salakhutdinov",
+    "J. Andrew Bagnell",
+    "Aarti Singh",
+    "Andrea Zanette"
+   ],
+   "paper_summary": {
+    "summary": "The authors cast pretraining, midtraining, supervised fine-tuning, and suitable reinforcement-learning updates as maximum-likelihood training with a changing data mixture. In reasoning experiments, unified schedules reach higher accuracy and coverage at larger tested compute budgets, though staged training can lead at intermediate budgets. After coding updates, a 0.76B model with 5% midtraining-data mixing scores 58.47% pass@16 versus 52.12%, limited to this continuation setup."
+   },
+   "organization_info": [
+    {
+     "name": "Carnegie Mellon University"
+    },
+    {
+     "name": "Johns Hopkins University"
+    },
+    {
+     "name": "Aurora Innovation"
+    }
+   ]
+  },
+  {
+   "title": "Training language models in simulation for psychiatric intake",
+   "abstract": "In psychiatric practice, the clinical intake interview remains a primary diagnostic instrument, requiring the clinician to establish rapport while disentangling complex, overlapping presentations. Here, we show that multi-turn reinforcement learning (RL) in simulation environments improves language model performance on structured text-based psychiatric intake, spanning history-taking, differential diagnosis, and initial management planning. In a randomized, double-blind crossover study ($N = 60$ matched scenario pairs, 120 encounters) comparing the RL-trained agent against its identically prompted base model, 32 board-certified psychiatrists role-played standardized patients while a separate panel of 15 independent, board-certified psychiatrists scored the de-identified transcripts. The trained agent outperformed the base model in 76.7% of matched scenario pairs ($p &lt; 0.0001$), with gains on an adapted clinical-examination rubric ($d_z = 0.77$, $p &lt; 0.0001$), patient-centered communication (82.0% vs. 65.2%, $p &lt; 0.001$), and differential diagnosis appropriateness (68.3% vs. 33.3%, $p &lt; 0.001$). Across 127 psychiatrist-validated simulated intake scenarios, the trained agent nearly doubled its base model's clinical rubric score (0.706 vs. 0.379; composite reward 0.564 vs. 0.294, $p &lt; 0.0001$). To systematically probe conversational safety, we established two Delphi-consensus taxonomies, of clinical safety risks and relational competencies, from which 256 challenging adversarial presentations were derived; we find that training in simulation environments more than halved under-triage of acute safety risks (12.9% vs. 30.5%, $p &lt; 0.0001$). Simulation environments thus provide a controlled testbed for training and stress-testing psychiatric conversational agents, with gains that transferred to psychiatrist-enacted encounters, though residual gaps require safeguards and clinician oversight.",
+   "feed_description": "Training in simulated interviews improved a language model’s history-taking, diagnostic formulation, and patient-centered communication in psychiatrist-led role-play, while acute safety failures persisted.",
+   "universal_paper_id": "2610.40476",
+   "publication_date": "2026-10-29T17:10:32.000Z",
+   "topics": [
+    "Computer Science",
+    "cs.AI",
+    "cs.CL"
+   ],
+   "metrics": {
+    "visits_count": {
+     "all": 1052,
+     "last_7_days": 239
+    },
+    "total_votes": 11,
+    "public_total_votes": 37
+   },
+   "github_url": null,
+   "github_stars": null,
+   "authors": [
+    "Samuel Schmidgall",
+    "Tim Strother",
+    "Alex Bijamov",
+    "Min Woo Sun",
+    "Anil Palepu",
+    "Akshay Goel",
+    "Ulysse Marteau-Ferey",
+    "Théo Moutakanni",
+    "Yubin Kim",
+    "Joseph Breda",
+    "Christina Chen",
+    "Justin Chen",
+    "Paul Jhun",
+    "Andrew Marshall",
+    "Sarah Montgomery-Taylor",
+    "Eun Kyoung Hong",
+    "Shashank Ravi",
+    "Kameron C. Black",
+    "David J. H. Wu",
+    "Austin Schoeffler",
+    "John Lyon Havlik",
+    "Elizabeth C. Stade",
+    "Jared Moore",
+    "Johannes C. Eichstaedt",
+    "Logan Pierce",
+    "Jeff Jopling",
+    "Johannes Thrul",
+    "Thomas H. McCoy",
+    "Neguine Rezaii",
+    "Mark S. Chen",
+    "Ellen E. Fitzsimmons-Craft",
+    "Shirley Wang",
+    "Desmond C. Ong",
+    "Katharina Schultebraucks",
+    "Torrey Creed",
+    "Bhavna Daryani",
+    "Aleksandra Faust",
+    "S. Sara Mahdavi",
+    "Caroline Figueroa",
+    "Eric Lin",
+    "Kate H. Bentley",
+    "Ernest Lim",
+    "Zhihan Jiang",
+    "Xuhai \"Orson\" Xu",
+    "Daniel McDuff",
+    "John Torous",
+    "Yun Liu",
+    "Po-Hsuan Cameron Chen",
+    "Mike Schaekermann",
+    "Joelle Barral",
+    "Alvin Rajkomar",
+    "Tao Tu",
+    "Lin Yang",
+    "Isaac Galatzer-Levy",
+    "David Racz",
+    "Valentin Liévin"
+   ],
+   "paper_summary": {
+    "summary": "The simulation-trained model improves psychiatric intake conversations by practicing multi-turn encounters with simulated patients and receiving rewards for clinical reasoning, communication, and safety. In a randomized, double-blind crossover study, it received higher psychiatrist transcript ratings than its identically prompted base model in 46 of 60 matched scenario pairs (76.7%). This supports improvement in controlled text encounters, not real-patient safety or effectiveness."
+   },
+   "organization_info": [
+    {
+     "name": "Google DeepMind"
+    },
+    {
+     "name": "Google Research"
+    },
+    {
+     "name": "Google for Health"
+    },
+    {
+     "name": "Stanford University"
+    },
+    {
+     "name": "University of California, Los Angeles"
+    },
+    {
+     "name": "University of California, San Francisco"
+    },
+    {
+     "name": "Johns Hopkins University"
+    },
+    {
+     "name": "Harvard Medical School"
+    },
+    {
+     "name": "Massachusetts General Hospital"
+    },
+    {
+     "name": "Harvard University"
+    },
+    {
+     "name": "Washington University in St. Louis"
+    },
+    {
+     "name": "Yale University"
+    },
+    {
+     "name": "University of Texas at Austin"
+    },
+    {
+     "name": "New York University"
+    },
+    {
+     "name": "University of Pennsylvania"
+    },
+    {
+     "name": "Columbia University"
+    },
+    {
+     "name": "Beth Israel Deaconess Medical Center"
+    }
+   ]
+  },
+  {
+   "title": "Probing Spatial State Representations in Visual Foundation Models",
+   "abstract": "An observer sees only part of the surrounding world, yet must keep track of what lies beyond the current view. Spatial perception therefore involves more than recognizing individual images: it calls for a persistent spatial state that is updated under self-motion and used to guide action. Do visual foundation models provide representations that support such a state? We study this question through four levels of spatial capability---spatial structure, object persistence, predictive spatial update, and actionability---using frozen-feature probes on ten representations under streaming egocentric observations of static indoor environments. The resulting capability profiles vary across tasks, network layers, and prefix lengths: strong readout of the visible scene does not ensure accurate object persistence or future-feature retrieval. Matched controls separate readout accuracy from reliance on visual history and motion. Native future prediction retains recoverable spatial structure, but a spatial reader trained on real features does not transfer to predicted features unchanged. Finally, goal-dependent candidate selection does not establish reliable continuous action utility: predicted actions respond to goal changes, yet supplying the correct goal does not reliably improve progress. Across the four levels, object persistence and actionability build on camera-pose readout, whereas feature prediction builds on visible-scene readout. Together, these findings motivate evaluating spatial representations not only by what can be decoded from them, but by whether that information is maintained beyond observation, updated predictively, and used for goal-directed action.",
+   "feed_description": "Strong performance on visible scenes does not guarantee that visual models retain objects beyond view, predict spatial changes, or guide actions reliably.",
+   "universal_paper_id": "2610.40636",
+   "publication_date": "2026-10-29T17:58:16.000Z",
+   "topics": [
+    "Computer Science",
+    "cs.AI",
+    "cs.CV"
+   ],
+   "metrics": {
+    "visits_count": {
+     "all": 251,
+     "last_7_days": 251
+    },
+    "total_votes": 5,
+    "public_total_votes": 21
+   },
+   "github_url": null,
+   "github_stars": null,
+   "authors": [
+    "Baiqiao Yin",
+    "Zhongang Cai",
+    "Ruisi Wang",
+    "Qiwei Liang",
+    "Lei Yang",
+    "Ziwei Liu"
+   ],
+   "paper_summary": null,
+   "organization_info": [
+    {
+     "name": "New York University"
+    },
+    {
+     "name": "Nanyang Technological University"
+    },
+    {
+     "name": "Hong Kong University of Science and Technology"
+    },
+    {
+     "name": "Chinese University of Hong Kong"
+    }
+   ]
+  },
+  {
+   "title": "Read, Allocate, Route: Role-Coupled Tokenization for Pixel-Space Generative Transformers",
+   "abstract": "Pixel-space generative Transformers typically use one token per image patch, so capturing finer detail requires more tokens and makes global attention increasingly expensive. We observe that finer detail does not necessarily require more global communication: low-frequency structure benefits from global exchange, while high-frequency detail can be modeled locally. Based on this insight, we introduce SpecSlot, a pixel-space rectified-flow Transformer that decouples output detail from the length of the global attention sequence. SpecSlot expands each spatial anchor into multiple slots, each assigned a disjoint band of DCT coefficients; this separates anchor density from spectral subdivision. Only the lowest-frequency slot from each anchor participates in global attention, while all slots interact locally. This allows the model to increase spectral detail without enlarging the global sequence. A spatial head further adds a local correction to the spectral prediction, while the generative state, target, and loss remain in pixel space. On ImageNet-256, SpecSlot achieves a comparable final FID to a FLOPs-matched JiT control while converging faster. On ImageNet-512, it improves FID by 2.84 over the control with 3.9% fewer FLOPs, and comes within only 0.69 FID of JiT-B/16 at 38.2% lower cost. On text-to-image generation, SpecSlot surpasses JiT-B/8 on DPG-Bench by 1.06 at 40.6% lower forward cost.",
+   "feed_description": "Pixel-space image generators can represent finer detail without expanding the sequence used for global attention, separating output quality from communication cost.",
+   "universal_paper_id": "2610.40647",
+   "publication_date": "2026-10-29T17:59:21.000Z",
+   "topics": [
+    "Computer Science",
+    "cs.AI",
+    "cs.CV",
+    "cs.LG",
+    "cs.NE"
+   ],
+   "metrics": {
+    "visits_count": {
+     "all": 118,
+     "last_7_days": 118
+    },
+    "total_votes": 2,
+    "public_total_votes": 14
+   },
+   "github_url": "https://github.com/JiongfanYang/SpecSlot",
+   "github_stars": 0,
+   "authors": [
+    "Jiongfan Yang",
+    "Weichen Fan",
+    "Haiwen Diao",
+    "Zhongang Cai",
+    "Ziwei Liu"
+   ],
+   "paper_summary": {
+    "summary": "SpecSlot assigns global communication to low-frequency image carriers while keeping finer output slots local. Each anchor produces multiple slots with disjoint spectral roles, but only one joins dense global attention. On ImageNet-512 it reaches 9.14 FID versus 11.98 for a FLOPs-matched JiT-CM control, with 3.9% fewer conditional forward FLOPs; it remains 0.69 FID worse than JiT-B/16."
+   },
+   "organization_info": [
+    {
+     "name": "Peking University"
+    },
+    {
+     "name": "Nanyang Technological University"
+    },
+    {
+     "name": "Sensetime"
+    }
+   ]
+  },
+  {
+   "title": "How to Loop Your Transformer: Loop Scaling, Specialization, and Parallel Inference",
+   "abstract": "Looping in transformer models reuses weights by repeatedly applying the same transformer, or parts of it, making the model deeper without increasing its parameter count. Whether looping is useful depends on which constraint dominates: model size, training compute, or autoregressive inference efficiency. We study these trade-offs jointly in dense decoder-only transformers trained from scratch, varying which parts of the model are looped, how many loops are applied, and how information is passed between loops. Our experiments span models with up to 1B parameters, trained on up to 155B tokens with up to $1.07\\times10^{21}$ FLOPs and 32 loops. We find that looping the full transformer generally gives the strongest quality at a fixed parameter budget, whereas looping a middle block of layers gives a better return when training FLOPs are constrained. Adding loops is not uniformly beneficial: gains eventually saturate, reverse, or become unstable. This motivates asking whether forcing every loop to use the same weights limits the benefit of deeper looping. We address this by adding small loop-specific low-rank adapters that improve quality, with larger gains as more loops are added. Looped transformers also suffer a decoding slowdown proportional to the number of loops. Parallel Loop Transformers address this by passing hidden states between loops across adjacent token positions, allowing loop stages to run concurrently. However, in our experiments the original formulation does not consistently retain the quality gains of ordinary looping. We find that preserving the current-token embedding and separately normalizing it and the previous-token hidden state before combining them recovers strong performance across model scales and training budgets. Together, these results show that effective looping requires matching the design to the resource constraint and inference setting.",
+   "feed_description": "Separately normalizing token embeddings and shifted hidden states lets transformer loops run concurrently during decoding while retaining much of ordinary looping’s quality.",
+   "universal_paper_id": "2610.40325",
+   "publication_date": "2026-10-29T15:56:09.000Z",
+   "topics": [
+    "Computer Science",
+    "cs.AI",
+    "cs.LG"
+   ],
+   "metrics": {
+    "visits_count": {
+     "all": 174,
+     "last_7_days": 174
+    },
+    "total_votes": 8,
+    "public_total_votes": 18
+   },
+   "github_url": null,
+   "github_stars": null,
+   "authors": [
+    "Chanakya Ekbote",
+    "Artidoro Pagnoni",
+    "Devendra Singh Sachan",
+    "Shruti Bhosale",
+    "Mike Lewis",
+    "Maryam Fazel-Zarandi",
+    "Shashank Rajput",
+    "Sujan Kumar Gonugondla"
+   ],
+   "paper_summary": {
+    "summary": "The authors study looping, which reuses transformer weights for repeated computation, in dense decoder-only models. They compare loop designs and shifted parallel looping. In tested over-trained conditions, two-loop models at 80 tokens per parameter reach a given DCLM validation bits-per-byte with fewer training FLOPs than vanilla models at 160 tokens per parameter, without establishing general efficiency or latency gains."
+   },
+   "organization_info": [
+    {
+     "name": "Meta Fundamental AI Research"
+    },
+    {
+     "name": "Massachusetts Institute of Technology"
+    }
+   ]
+  },
+  {
+   "title": "No id paper",
+   "universal_paper_id": null
+  }
+ ],
+ "page": 0
+}

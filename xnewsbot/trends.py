@@ -19,6 +19,9 @@ newsfeeds.as_candidate と同じ(pipeline.merge_news でニュース候補とそ
   (非公開で作ってから公開したモデルは createdAt が古いため。状態は DB と同じ場所の seen_models.json)。
   候補は {"source": "openrouter_models", "id", "output", "context_length"} /
   {"source": "hf_models", "id", "pipeline_tag", "likes", "downloads"[, "trending"]} を `trend` に添える。
+- alphaXiv の Hot 上位の論文(論文ジャンル用。2026-11-01 追加。公開 API・鍵なし): Hot の順位を保ち、
+  {"source": "alphaxiv_hot", "rank", "id", "votes", "visits", "topics", "orgs"} を `trend` に、要旨(abstract)を `body` に入れる。
+  直近 ALPHAXIV_SEEN_DAYS 日に配信した論文(DB の出典 URL で判定)は除いてから上位を候補にする。
 取得元ごとに失敗しても空を返す(stderr に1行)。配信は止めない。
 """
 
@@ -37,7 +40,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import newsfeeds
 from .config import get_settings
@@ -73,6 +76,15 @@ HF_TIMEOUT = 8            # 1リクエストの上限
 HF_BUDGET_S = 10          # 全組織の取得をこの秒数で打ち切る(取れた分だけで続ける)
 HF_WORKERS = 6
 HF_MAX = 30
+# Hot は interval の期間内の注目度順。毎朝の配信なので短い窓(3日)で「いま読まれている」論文を取る
+ALPHAXIV_URL = "https://api.alphaxiv.org/papers/v3/feed?pageNum=0&sort=Hot&interval=3%20Days&pageSize={n}"
+ALPHAXIV_TIMEOUT = 20
+ALPHAXIV_FETCH = 30           # 既出を除いても上位が残るよう、候補にする数より多く取る
+ALPHAXIV_MAX = 15             # 既出を除いた後の候補の数
+ALPHAXIV_SEEN_DAYS = 14       # この日数内に配信した論文は候補にしない
+ALPHAXIV_ABS = "https://www.alphaxiv.org/abs/"
+ALPHAXIV_SUMMARY_CHARS = 600   # 英語要約(paper_summary.summary)の長さ。詳しい解説の材料にする
+ALPHAXIV_BODY_CHARS = 2000     # 要旨(abstract)の長さ。全文を渡す(上限は安全網)
 HF_TREND_EXPAND = "&".join(f"expand[]={f}" for f in
                            ("createdAt", "likes", "downloads", "trendingScore", "pipeline_tag"))
 
@@ -509,6 +521,87 @@ def hf_models(hours: float | None = 24) -> list[dict]:
     return _hf_candidates(fresh)
 
 
+# --- alphaXiv の Hot 論文 ---
+
+def parse_alphaxiv(data: dict) -> list[dict]:
+    """alphaXiv のフィード → 候補(応答の順=Hot の順位。rank は1始まり)。id かタイトルの無い論文は飛ばす。"""
+    out = []
+    for p in (data.get("papers") if isinstance(data, dict) else None) or []:
+        if not isinstance(p, dict):
+            continue
+        pid = str(p.get("universal_paper_id") or "").strip()
+        title = " ".join(str(p.get("title") or "").split())
+        if not pid or not title:
+            continue
+        rank = len(out) + 1
+        metrics = p.get("metrics") or {}
+        votes = int(metrics.get("public_total_votes") or metrics.get("total_votes") or 0)
+        visits = int((metrics.get("visits_count") or {}).get("all") or 0)
+        orgs = [str(o.get("name")) for o in p.get("organization_info") or [] if o.get("name")]
+        topics = [str(t) for t in p.get("topics") or []]
+        abstract = newsfeeds.strip_html(p.get("abstract"), limit=ALPHAXIV_BODY_CHARS)
+        text = ((p.get("paper_summary") or {}).get("summary") or p.get("feed_description")
+                or abstract)
+        parts = [f"alphaXiv Hot {rank}位(投票 {votes:,}・閲覧 {visits:,})"]
+        if orgs:
+            parts.append("所属: " + "・".join(orgs))
+        stars = p.get("github_stars")
+        parts.append(f"GitHub: あり(★{int(stars):,})" if p.get("github_url") and stars
+                     else "GitHub: あり" if p.get("github_url") else "GitHub: なし")
+        summary = "。".join(parts) + "。" + newsfeeds.strip_html(text, limit=ALPHAXIV_SUMMARY_CHARS)
+        item = FeedItem(title=title, url=ALPHAXIV_ABS + pid, source="alphaXiv",
+                        published=_iso(p.get("publication_date")), origin="feed", summary=summary)
+        c = _candidate(item, {"source": "alphaxiv_hot", "rank": rank, "id": pid, "votes": votes,
+                              "visits": visits, "topics": topics, "orgs": orgs})
+        # 要旨は API にあるので本文取得(articles.enrich_bodies)は要らない(body が埋まっていれば取りに行かない)
+        c["body"] = abstract
+        out.append(c)
+    return out
+
+
+def delivered_paper_ids(session, day: date, days: int = ALPHAXIV_SEEN_DAYS) -> set[str]:
+    """day の前日〜days 日前に取り込んだダイジェストの出典 URL にある alphaXiv の論文 ID。
+    範囲は pipeline._recent_titles と同じ(当日の取り直しで同じ日の論文が入れ替わらないよう当日は含めない)。"""
+    from sqlmodel import select
+
+    from .models import GenreDigest, NewsItem
+
+    rows = session.exec(
+        select(NewsItem.source_urls)
+        .join(GenreDigest, NewsItem.genre_digest_id == GenreDigest.id)
+        .where(GenreDigest.digest_date >= day - timedelta(days=days))
+        .where(GenreDigest.digest_date <= day - timedelta(days=1))
+    ).all()
+    return {u[len(ALPHAXIV_ABS):] for urls in rows for u in urls or []
+            if isinstance(u, str) and u.startswith(ALPHAXIV_ABS)}
+
+
+def _delivered_ids() -> set[str]:
+    """既出の論文 ID。DB を読めなければ stderr に1行出して除外なしで続ける(収集は止めない)。DB は読むだけ。"""
+    try:
+        from zoneinfo import ZoneInfo
+
+        from .db import get_session, init_db
+
+        day = datetime.now(ZoneInfo(get_settings().default_tz)).date()
+        init_db()
+        with get_session() as session:
+            return delivered_paper_ids(session, day)
+    except Exception as e:
+        print(f"  論文: 既出の論文を読めず除外なしで続行 ({type(e).__name__}: {e})", file=sys.stderr)
+        return set()
+
+
+def alphaxiv_hot(hours: float | None = 24) -> list[dict]:
+    # hours は使わない: Hot の順位は URL の interval(3日)の中で決まる
+    rows = parse_alphaxiv(_get_json(ALPHAXIV_URL.format(n=ALPHAXIV_FETCH), ALPHAXIV_TIMEOUT))
+    seen = _delivered_ids()
+    fresh = [c for c in rows if c["trend"]["id"] not in seen]
+    print(f"  論文: alphaXiv {min(len(fresh), ALPHAXIV_MAX)}件（既出除外 {len(rows) - len(fresh)}件）",
+          file=sys.stderr)
+    return fresh[:ALPHAXIV_MAX]
+
+
 def _safe(name: str, fn):
     def run(hours: float | None = 24) -> list[dict]:
         try:
@@ -526,6 +619,7 @@ SOURCES = {
     "hatena": _safe("はてなブックマーク", hatena),
     "openrouter_models": _safe("OpenRouter 新規モデル", openrouter_models),
     "hf_models": _safe("Hugging Face 新規モデル", hf_models),
+    "alphaxiv_hot": _safe("alphaXiv Hot 論文", alphaxiv_hot),
 }
 # 候補の上限(news_max)より先に全件入れる取得元。新モデルの登録一覧は1日数件〜十数件で、深い順位も落としたくない。
 PINNED = {"openrouter_models", "hf_models"}

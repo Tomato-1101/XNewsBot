@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TIMEOUT = 900          # 15分。deliver.sh の LOCK_STALE_SEC はこの分を見込んでいる
 MAX_DROP_RATIO = 0.6   # これを超えて外そうとしたら Codex の故障とみなす
 SMALL_SUMMARY_MAX = 100  # curate_prompt.md「書き方」: small の summary は100字以内
+PAPER_GENRE = "論文"     # curate_prompt.md「ジャンルの範囲」: 順位で選ぶので drop・merge の対象外
 
 SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["drop", "merge"],
@@ -174,6 +175,12 @@ def plan(curated: dict, answer: dict) -> tuple[list, list, list]:
         elif kind == "drop" and _item(curated, op["id"]).get("importance") == "big":
             # big はそのジャンルで今日いちばん大事な記事。重複なら merge で残す側に寄せる
             reason = "big の記事は除外しない（重複なら統合する）"
+        elif kind == "drop" and _ref(curated, op["id"])[0] == PAPER_GENRE:
+            # 論文は alphaXiv の順位で選んでおり、ニュースの採用基準で外すと毎朝の本数が崩れる
+            reason = "論文の記事は除外しない"
+        elif kind == "merge" and any(_ref(curated, i)[0] == PAPER_GENRE for i in ids):
+            # 別々の論文をまとめる必要は無く、他ジャンルへ吸収されると論文の詳細(detail)と出典が消える
+            reason = "論文の記事は統合しない"
         if not reason and kind == "merge" and _item(curated, op["into"]).get("importance") != "big" \
                 and any(_item(curated, f).get("importance") == "big" for f in op["from"]):
             # big の記事が small の親に吸収されると、big の詳細と枠が黙って消える
