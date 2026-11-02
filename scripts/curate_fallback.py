@@ -17,8 +17,14 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def validate(raw: dict, result: dict) -> dict:
     genres = result.get("genres") if isinstance(result, dict) else None
-    if not isinstance(genres, dict) or set(genres) != set(raw["genres"]):
+    if not isinstance(genres, dict):
         raise ValueError("全ジャンルのキーが必要")
+    # split_raw は候補0件のジャンル(監視アカウント等)をどの組にも入れないため、merge 結果に欠ける。
+    # 候補が無いジャンルは空として補う(10-25〜11-01 はこれで毎朝 Claude の結果が捨てられていた)。
+    genres = {**{g: [] for g, c in raw["genres"].items() if not c}, **genres}
+    if set(genres) != set(raw["genres"]):
+        raise ValueError("全ジャンルのキーが必要")
+    result = {**result, "genres": genres}
     count = 0
     for genre, items in genres.items():
         if not isinstance(items, list):
@@ -108,7 +114,8 @@ def recover(raw: dict, existing: Path, reason_path: Path, failed: bool = False,
             reasons.append(f"Claudeの出力検証失敗: {e}")
     else:
         reasons.append(claude_reason)
-    # Codexも全滅した場合を含め、途中で終了しても切替の理由を残す。
+    # Codexも全滅した場合を含め、途中で終了しても切替の理由を残す。stdout は配信ログに追記される。
+    print(f"切替理由: {reasons[-1]}")
     reason_path.write_text("\n".join(reasons) + "\n")
     try:
         result = codex_curate(raw)
@@ -117,6 +124,7 @@ def recover(raw: dict, existing: Path, reason_path: Path, failed: bool = False,
         return result, "codex"
     except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as e:
         reasons.append(f"Codex失敗: {type(e).__name__}: {e}")
+        print(f"切替理由: {reasons[-1]}")
         reasons.append("LLMなしの日本語記事原文へ切替")
         reason_path.write_text("\n".join(reasons) + "\n")
         return original_news(raw), "original"

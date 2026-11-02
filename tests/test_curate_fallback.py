@@ -64,7 +64,7 @@ def test_both_llms_fail_uses_original(raw, monkeypatch, tmp_path):
 def test_rejects_invalid_outputs(raw, mutation):
     result = cf.original_news(raw)
     item = result['genres']['AI'][0]
-    if mutation == 'missing': del result['genres']['話題']
+    if mutation == 'missing': result['genres'] = {'話題': [copy.deepcopy(item)]}
     elif mutation == 'idx': item['source_idxs'] = [999]
     elif mutation == 'boolidx': item['source_idxs'] = [True]
     elif mutation == 'score': item['score'] = '30'
@@ -74,6 +74,24 @@ def test_rejects_invalid_outputs(raw, mutation):
         result['genres']['AI'] = [copy.deepcopy(item) for _ in range(4)]
     with pytest.raises(ValueError): cf.validate(raw, result)
 
+
+def test_missing_genre_without_candidates_is_filled(raw, monkeypatch, tmp_path):
+    # 分割実行では候補0件のジャンルがどの組にも入らず、merge 結果から欠ける
+    result = cf.original_news(raw)
+    del result['genres']['話題']
+    output = tmp_path / 'curated.json'
+    output.write_text(json.dumps(result))
+    monkeypatch.setattr(cf, 'codex_curate', lambda r: pytest.fail('Codex must not run'))
+    curated, route = cf.recover(raw, output, tmp_path / 'reason')
+    assert route == 'claude'
+    assert curated['genres']['話題'] == []
+    assert not (tmp_path / 'reason').exists()
+
+
+def test_switch_reason_is_logged(raw, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(cf, 'codex_curate', lambda r: cf.original_news(r))
+    cf.recover(raw, tmp_path / 'missing', tmp_path / 'reason')
+    assert '切替理由: Claudeの出力検証失敗' in capsys.readouterr().out
 
 def test_all_empty_original_fails(raw):
     raw['genres']['AI'] = []
