@@ -2,6 +2,15 @@
 
 新セッションの Claude はまずこれを読む。
 
+## 他の AI 向けの公開フィード（11-05 23:40 更新）
+- 目的: 他の人のパソコンの AI が、毎朝のニュース（全ジャンル）を決まった URL から自動で読めるようにする。
+- 現状: 公開リポ `Tomato-1101/xnews-feed`（GitHub Pages）。`https://tomato-1101.github.io/xnews-feed/` の latest.md / latest.json / feed.xml / llms.txt。11-05 分を公開済み。
+  `ops/deliver.sh` の配信成功後（朝スロットだけ）と recover の配信済み時に `scripts/publish_feed.py` が書き出して push する。
+  ローカルの公開用リポジトリは `~/Library/Application Support/XNewsBot/public-feed`、状態は同じフォルダの親の `publish_state.json`、鍵は `~/.ssh/xnews_feed_deploy`（このリポにだけ書けるデプロイキー）。
+- 本人の絶対条件: Mac は公開先から何も読まない（pull/fetch 禁止、git 設定・hook を隔離、push.negotiate=false）。投稿本文は載せない。原文代替の日は公開しない。
+- 止めるには `XNEWS_PUBLISH=0`。失敗はログの「公開フィードの更新に失敗」だけ（LINE には通知しない）。
+- 次: 本人が他の AI で読めるか試す。
+
 ## ニュースの絞り込み・Codex レビュー・評価ボタン・論文ジャンル（11-02 更新）
 - 目的: 「多すぎる・要らないニュースが混じる」の解消と、グループの好みの長期学習。11-01 に alphaXiv 論文ジャンルを追加。
 - 現状: 採用基準の厳格化＋配信前の Codex レビューは稼働中。論文ジャンル・alphaXiv MCP 登録済み（MCP は OAuth 未ログイン）。

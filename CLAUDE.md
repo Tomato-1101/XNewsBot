@@ -69,6 +69,9 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   それでも入らない分は見出しを削って「ほか N 件は省略」。1回の push は最大5通のまま。「特大」ジャンルは 10-02 に廃止し話題へ統合。
 - AI解説(10-02): LINE の詳細のクイックリプライと Web のボタンから、ヘッドレス `claude --model sonnet`(WebSearch)で記事ごとに作る
   (`xnewsbot/explain.py`、`ops/explain_prompt.md`)。作成後は押した人のトークへ push(1通×人数)。
+- **公開フィード**（11-05 追加, `scripts/publish_feed.py`）: 朝の配信後に全ジャンルを静的ファイルに書き出し、公開リポ
+  `Tomato-1101/xnews-feed`（GitHub Pages）へ push するだけ。**公開先からは絶対に何も読まない**（本人の条件。pull/fetch を足さない）。
+  投稿本文は載せない・原文代替の日は公開しない。止めるには `XNEWS_PUBLISH=0`。
 - raw が 300KB 以上なら `pipeline.py split` でジャンルを2組（`CURATE_GROUPS`）に分け、claude を並列実行して `merge` する
   （489KB を1セッションで読むと文脈があふれた）。組をまたぐ同じ出来事は1件にまとめられないので、重なりやすいジャンルは同じ組に入れる。
 - **配信前の Codex レビュー**（10-30 追加, `scripts/review_digest.py`・`ops/review_prompt.md`）: キュレーション(または代替経路)の後、
