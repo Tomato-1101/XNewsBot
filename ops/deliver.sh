@@ -163,13 +163,37 @@ LOG_START_LINE=$(wc -l < "$LOG")
 REASON_FILE=$(mktemp) || exit 1
 LAST_FAIL="ニュース収集処理の失敗"
 
+# 公開フィードの更新(GitHub Pages へ書き出して push するだけ。公開先からは何も読まない)。
+# 配信の成否とは無関係の付随処理なので、失敗してもログに残すだけで終了コードは変えない。
+# 朝のスロットだけ公開する(15時以降の今すぐ系は evening になり、朝の公開を上書きするため)。
+# $1 = curated JSON(無ければ空文字。原文代替の日の判定に使う)、$2以降 = --date など
+publish_feed() {
+  local cur="$1"; shift
+  [ "$MODE" = user ] && return 0
+  [ "$SLOT" = morning ] || return 0
+  if [ "${XNEWS_PUBLISH:-1}" = 0 ]; then
+    log "公開フィードの更新を省略(XNEWS_PUBLISH=0)"; return 0
+  fi
+  local rc
+  if [ -n "$cur" ]; then
+    run_with_timeout 180 "$PY" scripts/publish_feed.py --slot "$SLOT" --curated "$cur" "$@" >> "$LOG" 2>&1
+  else
+    run_with_timeout 180 "$PY" scripts/publish_feed.py --slot "$SLOT" "$@" >> "$LOG" 2>&1
+  fi
+  rc=$?
+  [ "$rc" -ne 0 ] && log "公開フィードの更新に失敗(終了コード $rc)"
+  return 0
+}
+
 # リカバリ: 当日分が既に届いていれば何もしない(収集も Claude も呼ばずに終わる)。
 # これがあるので launchd から1日に何度起動されても、失敗した日だけ再試行される。
 if [ "$MODE" = recover ]; then
   "$PY" scripts/pipeline.py pending --slot "$SLOT" >> "$LOG" 2>&1
   PEND_RC=$?
   if [ "$PEND_RC" -eq 64 ]; then
-    log "リカバリ不要(当日 $SLOT は配信済み)"; exit 0
+    log "リカバリ不要(当日 $SLOT は配信済み)"
+    publish_feed ""   # 朝の公開が失敗していた日の再試行(--curated なし・日付は既定=今日 JST)
+    exit 0
   elif [ "$PEND_RC" -ne 0 ]; then
     # 判定自体が壊れたときは送信を試みる側に倒す(二重送信は push --due が当日済みを弾くので起きない)
     log "未配信チェックに失敗 (exit=$PEND_RC)。安全側に倒して配信を試みる"
@@ -425,4 +449,7 @@ case "$MODE" in
 esac
 PUSH_RC=$?
 if [ "$PUSH_RC" -ne 0 ]; then log "$LAST_FAIL (exit=$PUSH_RC)"; exit "$PUSH_RC"; fi
+
+# 5) 公開フィードの更新(定義は上の publish_feed())。失敗しても終了コードは変えない。
+publish_feed "$CUR" $DATE_OPT
 log "==== deliver done slot=$SLOT mode=$MODE ===="
