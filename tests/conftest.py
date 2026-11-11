@@ -75,3 +75,10 @@ def curated_items(big: int = 1, small: int = 2) -> list[dict]:
         items.append({"title": f"小ニュース{j}", "summary": "要約small", "detail": "詳細small",
                       "importance": "small", "score": 50 - j, "source_idxs": [big + j]})
     return items
+
+
+@pytest.fixture(autouse=True)
+def _nasdaq_via_fake_get(monkeypatch):
+    """Nasdaq は本番では curl で取る。テストでは各テストが差し替えた _get を通す(本物の curl を叩かない)。"""
+    from xnewsbot import schedule
+    monkeypatch.setattr(schedule, "_curl", lambda url: schedule._get(url))

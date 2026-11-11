@@ -174,8 +174,9 @@ def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
     assert len(specs) <= 5
     summary = json.dumps(specs[1], ensure_ascii=False)  # 要点 + マーケットの2枚
     assert "今日の予定" in summary and "米 FOMC 政策金利発表" in summary
-    # 注目決算(日本・米国、代用の注記つき)・決算サプライズの節もモックで全部出る
-    assert "注目決算（時価総額上位で代用）" in summary and "決算サプライズ" in summary
+    # 決算予定(日本の場中・引け後・説明会、米国)・決算サプライズの節もモックで全部出る
+    assert "決算予定" in summary and "場中（〜15:30・時刻は目安）" in summary and "説明会" in summary
+    assert "決算サプライズ" in summary
     assert "▲ +14.8%" in summary and "▼ -8.6%" in summary
     assert "$118,235" in summary and "仮想通貨は直近値・24時間比" in summary
     assert "評価は一般的な傾向で、投資助言ではありません" in summary

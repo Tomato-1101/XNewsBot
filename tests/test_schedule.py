@@ -139,18 +139,6 @@ def test_us_company_strips_suffixes():
     assert sc._us_company("Accenture plc") == "Accenture"
 
 
-def test_parse_irbank_cap_cut_and_date_check():
-    d = date(2026, 10, 1)
-    out = sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), d)
-    assert [it["name"] for it in out] == [
-        "クスリのアオキホールディングス（3549）決算", "西松屋チェーン（7545）決算", "平和堂（8276）決算"]
-    assert out[0]["at"] == _at(d, 15) and out[0]["country"] == "JP"
-    # 見出しの日付が違う一覧(休日に翌営業日が出る等)は使わない
-    assert sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), date(2026, 10, 2)) == []
-
-
-# --- まとめ(期間・並び・「翌」) ---
-
 def _ev(at, name, importance=4, **kw):
     return sc._item(at, kw.pop("kind", "indicator"), kw.pop("country", "US"), name, importance, **kw)
 
@@ -205,7 +193,7 @@ def test_select_boj_day():
 def test_select_marks_next_day_and_keeps_fixed_labels():
     d = date(2026, 10, 1)
     items = (sc.parse_nasdaq(_fx("nasdaq_earnings_2026-10-01.json"), d, min_cap=sc.SURPRISE_US_MIN_CAP)
-             + sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), d)
+             + sc.jp_notable_items([], sc._irbank_rows(_fx("irbank_kessan_2026-10-01.html"), d), d)
              + sc.indicators(sc.parse_minkabu(_fx("minkabu_2026-09-30.html"))))
     out = sc.select(items, _at(d, 7, 15))
     labels = [x["time_label"] for x in out]
@@ -240,7 +228,9 @@ def _fast_fetch(monkeypatch):
 
 def _fake_get(url):
     if "kabutan.jp" in url:
-        return None                      # 株探は取れない(日本の注目決算は IRBANK の上位で代用される)
+        return None                      # 株探は取れない(日本の決算は IRBANK の時価総額の条件だけで出る)
+    if "finance.yahoo.co.jp" in url or "news.google.com" in url:
+        return None                      # 売買代金・説明会も取れない日
     for host, name in _FILES.items():
         if host in url:
             return _fx(name)
@@ -254,7 +244,7 @@ def test_fetch_combines_sources(monkeypatch):
     names = [x["name"] for x in got["schedule"]]
     assert "米 ISM製造業景気指数" in names and "Accenture（ACN）決算" in names
     assert "Nike（NKE）決算" in names          # 注目決算は500億ドル以上(Nike 525億ドルは入る)
-    assert "平和堂（8276）決算" in names       # 株探が取れないので IRBANK の上位で代用
+    assert "平和堂（8276）決算" in names       # 株探が取れなくても IRBANK の場中・時価総額500億以上で出る
     assert [x["name"] for x in got["results"]][0] == "米 ADP雇用者数"
     # みんかぶは前日から3日分、決算は配信日の日付で引く
     assert any("date=2026-09-30&days=3" in u for u in seen)

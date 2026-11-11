@@ -127,10 +127,10 @@ class ScheduleSnapshot(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     digest_date: date = Field(index=True)
     slot: str = Field(default="morning", index=True)  # "morning" | "evening"
-    # [{"at": ISO8601(JST) or None, "time_label", "kind"("indicator"|"policy"|"speech"|"earnings"|"surprise"),
+    # [{"at": ISO8601(JST) or None, "time_label", "kind"("indicator"|"policy"|"speech"|"earnings"|"ir"|"surprise"),
     #   "country"("JP"|"US"|"EU"|"CN"|...), "name", "forecast", "previous", "result", "importance"}, ...]
-    # earnings には注目決算の印 "notable": True(日=株探の★/米=時価総額500億ドル以上)が付き、株探が取れず
-    # IRBANK の上位8社で代用した日本の項目には "fallback": True も付く。
+    # earnings・ir(日本の当日の説明会)には "notable": True が付く。日本の項目には "session"
+    # ("intraday"=場中/"after"=引け後/"unknown")、株探の★銘柄には "star": True も付く。
     # surprise(前営業日の決算への市場の反応)には move_pct(float・符号つき%)・move_label("PTS"|"時間外"|"当日")・
     # headline(日本は株探の決算見出し、無ければ "")が付く。at は None・time_label は "" 。
     data: list[dict] = Field(default_factory=list, sa_column=Column(JSON))

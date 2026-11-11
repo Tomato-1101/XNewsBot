@@ -7,7 +7,8 @@
   item = {"at": ISO8601(JST) | None, "time_label", "kind", "country", "name",
           "forecast", "previous", "result", "importance"}
   time_label と name は表示にそのまま使う完成形(表示側は加工しない)。
-  決算の注目銘柄には "notable": True、株探が取れず IRBANK で代用した日本の項目には "fallback": True が付く。
+  決算の注目銘柄には "notable": True が付く。日本の決算・説明会(kind="ir")には "session"
+  (intraday=場中/after=引け後/unknown)、株探の★銘柄には "star": True も付く。
   surprises は前営業日の決算への市場の反応(kind="surprise"。move_pct・move_label・headline が増える)。
 
 取得元(どれも鍵なし。2026-10-01 に実ページを1回ずつ取得して構造を確認):
@@ -16,8 +17,10 @@
 - FRB calendar.json(UTF-8 BOM 付き): FOMC 声明・議長会見・議事録・議長の講演/証言だけ。時刻は米東部。
 - 日銀 金融政策決定会合の日程(HTML): 会合の最終日に結果発表と総裁会見。
 - Nasdaq 決算カレンダー(JSON。ブラウザ風 UA が必要): 注目決算=時価総額500億ドル以上の全社。
-- 株探「今週の決算発表予定」(HTML): 日本の注目決算(★)の全銘柄。取れない日だけ IRBANK の上位8社で代用。
-- IRBANK 決算発表予定(HTML): 株探の銘柄の会社名・発表目安の突き合わせ。
+- IRBANK 決算発表予定(HTML): 日本の d に発表する全社(発表目安・過去の発表時刻・時価総額)。
+- 株探「今週の決算発表予定」(HTML): 注目(★)の銘柄。★は条件に関係なく出す。
+- Yahoo!ファイナンス 売買代金ランキング(HTML 内の JSON): 前営業日の上位300位。日本の決算の絞り込みと説明会の銘柄。
+- Google ニュース RSS: 当日の説明会の告知記事(見出しに日付と売買代金上位の社名があるものだけ)。
 - 決算サプライズ(前営業日の決算への反応。2026-10-02 追加): 日本は株探 PTS ランキング(騰落率5%以上・ETF/REIT 除く)の
   上位20銘柄のうち、株探の個別ニュースに決算・修正の見出しがあるものだけ(決算と無関係の値動きを出さない)。
   米国は Nasdaq(時価総額200億ドル以上)+ Yahoo chart の5分足(時間外・当日の騰落)。
@@ -32,6 +35,7 @@ import html
 import http.client
 import json
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -43,7 +47,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
-from xnewsbot import market
+from xnewsbot import market, newsfeeds
 
 JST = ZoneInfo("Asia/Tokyo")
 ET = ZoneInfo("America/New_York")
@@ -69,9 +73,22 @@ DELIVER_HOUR = 8          # 翌朝のこの時刻(JST)までを「今日の予�
 MAX_ITEMS = 20            # 予定の最大件数(多いときは重要度の低いものから落とす)
 # 「昼ごろ」「寄り前」「引け後」の at は並べ替え用の近似なので、過ぎてもこの時間までは未発表とみなして残す
 APPROX_GRACE = timedelta(hours=3)
-EARNINGS_MAX = 8          # 株探が取れない日の代用(IRBANK)は時価総額の上位この数まで
 US_NOTABLE_CAP = 50_000_000_000   # 米国の注目決算の時価総額下限(ドル=500億ドル。該当は全社出す)
-JP_MIN_CAP_OKU = 1000         # 日本の代用(IRBANK)の時価総額下限(億円)
+# 日本の決算予定(2026-11-11 本人要望「場中は全部・引け後は注目だけ。売買代金が大きいか日経平均採用なら」)。
+# 日経225 の銘柄表は取れる所が無いので、時価総額 3000 億円(225 採用銘柄のおおむね下限)で代える。
+JP_CLOSE = (15, 30)               # 東証の大引け。これより前の発表を「場中」とする
+JP_INTRADAY_RANK = 300            # 場中: 前営業日の売買代金の上位この順位まで
+JP_INTRADAY_CAP_OKU = 500         # 場中: または時価総額(億円)がこれ以上
+JP_AFTER_RANK = 100               # 引け後: 売買代金の上位この順位まで
+JP_AFTER_CAP_OKU = 3000           # 引け後: または時価総額(億円)がこれ以上
+YAHOO_TV_URL = ("https://finance.yahoo.co.jp/stocks/ranking/tradingValueHigh"
+                "?market=all&term=daily&page={page}")
+YAHOO_TV_PAGES = 6                # 1ページ50件。6ページで上位300
+YAHOO_TV_GAP = 0.5                # ページ間の間隔(秒)
+YAHOO_TV_BUDGET = 60.0            # これを過ぎたら残りのページは読まない(朝の収集を止めない)
+# 当日の説明会(株価が動きやすい臨時の説明会。例: 11/10 データセクションの AI データセンター説明会)
+IR_QUERIES = ("説明会 開催へ", "説明会を開催")
+IR_WITHIN_DAYS = 7
 
 # 決算サプライズ(前営業日の決算への市場の反応)
 SURPRISE_MIN_PCT = 5.0        # 騰落率の絶対値がこれ以上
@@ -111,6 +128,23 @@ def _get(url: str) -> bytes | None:
         except (OSError, EOFError):
             return None
     return data
+
+
+def _curl(url: str) -> bytes | None:
+    """Nasdaq は Python の TLS 接続を 403 で弾き curl なら通す(2026-11-11 実測)ので curl で取る。失敗は None。"""
+    try:
+        proc = subprocess.run(["/usr/bin/curl", "-sf", "--compressed", "-m", str(_TIMEOUT), "-A", _UA, url],
+                              capture_output=True, timeout=_TIMEOUT + 5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 and proc.stdout else None
+
+
+def _need_nasdaq(url: str) -> bytes:
+    body = _curl(url)
+    if not body:
+        raise _FetchError(f"取得できませんでした: {url}")
+    return body
 
 
 def _need(url: str) -> bytes:
@@ -409,7 +443,7 @@ def parse_nasdaq(body: bytes, d: date, min_cap: int = US_NOTABLE_CAP) -> list[di
 
 
 def _irbank_rows(body: bytes, d: date) -> list[dict]:
-    """IRBANK の決算発表予定 → 全行 {code, name, cap(億円), hm((時,分) | None)}。
+    """IRBANK の決算発表予定 → 全行 {code, name, cap(億円), hm((時,分) | None), past([(時,分)])}。
 
     行は [コード, 会社名, 決算種別, 発表目安, 時価総額(sortValue=億円), ...] の td。
     見出しの日付が d と違う一覧(休日に翌営業日が出る等)は空にする。
@@ -429,24 +463,18 @@ def _irbank_rows(body: bytes, d: date) -> list[dict]:
         if not code or not name or not cap:
             continue
         hm = _HM.match(_text(tds[3][1]))
+        # 発表目安の下の小さい「（16:40,16:20）」は過去の発表時刻(日付だけの括弧もある)
+        past = [(int(h), int(m)) for sp in re.findall(r'<span class="co_sm">(.*?)</span>', tds[3][1], re.S)
+                for h, m in _HM.findall(_text(sp))]
         out.append({"code": code, "name": name, "cap": int(cap.group(1)),
-                    "hm": (int(hm.group(1)), int(hm.group(2))) if hm else None})
+                    "hm": (int(hm.group(1)), int(hm.group(2))) if hm else None, "past": past})
     return out
 
 
 def _jp_earnings_item(d: date, r: dict, **extra) -> dict:
     at = _jst(d, *r["hm"]) if r.get("hm") else None
-    return _item(at, "earnings", "JP", f"{r['name']}（{r['code']}）決算", 3, day=d, **extra)
-
-
-def parse_irbank(body: bytes, d: date) -> list[dict]:
-    """IRBANK の決算発表予定 → 時価総額1000億円以上の上位8社(株探が取れない日の代用)。
-
-    時刻は発表目安(なければ未定)。代用の項目は notable=True・fallback=True。
-    """
-    rows = sorted((r for r in _irbank_rows(body, d) if r["cap"] >= JP_MIN_CAP_OKU),
-                  key=lambda r: -r["cap"])
-    return [_jp_earnings_item(d, r, notable=True, fallback=True) for r in rows[:EARNINGS_MAX]]
+    return _item(at, "earnings", "JP", f"{r['name']}（{r['code']}）決算", 3, day=d,
+                 cap=r.get("cap", 0), **extra)
 
 
 # --- 株探(日本の注目決算・決算サプライズ) ---
@@ -554,26 +582,161 @@ def parse_kabutan_weekly(body: bytes, d: date) -> list[dict] | None:
     return out if found else None
 
 
-def jp_notable_items(weekly: list[dict] | None, rows: list[dict], d: date) -> list[dict]:
-    """日本の注目決算。weekly=株探の★銘柄(None=株探が取れない/見出しが無い)、rows=IRBANK の d の全行。
+def jp_session(r: dict) -> tuple[str, tuple[int, int] | None, str]:
+    """IRBANK の1行 → (場中か, 表示の時刻, 固定の表示ラベル)。
 
-    株探があれば★を全部(会社名・発表目安は IRBANK とコードで突き合わせ、無ければ株探の名前・未定)。
-    株探が無いときだけ IRBANK の時価総額上位8社で代用する(fallback=True)。
+    発表目安が 15:30 より前なら場中。目安が引け後でも過去の発表時刻に場中があれば場中とし、
+    時刻はその過去の時刻を「前回12:00」と出す(11/10 の実績で、目安だけでは場中の 77/90 しか
+    当たらず、過去の時刻も見ると IRBANK に載る場中の全社が当たった)。
     """
-    if weekly is None:
-        top = sorted((r for r in rows if r["cap"] >= JP_MIN_CAP_OKU), key=lambda r: -r["cap"])
-        return [_jp_earnings_item(d, r, notable=True, fallback=True) for r in top[:EARNINGS_MAX]]
-    by_code = {r["code"]: r for r in rows}
+    hm = r.get("hm")
+    if hm and hm < JP_CLOSE:
+        return "intraday", hm, ""
+    past = next((p for p in r.get("past") or () if p < JP_CLOSE), None)
+    if past:
+        return "intraday", past, f"前回{past[0]:02d}:{past[1]:02d}"
+    return ("after" if hm else "unknown"), hm, ""
+
+
+def jp_notable_items(weekly: list[dict] | None, rows: list[dict], d: date,
+                     ranks: dict[str, int] | None = None) -> list[dict]:
+    """日本の決算予定。weekly=株探の★銘柄(None=取れない)、rows=IRBANK の d の全行、
+    ranks={コード: 前営業日の売買代金順位}(取れない日は空=時価総額だけで判定)。
+
+    場中(〜15:30)は値動きを見ながら売買できるので広く出す: ★・売買代金上位 JP_INTRADAY_RANK 位・
+    時価総額 JP_INTRADAY_CAP_OKU 億円以上のどれか。引け後は★・上位 JP_AFTER_RANK 位・
+    JP_AFTER_CAP_OKU 億円以上のどれか。IRBANK に無い★銘柄は株探の名前・時刻未定で出す。
+    各項目に session(intraday/after/unknown)と star が付く。
+    """
+    ranks = ranks or {}
+    stars = {w["code"]: w["name"] for w in weekly or []}
     out: list[dict] = []
     seen: set[str] = set()
-    for w in weekly:
-        if w["code"] in seen:
+    for r in rows:
+        if r["code"] in seen:
             continue
-        seen.add(w["code"])
-        r = by_code.get(w["code"])
-        out.append(_jp_earnings_item(d, {"code": w["code"], "name": r["name"] if r else w["name"],
-                                         "hm": r["hm"] if r else None}, notable=True))
+        seen.add(r["code"])
+        session, hm, label = jp_session(r)
+        rank = ranks.get(r["code"])
+        star = r["code"] in stars
+        if session == "intraday":
+            keep = star or (rank is not None and rank <= JP_INTRADAY_RANK) or r["cap"] >= JP_INTRADAY_CAP_OKU
+        else:
+            keep = star or (rank is not None and rank <= JP_AFTER_RANK) or r["cap"] >= JP_AFTER_CAP_OKU
+        if keep:
+            out.append(_jp_earnings_item(d, {**r, "hm": hm}, label=label, notable=True,
+                                         session=session, star=star))
+    for code, name in stars.items():
+        if code not in seen:
+            seen.add(code)
+            out.append(_jp_earnings_item(d, {"code": code, "name": name, "cap": 0}, notable=True,
+                                         session="unknown", star=True))
+    # 同じ時刻の中は★ → 時価総額の大きい順(select の時刻順の並べ替えは安定なのでこの順が残る)
+    out.sort(key=lambda it: (not it["star"], -it["cap"]))
     return out
+
+
+def parse_yahoo_tv(body: bytes) -> list[dict]:
+    """Yahoo!ファイナンスの売買代金ランキング(1ページ50件) → [{rank, code, name}]。
+    ページ内の window.__PRELOADED_STATE__ の JSON を読む。読めなければ []。"""
+    m = re.search(r"window\.__PRELOADED_STATE__\s*=\s*(\{.*?\})\s*</script>",
+                  body.decode("utf-8", "replace"), re.S)
+    try:
+        res = json.loads(m.group(1))["mainRankingList"]["results"] if m else []
+    except (ValueError, KeyError, TypeError):
+        return []
+    out = []
+    for r in res or []:
+        try:
+            out.append({"rank": int(r["rank"]), "code": str(r["stockCode"]),
+                        "name": unicodedata.normalize("NFKC", str(r["stockName"]))})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _yahoo_tv() -> list[dict]:
+    """売買代金ランキングの上位 YAHOO_TV_PAGES×50 位(直列・間隔を空ける)。1ページ目が駄目なら例外。
+    朝07:15 に読むので前営業日の確定値。"""
+    out: list[dict] = []
+    deadline = time.monotonic() + YAHOO_TV_BUDGET
+    for page in range(1, YAHOO_TV_PAGES + 1):
+        if page > 1:
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(YAHOO_TV_GAP)
+        got = parse_yahoo_tv(_get(YAHOO_TV_URL.format(page=page)) or b"")
+        if not got:
+            if page == 1:
+                raise _FetchError("Yahoo 売買代金ランキングを取得できませんでした")
+            break
+        out += got
+    return out
+
+
+_IR_EXCLUDE = ("決算説明会", "見合わせ", "中止", "延期", "終了", "報告", "開催した", "開催しました")
+# 「10日に」「11月25日(水)」「11/25」。「7日ぶり」「11月5日(適時開示)」(開示日)は日付にしない
+_IR_DAY = re.compile(r"(?:(\d{1,2})月)?(\d{1,2})日(?:に|の|午前|午後|\d{1,2}時|\s|\([月火水木金土日])"
+                     r"|(?<![\d/])(\d{1,2})/(\d{1,2})(?![\d/])")
+_IR_TIME = re.compile(r"(\d{1,2})時(?:(\d{2})分|半)?|(\d{1,2}):(\d{2})")
+_CORP = re.compile(r"\(株\)|株式会社")
+
+
+def _corp_names(name: str) -> list[str]:
+    """Yahoo の銘柄名 → 見出しで探す名前(「(株)」を除き、ホールディングスは HD・無しも、グループは G も)。
+    グループを外した名前は別会社と重なる(ソフトバンクグループ→ソフトバンク)ので使わない。"""
+    base = _CORP.sub("", unicodedata.normalize("NFKC", name)).strip()
+    names = [base]
+    if "ホールディングス" in base:
+        names += [base.replace("ホールディングス", "HD"), base.replace("ホールディングス", "")]
+    if "グループ" in base:
+        names.append(base.replace("グループ", "G"))
+    return [n for n in dict.fromkeys(names) if len(n) >= 2]
+
+
+def ir_events(titles: list[str], d: date, tv: list[dict]) -> list[dict]:
+    """「説明会」の告知記事の見出し → d に開く説明会のうち、売買代金上位(tv)の銘柄のもの。
+
+    決算説明会は決算と重なるので除き、中止・延期・終わった報告も除く。日付は見出しの
+    「10日に」「11月10日」で判定する(「7日ぶり」は日付にしない)。時刻が見出しにあれば使う。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for raw in titles:
+        t = unicodedata.normalize("NFKC", raw)
+        if "説明会" not in t or any(x in t for x in _IR_EXCLUDE):
+            continue
+        days = [(m or m2, dd or dd2) for m, dd, m2, dd2 in _IR_DAY.findall(t)]
+        if not any((not m or int(m) == d.month) and int(dd) == d.day for m, dd in days):
+            continue
+        hit = next((r for r in tv if r["code"] not in seen
+                    and any(n in t for n in _corp_names(r["name"]))), None)
+        if not hit:
+            continue
+        seen.add(hit["code"])
+        tm = _IR_TIME.search(t)
+        at = None
+        if tm:
+            h = int(tm.group(1) or tm.group(3))
+            mi = int(tm.group(2) or tm.group(4) or (30 if tm.group(0).endswith("半") else 0))
+            if 0 <= h <= 23 and 0 <= mi <= 59:
+                at = _jst(d, h, mi)
+        name = _CORP.sub("", hit["name"]).strip()
+        out.append(_item(at, "ir", "JP", f"{name}（{hit['code']}）説明会", 3, day=d, notable=True,
+                         session="intraday" if at and (at.hour, at.minute) < JP_CLOSE else "unknown"))
+    return out
+
+
+def _ir_titles() -> list[str]:
+    """説明会の告知記事の見出し(Google ニュース RSS・直近 IR_WITHIN_DAYS 日)。"""
+    titles: list[str] = []
+    for q in IR_QUERIES:
+        url = newsfeeds.GOOGLE_NEWS + "?" + urllib.parse.urlencode(
+            {"q": f"{q} when:{IR_WITHIN_DAYS}d", "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
+        body = _get(url)
+        if body:
+            titles += [it.title for it in newsfeeds.parse_google_rss(body)]
+    return titles
 
 
 def _kabutan_weekly(d: date) -> list[dict] | None:
@@ -590,20 +753,37 @@ def _kabutan_weekly(d: date) -> list[dict] | None:
 
 
 def _jp_notable(d: date) -> list[dict]:
-    """日本の注目決算(株探の★＋IRBANK の発表目安)。株探が駄目な日は IRBANK の上位8社で代用。"""
-    try:
-        weekly = _kabutan_weekly(d)
-    except Exception as e:
-        print(f"  予定: 株探(今週の決算発表予定) 取得失敗のため IRBANK で代用 ({type(e).__name__}: {e})",
-              file=sys.stderr)
-        weekly = None
-    try:
-        rows = _irbank_rows(_need(IRBANK_URL.format(d=d)), d)
-    except _FetchError:
-        if weekly is None:
-            raise
-        rows = []   # 株探の名前・未定のまま出す
-    return jp_notable_items(weekly, rows, d)
+    """日本の決算予定(株探の★・IRBANK の全社・Yahoo の売買代金順位)と、当日の説明会。
+    株探・Yahoo・Google ニュースが駄目でも IRBANK があれば出す(★や順位の条件が抜けるだけ)。"""
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_tv = pool.submit(_yahoo_tv)
+        f_ir = pool.submit(_ir_titles)
+        try:
+            weekly = _kabutan_weekly(d)
+        except Exception as e:
+            print(f"  予定: 株探(今週の決算発表予定) 取得失敗のため★なしで判定 ({type(e).__name__}: {e})",
+                  file=sys.stderr)
+            weekly = None
+        try:
+            rows = _irbank_rows(_need(IRBANK_URL.format(d=d)), d)
+        except _FetchError:
+            if not weekly:
+                raise
+            rows = []   # 株探の★だけ(名前は株探・時刻未定)
+        try:
+            tv = f_tv.result()
+        except Exception as e:
+            print(f"  予定: Yahoo(売買代金) 取得失敗のため時価総額だけで判定 ({type(e).__name__}: {e})",
+                  file=sys.stderr)
+            tv = []
+        try:
+            titles = f_ir.result()
+        except Exception as e:
+            print(f"  予定: Google ニュース(説明会) 取得失敗のため省略 ({type(e).__name__}: {e})",
+                  file=sys.stderr)
+            titles = []
+    ranks = {r["code"]: r["rank"] for r in tv}
+    return jp_notable_items(weekly, rows, d, ranks) + ir_events(titles, d, tv)
 
 
 def parse_pts(body: bytes) -> list[dict]:
@@ -801,7 +981,7 @@ def us_surprises(rows: list[dict], reaction) -> list[dict]:
 
 
 def _us_surprise_job(p: date) -> list[dict]:
-    rows = _nasdaq_rows(_need(NASDAQ_URL.format(d=p)), SURPRISE_US_MIN_CAP)
+    rows = _nasdaq_rows(_need_nasdaq(NASDAQ_URL.format(d=p)), SURPRISE_US_MIN_CAP)
     failed: list[str] = []
 
     def reaction(r: dict):
@@ -836,9 +1016,11 @@ def _out(it: dict, d: date) -> dict:
     out = {"at": at.isoformat() if at else None, "time_label": label, "kind": it["kind"],
            "country": it["country"], "name": it["name"], "forecast": it["forecast"],
            "previous": it["previous"], "result": it["result"], "importance": it["importance"]}
-    for flag in ("notable", "fallback"):   # 注目決算の印(付くのは決算だけ。無い項目にはキー自体を出さない)
+    for flag in ("notable", "star"):   # 注目決算の印(付くのは決算だけ。無い項目にはキー自体を出さない)
         if it.get(flag):
             out[flag] = True
+    if it.get("session"):                # 日本の決算・説明会: intraday(場中)/after(引け後)/unknown
+        out["session"] = it["session"]
     return out
 
 
@@ -914,7 +1096,7 @@ def fetch(now: datetime | None = None) -> dict:
         ("FRB", lambda: parse_frb(_need(FRB_URL))),
         ("日銀", lambda: boj_events(parse_boj(_need(BOJ_URL)))),
         # 米国決算は配信日と同じ日付(米東部の当日)。日本時間の夜〜翌朝に出る。
-        ("Nasdaq(米国の注目決算)", lambda: parse_nasdaq(_need(NASDAQ_URL.format(d=d)), d)),
+        ("Nasdaq(米国の注目決算)", lambda: parse_nasdaq(_need_nasdaq(NASDAQ_URL.format(d=d)), d)),
         ("株探・IRBANK(日本の注目決算)", lambda: _jp_notable(d)),
     ]
     surprise_jobs: list[tuple[str, object]] = [

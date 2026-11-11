@@ -127,6 +127,8 @@ POINTS_EXCLUDE = {"論文"}  # 今日の要点に入れないジャンル
 SCHEDULE_MAX = 12        # 今日の予定の最大行数
 # 注目決算・決算サプライズの1国あたりの最大行数(マーケットのカードを PC で縦に長くしすぎないため)
 EARNINGS_MAX_PER_COUNTRY = 8
+# 日本の決算予定は時刻ごとに社名を「、」でつなぐ1行にするので社数が多くても縦に伸びにくい。超えた分は「ほか N 社」
+JP_EARNINGS_NAMES_MAX = 150
 SURPRISE_MAX_PER_COUNTRY = 5
 _COUNTRY_LABELS = {"JP": "日本", "US": "米国"}
 # 時刻が「21:30」「翌03:00」でない予定(昼ごろ・寄り前・引け後)の at は近似なので、過ぎても3時間は出す
@@ -605,18 +607,56 @@ def _rest_line(n: int, unit: str) -> dict:
             "margin": "sm"}
 
 
+_JP_SHORT = (("ホールディングス", "HD"), ("フィナンシャルグループ", "FG"))
+_JP_GROUPS = (("intraday", "場中（〜15:30・時刻は目安）"), ("after", "引け後・時刻未定"))
+
+
+def _jp_short(ev: dict) -> str:
+    name = re.sub(r"\s*(決算|説明会)$", "", str(ev.get("name") or ""))
+    for long, short in _JP_SHORT:
+        name = name.replace(long, short)
+    return ("★" if ev.get("star") else "") + name
+
+
+def _jp_earnings_rows(earn: list[dict], ir: list[dict]) -> list[dict]:
+    """日本: 場中 → 引け後・未定 → 説明会 の小見出しごとに、時刻1つにつき1行(社名を「、」でつなぐ)。
+    社名は JP_EARNINGS_NAMES_MAX 社まで(場中を優先)。超えた分は最後に「ほか N 社」。"""
+    groups = [(cap, [ev for ev in earn if (ev.get("session") == "intraday") == (key == "intraday")])
+              for key, cap in _JP_GROUPS] + [("説明会", ir)]
+    out: list[dict] = []
+    left, rest = JP_EARNINGS_NAMES_MAX, 0
+    for cap, evs in groups:
+        rest += max(0, len(evs) - left)
+        evs = evs[:left]
+        left -= len(evs)
+        if not evs:
+            continue
+        by_label: dict[str, list[str]] = {}
+        for ev in evs:
+            by_label.setdefault(str(ev.get("time_label") or "未定"), []).append(_jp_short(ev))
+        out.append({"type": "text", "text": cap, "size": "xxs", "color": META_COLOR, "margin": "sm"})
+        out += [r for r in (_schedule_row({"time_label": lab, "name": "、".join(names)})
+                            for lab, names in by_label.items()) if r]
+    if rest:
+        out.append(_rest_line(rest, "社"))
+    return out
+
+
 def _earnings_section(schedule: list[dict], now: datetime) -> list[dict]:
-    """注目決算(kind="earnings")を日本・米国に分けて「引け後  Apple（AAPL）」の行に。
-    IRBANK の上位で代用した項目(fallback)があれば見出しに「（時価総額上位で代用）」を付ける。
-    1国 EARNINGS_MAX_PER_COUNTRY 行を超える分は「ほか N 社」にする(黙って消さない)。"""
-    earn = [ev for _at, ev in _upcoming([ev for ev in schedule if ev.get("kind") == "earnings"], now)]
-    if not earn:
+    """決算予定(kind="earnings")と日本の当日の説明会(kind="ir")。日本 → 米国。
+    日本は場中・引け後に分けて時刻ごとにまとめる(★=株探の注目)。米国は1社1行で
+    EARNINGS_MAX_PER_COUNTRY 行を超える分は「ほか N 社」にする(黙って消さない)。"""
+    up = [ev for _at, ev in _upcoming([ev for ev in schedule if ev.get("kind") in ("earnings", "ir")], now)]
+    if not up:
         return []
-    title = "注目決算" + ("（時価総額上位で代用）" if any(ev.get("fallback") for ev in earn) else "")
-    out = _section_title(title)
-    for country, evs in _by_country(earn):
+    out = _section_title("決算予定")
+    for country, evs in _by_country(up):
         out.append(_sub_title(_country_label(country)))
-        # 節の見出しが「注目決算」なので、行の名前の末尾の「決算」は省く
+        if country == "JP":
+            out += _jp_earnings_rows([ev for ev in evs if ev.get("kind") == "earnings"],
+                                     [ev for ev in evs if ev.get("kind") == "ir"])
+            continue
+        # 節の見出しが「決算予定」なので、行の名前の末尾の「決算」は省く
         rows = [_schedule_row({**ev, "name": re.sub(r"\s*決算$", "", str(ev["name"])) or ev["name"]})
                 for ev in evs[:EARNINGS_MAX_PER_COUNTRY]]
         out += [r for r in rows if r]
@@ -670,7 +710,7 @@ def _surprise_section(schedule: list[dict]) -> list[dict]:
 
 def _market_bubble(market: list[dict] | None, schedule: list[dict] | None,
                    now: datetime) -> dict | None:
-    """1通目の2枚目「マーケット」: 市況 → 今日の予定 → 注目決算 → 決算サプライズ → 注記。
+    """1通目の2枚目「マーケット」: 市況 → 今日の予定 → 決算予定 → 決算サプライズ → 注記。
     中身の無い節は出さない。どの節も無ければ None(1通目は要点の1枚だけになる)。"""
     schedule = schedule or []
     body: list[dict] = []
@@ -681,7 +721,8 @@ def _market_bubble(market: list[dict] | None, schedule: list[dict] | None,
         if any(m.get("kind") == "crypto" and _market_row(m) for m in market):
             body.append({"type": "text", "text": "仮想通貨は直近値・24時間比", "size": "xxs",
                          "color": META_COLOR, "margin": "sm", "wrap": True})
-    sched = _schedule_rows([ev for ev in schedule if ev.get("kind") not in ("earnings", "surprise")], now)
+    sched = _schedule_rows([ev for ev in schedule if ev.get("kind") not in ("earnings", "ir", "surprise")],
+                           now)
     if sched:
         body += _section_title("今日の予定")
         body += sched

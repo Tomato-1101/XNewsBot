@@ -361,7 +361,7 @@ def test_advice_note_at_end_of_market_card_only_when_shown():
             assert ADVICE_NOTE not in _texts(_summary(specs))
 
 
-# ---- 注目決算・決算サプライズ ----
+# ---- 決算予定・決算サプライズ ----
 
 def _earn(country: str, name: str, label: str, at=None, **kw) -> dict:
     ev = {"at": at, "time_label": label, "kind": "earnings", "country": country, "name": name,
@@ -380,34 +380,53 @@ def test_earnings_section_by_country_without_trailing_word():
     schedule = [
         _ev("2026-06-08T21:30:00+09:00", "21:30", "米 雇用統計"),
         _earn("US", "Apple（AAPL）決算", "引け後"),
-        _earn("JP", "トヨタ自動車（7203）決算", "15:00", at="2026-06-08T15:00:00+09:00"),
-        _earn("JP", "過ぎた会社（1111）決算", "07:00", at="2026-06-08T07:00:00+09:00"),  # 過ぎたら出さない
-        _earn("JP", "ソニーグループ（6758）決算", "未定"),
+        _earn("JP", "トヨタ自動車（7203）決算", "15:00", at="2026-06-08T15:00:00+09:00",
+              session="intraday", star=True),
+        _earn("JP", "過ぎた会社（1111）決算", "07:00", at="2026-06-08T07:00:00+09:00",
+              session="intraday"),  # 過ぎたら出さない
+        _earn("JP", "ソニーグループ（6758）決算", "未定", session="unknown"),
     ]
     specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, schedule=schedule, now=NOW)
     # 決算は今日の予定には出さない
     assert [n[0] for _t, n in _schedule_lines(specs)] == ["米 雇用統計"]
-    sec = _section(_market(specs), "注目決算")
+    sec = _section(_market(specs), "決算予定")
     assert [c.get("text") if c["type"] == "text" else _texts(c) for c in sec] == [
-        "日本", ["15:00", "トヨタ自動車（7203）"], ["未定", "ソニーグループ（6758）"],
+        "日本", "場中（〜15:30・時刻は目安）", ["15:00", "★トヨタ自動車（7203）"],
+        "引け後・時刻未定", ["未定", "ソニーグループ（6758）"],
         "米国", ["引け後", "Apple（AAPL）"],
     ]
     texts = _texts(_market(specs))
-    assert texts.index("今日の予定") < texts.index("注目決算") < texts.index(ADVICE_NOTE)
+    assert texts.index("今日の予定") < texts.index("決算予定") < texts.index(ADVICE_NOTE)
 
 
-def test_earnings_fallback_note_and_overflow_count():
-    schedule = [_earn("JP", f"代用{k}（{1000 + k}）決算", "未定", fallback=True) for k in range(10)]
+def test_jp_earnings_grouped_by_time_with_ir_and_overflow():
+    """日本は時刻ごとに1行(社名を「、」でつなぐ・HD/FG に縮める)、説明会は別の小見出し。
+    社名が JP_EARNINGS_NAMES_MAX を超えた分だけ「ほか N 社」。"""
+    at = "2026-06-08T13:00:00+09:00"
+    schedule = [
+        _earn("JP", "三菱UFJフィナンシャル・グループ（8306）決算", "13:00", at=at, session="intraday"),
+        _earn("JP", "ソフトバンクグループ（9984）決算", "13:00", at=at, session="intraday"),
+        _earn("JP", "前回の会社ホールディングス（2000）決算", "前回13:00", at=at, session="intraday"),
+        _earn("JP", "引け後の会社（3000）決算", "16:00", at="2026-06-08T16:00:00+09:00", session="after"),
+        {**_earn("JP", "データセクション（3905）説明会", "未定", session="unknown"), "kind": "ir"},
+    ]
     specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, schedule=schedule, now=NOW)
-    sec = _section(_market(specs), "注目決算（時価総額上位で代用）")
-    rows = [c for c in sec if c["type"] == "box"]
-    assert len(rows) == lc.EARNINGS_MAX_PER_COUNTRY
-    assert sec[-1]["text"] == f"ほか {10 - lc.EARNINGS_MAX_PER_COUNTRY} 社"  # 黙って消さない
-    # 代用が無ければ見出しは「注目決算」だけ
-    plain = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D,
-                            schedule=[_earn("JP", "A社（1）決算", "15:00")], now=NOW)
-    assert "注目決算" in _texts(_market(plain))
-    assert "注目決算（時価総額上位で代用）" not in _texts(_market(plain))
+    sec = _section(_market(specs), "決算予定")
+    assert [c.get("text") if c["type"] == "text" else _texts(c) for c in sec] == [
+        "日本", "場中（〜15:30・時刻は目安）",
+        ["13:00", "三菱UFJフィナンシャル・グループ（8306）、ソフトバンクグループ（9984）"],
+        ["前回13:00", "前回の会社HD（2000）"],
+        "引け後・時刻未定", ["16:00", "引け後の会社（3000）"],
+        "説明会", ["未定", "データセクション（3905）"],
+    ]
+    # 説明会は今日の予定には出さない
+    assert _schedule_lines(specs) == []
+    many = [_earn("JP", f"社{k}（{1000 + k}）決算", "13:00", at=at, session="intraday")
+            for k in range(lc.JP_EARNINGS_NAMES_MAX + 7)]
+    specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, schedule=many, now=NOW)
+    sec = _section(_market(specs), "決算予定")
+    assert sec[-1]["text"] == "ほか 7 社"   # 黙って消さない
+    assert _texts(sec[2])[1].count("、") == lc.JP_EARNINGS_NAMES_MAX - 1
 
 
 def test_surprise_section_up_green_down_red_jp_first():
@@ -430,8 +449,8 @@ def test_surprise_section_up_green_down_red_jp_first():
     assert rows[0]["contents"][0]["contents"][0]["color"] == lc.SURPRISE_UP_COLOR
     assert rows[1]["contents"][0]["contents"][0]["color"] == lc.SURPRISE_DOWN_COLOR
     assert rows[0]["contents"][1]["size"] == "xxs"  # 見出しは小さく2行目
-    # サプライズは今日の予定にも注目決算にも出さない
-    assert _section(_market(specs), "今日の予定") == [] and _section(_market(specs), "注目決算") == []
+    # サプライズは今日の予定にも決算予定にも出さない
+    assert _section(_market(specs), "今日の予定") == [] and _section(_market(specs), "決算予定") == []
 
 
 def test_earnings_and_surprise_hidden_when_empty():
@@ -440,7 +459,7 @@ def test_earnings_and_surprise_hidden_when_empty():
                                       _surp("JP", "壊れた行", "x", "PTS")], now=NOW)
     texts = _texts(_market(specs))
     assert "今日の予定" in texts
-    assert not any(t.startswith("注目決算") for t in texts) and "決算サプライズ" not in texts
+    assert "決算予定" not in texts and "決算サプライズ" not in texts
     # 決算・サプライズだけでもマーケットカードは出る
     only = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D,
                            schedule=[_surp("US", "Nike（NKE）", 3.2, "当日")], now=NOW)
@@ -703,8 +722,13 @@ _HEAVY_SCHEDULE = [
     _ev(f"2026-06-08T{9 + k:02d}:30:00+09:00", f"{9 + k:02d}:30",
         f"米 経済指標その{k:02d}（前月比・季節調整済み）", forecast="0.3%", previous="0.2%")
     for k in range(12)] + [
-    _earn("JP" if k < 8 else "US", f"注目企業{k:02d}ホールディングス（{7000 + k}）決算", "引け後")
-    for k in range(16)] + [
+    # 日本は場中に多い日の実数(11/12 は場中 109 社)を時刻9つに散らす
+    _earn("JP", f"場中企業{k:03d}ホールディングス（{7000 + k}）決算", f"{11 + k % 9 // 2}:{k % 2 * 30:02d}",
+          at=f"2026-06-08T{11 + k % 9 // 2}:{k % 2 * 30:02d}:00+09:00", session="intraday")
+    for k in range(120)] + [
+    _earn("JP", f"引け後企業{k}（{6000 + k}）決算", "16:00", at="2026-06-08T16:00:00+09:00",
+          session="after") for k in range(8)] + [
+    _earn("US", f"注目企業{k:02d} Holdings（U{k}）決算", "引け後") for k in range(8)] + [
     _surp("JP" if k < 5 else "US", f"サプライズ企業{k}（{8000 + k}）", 10.0 - 3 * k, "PTS",
           headline="通期の営業利益を上方修正、市場予想を上回る" if k < 5 else "")
     for k in range(10)]
@@ -731,7 +755,9 @@ def test_heavy_day_market_card_keeps_all_sections():
                             schedule=_HEAVY_SCHEDULE, now=NOW)
     assert len(_schedule_lines(specs)) == 12
     assert len([c for c in _section(_market(specs), "市況（前日終値）") if c["type"] == "box"]) == 8
-    assert len([c for c in _section(_market(specs), "注目決算") if c["type"] == "box"]) == 16
+    earn = _section(_market(specs), "決算予定")
+    assert sum(_texts(c)[1].count("、") + 1 for c in earn if c["type"] == "box") == 128 + 8   # 全社(省略なし)
+    assert not any(str(c.get("text", "")).startswith("ほか") for c in earn)
     assert len([c for c in _section(_market(specs), "決算サプライズ") if c["type"] == "box"]) == 10
 
 

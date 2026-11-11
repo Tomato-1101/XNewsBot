@@ -454,8 +454,11 @@ def test_middle_rate_tier_keeps_rate_links_on_big_and_notable_when_it_omits_noth
         return sum(e[1] for car in cars for e in car)
     assert count(lc.RATE_ALL) < count(lc.RATE_TOP) == count(lc.RATE_NONE) == total  # この日は中間段で全件載る
 
+    # 予定は要点の下に収まる量にする(場中の決算が100社を超える日はマーケットが独立して、ジャンルに使える通が1通減る)
+    schedule = [e for e in _HEAVY_SCHEDULE if e.get("session") != "intraday"]
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
-                            schedule=_HEAVY_SCHEDULE, now=NOW)
+                            schedule=schedule, now=NOW)
+    assert specs[1].get("alt") != lc.MARKET_ALT
     _check_limits_and_coverage(grouped, specs)
     shown = _check_accounting(grouped, specs)
     assert _omitted(specs) == 0

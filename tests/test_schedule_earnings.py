@@ -1,4 +1,4 @@
-"""注目決算(株探の★・Nasdaq 500億ドル以上)と決算サプライズ(前営業日の決算への市場の反応)の単体テスト。
+"""決算予定(日本: IRBANK・株探の★・売買代金、米国: Nasdaq 500億ドル以上)・当日の説明会と決算サプライズ(前営業日の決算への市場の反応)の単体テスト。
 
 ネットワークは使わない(実ページを削った tests/fixtures と手組みのデータ)。
 """
@@ -70,43 +70,105 @@ def test_parse_kabutan_weekly_no_heading_vs_no_stars():
     assert sc.parse_kabutan_weekly(body, date(2026, 11, 20)) is None
 
 
-# --- 日本の注目決算(株探 ★ + IRBANK の発表目安 / 代用) ---
+# --- 日本の決算予定(IRBANK の全社 → 場中/引け後で条件を変えて絞る) ---
 
 def _rows():
     return sc._irbank_rows(_fx("irbank_kessan_2026-10-01.html"), date(2026, 10, 1))
 
 
-def test_jp_notable_items_join_irbank_time_and_name():
+def test_irbank_rows_read_past_times():
+    by = {r["code"]: r for r in _rows()}
+    assert by["7545"]["hm"] == (15, 30) and by["7545"]["past"] == [(14, 30)]
+    assert by["8276"]["past"] == []
+    # 見出しの日付が違う一覧(休日に翌営業日が出る等)は使わない
+    assert sc._irbank_rows(_fx("irbank_kessan_2026-10-01.html"), date(2026, 10, 2)) == []
+
+
+def test_jp_session_by_forecast_then_past_time():
+    assert sc.jp_session({"hm": (13, 30), "past": []}) == ("intraday", (13, 30), "")
+    assert sc.jp_session({"hm": (15, 30), "past": [(16, 0), (14, 30)]}) == ("intraday", (14, 30), "前回14:30")
+    assert sc.jp_session({"hm": (15, 30), "past": [(15, 30)]}) == ("after", (15, 30), "")   # 大引けちょうどは引け後
+    assert sc.jp_session({"hm": None, "past": []}) == ("unknown", None, "")
+
+
+def test_jp_notable_items_intraday_wide_after_narrow():
     d = date(2026, 10, 1)
-    weekly = [{"code": "7545", "name": "西松屋チェ"}, {"code": "9999", "name": "IRBANKに無い"},
-              {"code": "7545", "name": "重複"}]
+    out = sc.jp_notable_items([], _rows(), d, {"2493": 150})
+    got = {it["name"]: (it["session"], it["label"], it["at"]) for it in out}
+    # 場中(15:30 前): 時価総額500億円以上(アオキ 3523・西松屋 1364・平和堂 1332・ナガイレーベン 501)は入り、
+    # 日本フイルコン(152億・順位なし)は入らない。西松屋は目安15:30だが前回14:30なので場中
+    assert got == {
+        "クスリのアオキホールディングス（3549）決算": ("intraday", "", _at(d, 15)),
+        "西松屋チェーン（7545）決算": ("intraday", "前回14:30", _at(d, 14, 30)),
+        "平和堂（8276）決算": ("intraday", "", _at(d, 13, 30)),
+        "ナガイレーベン（7447）決算": ("intraday", "", _at(d, 15)),
+    }
+    # 引け後は売買代金上位100位まで(イーサポートリンク 42億・150位は入らない、100位なら入る)
+    out = sc.jp_notable_items([], _rows(), d, {"2493": 100, "5942": 300})
+    names = [it["name"] for it in out]
+    assert "イーサポートリンク（2493）決算" in names and "日本フイルコン（5942）決算" in names   # 場中は300位まで
+    assert all(it["kind"] == "earnings" and it["country"] == "JP" and it["notable"] for it in out)
+
+
+def test_jp_notable_items_stars_always_and_order():
+    d = date(2026, 10, 1)
+    weekly = [{"code": "2493", "name": "イーサポ"}, {"code": "9999", "name": "IRBANKに無い"}]
     out = sc.jp_notable_items(weekly, _rows(), d)
-    # 会社名は IRBANK の正式名、IRBANK に無い銘柄は株探の名前・時刻は未定
-    assert [(it["name"], it["at"], it["notable"]) for it in out] == [
-        ("西松屋チェーン（7545）決算", _at(d, 15, 30), True), ("IRBANKに無い（9999）決算", None, True)]
-    assert [sc._out(it, d)["time_label"] for it in out] == ["15:30", "未定"]
-    assert not any(it.get("fallback") for it in out)
-    assert all(it["kind"] == "earnings" and it["country"] == "JP" for it in out)
+    by = {it["name"]: it for it in out}
+    # ★は条件に関係なく出す(会社名は IRBANK の正式名)。IRBANK に無い★は株探の名前・時刻未定
+    assert by["イーサポートリンク（2493）決算"]["star"] and by["イーサポートリンク（2493）決算"]["session"] == "after"
+    assert by["IRBANKに無い（9999）決算"]["at"] is None and by["IRBANKに無い（9999）決算"]["session"] == "unknown"
+    assert sc._out(by["IRBANKに無い（9999）決算"], d)["time_label"] == "未定"
+    # 並びは★ → 時価総額の大きい順(時刻順への並べ替えは select が安定ソートで行う)
+    assert [it["name"] for it in out][:3] == ["イーサポートリンク（2493）決算", "IRBANKに無い（9999）決算",
+                                              "クスリのアオキホールディングス（3549）決算"]
+    assert not sc._out(by["平和堂（8276）決算"], d).get("star")
+    assert sc._out(by["平和堂（8276）決算"], d)["session"] == "intraday"
 
 
-def test_jp_notable_items_empty_stars_does_not_fall_back():
-    assert sc.jp_notable_items([], _rows(), date(2026, 10, 1)) == []
+def test_parse_yahoo_trading_value():
+    out = sc.parse_yahoo_tv(_fx("yahoo_trading_value_2026-11-11.html"))
+    assert out == [{"rank": 1, "code": "285A", "name": "キオクシアホールディングス(株)"},
+                   {"rank": 2, "code": "6857", "name": "(株)アドバンテスト"},
+                   {"rank": 3, "code": "9984", "name": "ソフトバンクグループ(株)"}]
+    assert sc.parse_yahoo_tv(b"<html></html>") == []
 
 
-def test_jp_notable_items_fallback_top8_by_cap():
-    d = date(2026, 10, 1)
-    out = sc.jp_notable_items(None, _rows(), d)
-    # 時価総額1000億円以上の上位(クスリのアオキ 3523億 > 西松屋 1364億 > 平和堂 1332億)。印は notable + fallback
-    assert [it["name"] for it in out] == [
-        "クスリのアオキホールディングス（3549）決算", "西松屋チェーン（7545）決算", "平和堂（8276）決算"]
-    assert all(it["notable"] and it["fallback"] for it in out)
-    many = [{"code": f"{1000 + i}", "name": f"社{i}", "cap": 2000 + i, "hm": None} for i in range(12)]
-    assert len(sc.jp_notable_items(None, many, d)) == sc.EARNINGS_MAX
+def test_yahoo_tv_reads_pages_until_empty(monkeypatch):
+    page = _fx("yahoo_trading_value_2026-11-11.html")
+    seen = []
+    monkeypatch.setattr(sc, "YAHOO_TV_GAP", 0)
+    monkeypatch.setattr(sc, "_get", lambda url: seen.append(url) or (page if "page=1" in url or "page=2" in url
+                                                                      else None))
+    assert len(sc._yahoo_tv()) == 6 and len(seen) == 3        # 3ページ目が空なら止める
+    monkeypatch.setattr(sc, "_get", lambda url: None)
+    with pytest.raises(sc._FetchError):
+        sc._yahoo_tv()
 
 
-def test_parse_irbank_marks_fallback():
-    out = sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), date(2026, 10, 1))
-    assert out and all(it["notable"] and it["fallback"] for it in out)
+_TV = [{"rank": 44, "code": "3905", "name": "データセクション(株)"},
+       {"rank": 5, "code": "9412", "name": "スカパーJSATホールディングス(株)"},
+       {"rank": 3, "code": "9984", "name": "ソフトバンクグループ(株)"}]
+
+
+def test_ir_events_today_only_for_ranked_names():
+    titles = [
+        "データセクション－7日ぶり大幅反発 10日にAIデータセンターの稼働状況などに関する説明会開催へ(トレーダーズ・ウェブ)",
+        "2026年11月10日（火）【野村證券主催】「スカパーＪＳＡＴ株式会社 個人投資家様向け会社説明会」開催",
+        "ソフトバンクグループ株式会社が決算説明会を開催。11月10日16時30分よりライブ配信",   # 決算説明会は除く
+        "ＪＴ、個人投資家向け説明会を見合わせ 10日に予定",                                   # 見合わせは除く
+        "アクシス[4012]：個人投資家向け会社説明会開催のお知らせ 2026年11月10日(適時開示)",      # 開示日・圏外
+        "多賀城跡の現地説明会を11月10日に開催",                                              # 銘柄ではない
+    ]
+    d = date(2026, 11, 10)
+    out = sc.ir_events(titles, d, _TV)
+    assert [(it["name"], it["kind"], it["at"], it["session"]) for it in out] == [
+        ("データセクション（3905）説明会", "ir", None, "unknown"),
+        ("スカパーJSATホールディングス（9412）説明会", "ir", None, "unknown")]
+    assert sc.ir_events(titles, date(2026, 11, 7), _TV) == []      # 「7日ぶり」は日付ではない
+    timed = sc.ir_events(["データセクション、11/10 14時から説明会を開催"], d, _TV)
+    assert timed[0]["at"] == _at(d, 14) and timed[0]["session"] == "intraday"
+    assert sc._out(timed[0], d)["time_label"] == "14:00" and sc._out(timed[0], d)["notable"]
 
 
 # --- 米国の注目決算(Nasdaq 500億ドル以上を全部) ---
@@ -134,10 +196,12 @@ def test_select_keeps_all_notable_beyond_max_items():
     assert "notable" not in next(x for x in out if x["kind"] == "indicator")
 
 
-def test_select_outputs_notable_and_fallback_flags():
+def test_select_outputs_notable_session_and_star():
     d = date(2026, 10, 1)
-    out = sc.select(sc.parse_irbank(_fx("irbank_kessan_2026-10-01.html"), d), _at(d, 7, 15))
-    assert out and all(x["notable"] is True and x["fallback"] is True for x in out)
+    out = sc.select(sc.jp_notable_items([{"code": "8276", "name": "平和堂"}], _rows(), d), _at(d, 7, 15))
+    assert out and all(x["notable"] is True and x["session"] == "intraday" for x in out)
+    assert [x["name"] for x in out if x.get("star")] == ["平和堂（8276）決算"]
+    assert [x["time_label"] for x in out] == ["13:30", "前回14:30", "15:00", "15:00"]   # 時刻順
 
 
 # --- 前営業日 ---
@@ -343,10 +407,9 @@ def test_fetch_returns_surprises_and_notables(monkeypatch):
     assert not any("irbank.net" in u and "y=2026-10-01" in u for u in seen)   # 日本のサプライズに IRBANK は使わない
 
 
-def test_fetch_kabutan_failure_falls_back_to_irbank_top(monkeypatch, capsys):
+def test_fetch_kabutan_and_yahoo_failure_still_lists_irbank(monkeypatch, capsys):
+    """株探・Yahoo・Google ニュースが取れなくても、IRBANK の時価総額の条件だけで日本の決算予定は出る。"""
     def get(url):
-        if "kabutan.jp" in url:
-            return None
         if "irbank.net" in url:
             return _fx("irbank_kessan_2026-10-01.html")
         return None
@@ -354,15 +417,16 @@ def test_fetch_kabutan_failure_falls_back_to_irbank_top(monkeypatch, capsys):
     monkeypatch.setattr(sc, "_get", get)
     monkeypatch.setattr(sc, "_yahoo_chart", lambda sym: None)
     got = sc.fetch(datetime(2026, 10, 1, 7, 15, tzinfo=J))
-    names = [(x["name"], x.get("fallback")) for x in got["schedule"]]
-    assert names == [("平和堂（8276）決算", True), ("クスリのアオキホールディングス（3549）決算", True),
-                     ("西松屋チェーン（7545）決算", True)]   # 発表目安(13:30・15:00・15:30)の時刻順
+    assert [x["name"] for x in got["schedule"]] == [
+        "平和堂（8276）決算", "西松屋チェーン（7545）決算", "クスリのアオキホールディングス（3549）決算",
+        "ナガイレーベン（7447）決算"]   # 13:30・前回14:30・15:00・15:00(同時刻は時価総額順)
     assert got["surprises"] == []
-    assert "株探" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "株探" in err and "Yahoo(売買代金)" in err
 
 
-def test_fetch_star_free_day_has_no_japan_earnings(monkeypatch):
-    """株探の記事に d の見出しがあって★が0件の日は、IRBANK で代用せず日本の注目決算は0件。"""
+def test_fetch_star_free_day_uses_conditions_only(monkeypatch):
+    """株探の記事に d の見出しがあって★が0件の日も、条件(時価総額・売買代金)に当たる決算は出す。"""
     def get(url):
         if url.rstrip("/") == "https://kabutan.jp":
             return _fx("kabutan_top_links.html")
@@ -370,12 +434,15 @@ def test_fetch_star_free_day_has_no_japan_earnings(monkeypatch):
             return _fx("kabutan_weekly_2026-09-28.html")
         if "irbank.net" in url:
             return _fx("irbank_kessan_2026-10-01.html")
+        if "tradingValueHigh" in url and "page=1" in url:
+            return _fx("yahoo_trading_value_2026-11-11.html")
         return None
 
     monkeypatch.setattr(sc, "_get", get)
     monkeypatch.setattr(sc, "_yahoo_chart", lambda sym: None)
     got = sc.fetch(datetime(2026, 10, 1, 7, 15, tzinfo=J))
-    assert [x for x in got["schedule"] if x["country"] == "JP"] == []
+    jp = [x for x in got["schedule"] if x["country"] == "JP"]
+    assert len(jp) == 4 and not any(x.get("star") for x in jp)
 
 
 def test_kabutan_get_skips_after_deadline(monkeypatch):
