@@ -18,7 +18,8 @@ from xnewsbot.onboarding import (FEEDBACK_FAILED_MSG, FEEDBACK_MISSING_MSG, FEED
                                  handle_event)
 
 from .test_line_client import (D, NOW, _HEAVY_MARKET, _HEAVY_SCHEDULE, _actions, _bulk, _carousels,
-                               _check_accounting, _check_limits_and_coverage, _heavy, _omitted, _texts)
+                               _check_accounting, _check_limits_and_coverage, _heavy, _omitted, _texts,
+                               _unstack)
 
 _PL_PATH = Path(__file__).resolve().parent.parent / "scripts" / "pipeline.py"
 _spec = importlib.util.spec_from_file_location("pipeline", _PL_PATH)
@@ -385,7 +386,7 @@ def test_every_row_has_rate_link_next_to_meta():
     from .test_line_client import _big, _small
     items = _with_ids({"AI": [_big("AI", 0), _small(1, "AI", score=70), _small(2, "AI", score=30)]})
     specs = lc.digest_specs(items, slot="morning", digest_date=D, now=NOW)
-    bubble = specs[1]["contents"]["contents"][0]
+    bubble = _unstack(specs[1]["contents"])[0]
     keys = [f"rate:20260608:morning:AI:{feedback.title_hash(it.title)}" for it in items["AI"]]
     assert sorted(_rate_datas(bubble)) == sorted(keys)
     rates = [n for n in lc._text_nodes(bubble) if n["text"] == lc.RATE_LABEL]
@@ -405,9 +406,10 @@ def test_every_row_has_rate_link_next_to_meta():
 
 
 def test_rate_links_stay_within_line_limits_on_heavy_days():
-    """重い日(約130〜160件)でも 5通・12枚・48000B・28000B を超えない。入りきる日は出た記事すべてに「評価する」が付き、
+    """重い日(約130〜160件)でも 5通・各通28000B を超えない。入りきる日は出た記事すべてに「評価する」が付き、
     「評価する」のせいで省略が出る日は段を落として組み直す(省略は最も多く載る段と同じ件数。評価のために記事を削らない)。"""
-    g5 = _bulk(["AI", "株", "暗号資産", "テクノロジー", "話題"], 32, summary_len=100)
+    # 入りきる日。重いマーケットは独立した2通目になるので、残り3通に収まる量(5ジャンル×10件)にする(旧: 32件でも全件入った)
+    g5 = _bulk(["AI", "株", "暗号資産", "テクノロジー", "話題"], 10, summary_len=100)
     for grouped, expect_all in ((_heavy(), False), (g5, True)):
         _with_ids(grouped)
         specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
@@ -421,8 +423,11 @@ def test_rate_links_stay_within_line_limits_on_heavy_days():
         else:
             assert len(rates) < len(shown)  # 全行には付かない(付けると省略が増える)
 
+        # マーケットが要点の下に入らない日は独立した2通目になり、ジャンルに使える通が1通減る
+        slots = lc.MAX_MESSAGES - (2 if specs[1].get("alt") == lc.MARKET_ALT else 1)
+
         def count(level):
-            cars = lc._genre_carousels(grouped, D, "morning", NOW, lc.MAX_MESSAGES - 1, level)
+            cars = lc._genre_carousels(grouped, D, "morning", NOW, slots, level)
             return sum(e[1] for car in cars for e in car)
         total = sum(len(v) for v in grouped.values())
         counts = [count(lc.RATE_ALL), count(lc.RATE_TOP), count(lc.RATE_NONE)]
@@ -441,7 +446,7 @@ def _top_scored(n: int):
 def test_middle_rate_tier_keeps_rate_links_on_big_and_notable_when_it_omits_nothing_more():
     """全行に評価を付けると省略が出るが、big と notable の行だけなら省略が増えない日は、
     評価なしに落とさず big／notable の行だけに「評価する」を残す。"""
-    grouped = _top_scored(65)
+    grouped = _top_scored(38)  # 旧65件。1通=28000B では114件が全件入る上限に近い量
     total = sum(len(v) for v in grouped.values())
 
     def count(level):

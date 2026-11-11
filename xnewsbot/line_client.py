@@ -28,12 +28,11 @@ log = logging.getLogger(__name__)
 
 # LINE の上限
 QUICK_REPLY_MAX = 13
-# Flex の上限(バブル 30KB / カルーセル 50KB・12枚)に余裕を持たせた値。
+# Flex の上限(バブル 30KB)に余裕を持たせた値。
 # 日本語はUTF-8で1文字3バイトのため、文字数でなくバイト数で測る。
-# 1ジャンルがバブル上限を超えそうなら記事単位で次のバブルに送り、件数は削らず全部出す。
+# カルーセル(横スワイプ)は使わない。1通=縦に長い1枚のバブル(2026-11-11 本人「スマホでは縦スクロールでしか見ない」)。
+# 1ジャンルが1枚に入りきらなければ記事単位で次の通に送る。
 BUBBLE_MAX_BYTES = 28000
-CAROUSEL_MAX_BYTES = 48000
-CAROUSEL_MAX_BUBBLES = 12
 MAX_MESSAGES = 5       # LINE は1回の push/reply で最大5メッセージ
 URI_MAX_CHARS = 1000   # URI action の uri の上限
 
@@ -521,7 +520,8 @@ def _line_quota_row(line_quota: dict | None) -> dict:
     return _usage_row(label, text, low)
 
 
-MARKET_HINT = "市況・今日の予定・決算は右のカード →"
+MARKET_HINT = "市況・今日の予定・決算はこの下 ↓"
+MARKET_ALT = "マーケット・今日の予定・決算"  # マーケットを2通目に独立させた日の通の代替テキスト
 DISCLAIMER = "評価は一般的な傾向で、投資助言ではありません"
 
 
@@ -702,13 +702,6 @@ def _market_bubble(market: list[dict] | None, schedule: list[dict] | None,
 
 # 主以外の記事を score で2段に分ける境目。curate_prompt の目安で 50台=押さえておきたい
 NOTABLE_MIN_SCORE = 50
-# 1枚に載せる重さの上限(大きいニュース=3・注目=1.5・その他の見出し=1)。バイト数(BUBBLE_MAX_BYTES)も別に守る。
-# 縦に長めにして横の枚数を減らす(2026-10-02 実画面の確認: PC 版は横に約5.5枚しか見えず、6枚目以降は
-# 矢印を押さないと見えないので見落とす。縦スクロールの方が楽で、縦長の要点カードは読みやすかった)。
-PAGE_WEIGHT_MAX = 20.0
-# ページ分割の重さを 0.5 刻みで探す(TIER_WEIGHT がすべて 0.5 の倍数なので、これで最小の均し方が見つかる)
-_WEIGHT_STEP = 0.5
-TIER_WEIGHT = {"big": 3.0, "notable": 1.5, "brief": 1.0}
 TIER_HEADINGS = {"notable": "注目", "brief": "その他の見出し"}
 
 
@@ -844,12 +837,11 @@ RATE_NONE, RATE_TOP, RATE_ALL = 0, 1, 2   # なし / big と notable の行だ�
 
 
 def _genre_pages(genre: str, units: list[tuple[str, NewsItem]], total: int, digest_date, slot,
-                 now: datetime, rate: int = RATE_ALL) -> list[Entry]:
-    """1ジャンルの (段, 記事) 列を、重さ PAGE_WEIGHT_MAX・28000B 以内のカードに記事単位で分ける。
-    枚数は最小のまま、各カードの重さをなるべく均す(カルーセルのバブルは一番高いバブルに高さが揃うので、
-    最後の1枚だけ短いと下が大きな白い空白になる。2026-10-02 実画面で確認)。
+                 now: datetime, rate: int = RATE_ALL, first_room: int | None = None) -> list[Entry]:
+    """1ジャンルの (段, 記事) 列を、1通(28000B)に収まるカードに記事単位で分ける(縦に長くてよい)。
     ヘッダー右は「{total}件 k/n」(1枚なら「{total}件」)。total は省略前のジャンルの件数。
-    単体で上限を超える記事は切り詰める(_fit_component)。rate は「評価する」を付ける段(RATE_*)。"""
+    単体で上限を超える記事は切り詰める(_fit_component)。rate は「評価する」を付ける段(RATE_*)。
+    first_room: 1枚目を前のジャンルと同じ通の残り(バイト)に入れるときの空き。2枚目以降は1通分。"""
     label = _genre_label(genre)
     color = _genre_color(genre)
 
@@ -865,46 +857,26 @@ def _genre_pages(genre: str, units: list[tuple[str, NewsItem]], total: int, dige
     def bubble(page, note):
         return _genre_bubble(genre, label, note, _page_body(genre, [(t, c) for t, c, _it in page]))
 
-    base = _byte_size(bubble([], f"{total}件 00/00"))
+    base = _byte_size(_stack([bubble([], f"{total}件 00/00")]))
     # 小見出し・区切り線のぶん(200B)も残して、1件だけのカードが必ず上限に収まるようにする
     budget = BUBBLE_MAX_BYTES - base - 200
     comps = [(tier, _fit_component(builders[tier](it, _detail_action(it, digest_date, slot)), budget), it)
              for tier, it in units]
-    # バイト数は部品ごとの大きさ + 区切り線(1件ごと)・小見出し(段ごと、多くて2つ)のぶんで見積もる
-    # (重さの探索で何十回も分け直すので、毎回 JSON 全体を測らない。見積もりは実測より大きめ)
-    sizes = [_byte_size(c) + 120 for _t, c, _it in comps]
+    # バイト数は部品ごとの大きさ + 区切り線(1件ごと)・小見出し(段ごと、多くて2つ)のぶんで見積もる(実測より大きめ)
     byte_room = BUBBLE_MAX_BYTES - base - 2 * 250
-
-    def split(cap: float) -> list[list[tuple[str, dict, NewsItem]]]:
-        pages: list[list[tuple[str, dict, NewsItem]]] = []
-        cur: list[tuple[str, dict, NewsItem]] = []
-        weight = 0.0
-        nbytes = 0
-        for unit, size in zip(comps, sizes):
-            w = TIER_WEIGHT[unit[0]]
-            if cur and (weight + w > cap or nbytes + size > byte_room):
-                pages.append(cur)
-                cur, weight, nbytes = [], 0.0, 0
-            cur.append(unit)
-            weight += w
-            nbytes += size
-        if cur:
+    room = byte_room if first_room is None else first_room - base - 2 * 250
+    pages: list[list[tuple[str, dict, NewsItem]]] = []
+    cur: list[tuple[str, dict, NewsItem]] = []
+    nbytes = 0
+    for unit in comps:
+        size = _byte_size(unit[1]) + 120
+        if cur and nbytes + size > (room if not pages else byte_room):
             pages.append(cur)
-        return pages
-
-    pages = split(PAGE_WEIGHT_MAX)
-    n = len(pages)
-    if n > 1:
-        # 同じ枚数に収まる一番小さい重さの上限で分け直す(= 各カードの重さが均される)
-        weights = [TIER_WEIGHT[t] for t, _c, _it in comps]
-        cap = max(max(weights), sum(weights) / n)
-        cap = _WEIGHT_STEP * -(-cap // _WEIGHT_STEP)
-        while cap < PAGE_WEIGHT_MAX:
-            trial = split(cap)
-            if len(trial) <= n:
-                pages = trial
-                break
-            cap += _WEIGHT_STEP
+            cur, nbytes = [], 0
+        cur.append(unit)
+        nbytes += size
+    if cur:
+        pages.append(cur)
     n = len(pages)
     return [(bubble(page, f"{total}件" if n == 1 else f"{total}件 {k}/{n}"),
              len(page), genre, page[0][2].title)
@@ -917,26 +889,33 @@ def _note_bubble(text: str) -> dict:
                 {"type": "text", "text": text, "size": "sm", "color": META_COLOR, "wrap": True}]}}
 
 
-def _carousel(bubbles: list[dict]) -> dict:
-    return {"type": "carousel", "contents": bubbles}
+def _stack(cards: list[dict]) -> dict:
+    """カード(ヘッダー/本文を持つバブル形の dict)を縦に積んで1枚のバブルにする。
+    ジャンルのカードは色帯のヘッダーがそのまま区切りになる。ヘッダーの無いカード(要点・マーケット・注記)の
+    前には区切り線を入れる。"""
+    contents: list[dict] = []
+    for card in cards:
+        if contents and "header" not in card:
+            contents.append({"type": "separator", "color": RULE_COLOR})
+        contents.append({"type": "box", "layout": "vertical",
+                         "contents": ([card["header"]] if "header" in card else []) + [card["body"]]})
+    return {"type": "bubble", "size": "giga",
+            "body": {"type": "box", "layout": "vertical", "paddingAll": "0px", "contents": contents}}
 
 
 TOO_LARGE_NOTE = "長すぎるため表示できない記事がありました"
 
 
-def _guard_flex(contents: dict) -> dict:
-    """最後の安全網: 上限を超えたバブルだけ注記に差し替える。
+def _guard_flex(cards: list[dict]) -> dict:
+    """カードを積んだ1枚(_stack)を返す。最後の安全網として、上限を超えたカードは注記に差し替え、
+    それでも1枚が上限を超えるなら注記1枚にする。
 
     1通でも上限を超えると LINE は push 全体を 400 で拒否し、その回の全メッセージが届かない。
-    通常は _fit_component の切り詰めで収まりここでは何も変わらない。切り詰めきれなかった
-    異常な出力が来たときに、その1枚だけを諦めて残りを届けるためのもの。
+    通常は _fit_component の切り詰めと _fits の詰め方で収まりここでは何も変わらない。
     """
-    if contents["type"] == "bubble":
-        return contents if _byte_size(contents) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)
-    bubbles = [b if _byte_size(b) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)
-               for b in contents["contents"]]
-    # 各バブルが上限内なら _pack_genres の詰め方で 48000B 以内に収まる(差し替えは小さくなる方向のみ)
-    return _carousel(bubbles)
+    cards = [c if _byte_size(c) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE) for c in cards]
+    out = _stack(cards)
+    return out if _byte_size(out) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)
 
 
 # (バブル, 載せた記事数, ジャンル, 先頭の記事の見出し)。省略注記は (注記, 0, "", "")
@@ -944,15 +923,14 @@ Entry = tuple[dict, int, str, str]
 
 
 def _fits(car: list[Entry], extra: list[Entry]) -> bool:
-    """car に extra を足しても 12枚・48000B 以内か。"""
-    return (len(car) + len(extra) <= CAROUSEL_MAX_BUBBLES
-            and _byte_size(_carousel([e[0] for e in car + extra])) <= CAROUSEL_MAX_BYTES)
+    """car に extra を足して縦に積んでも1通(28000B)に収まるか。"""
+    return _byte_size(_stack([e[0] for e in car + extra])) <= BUBBLE_MAX_BYTES
 
 
 def _pack_seq(blocks: list[list[Entry]]) -> list[list[Entry]]:
-    """カード列を順にカルーセルに詰める(1つのメッセージにまとめると決めたジャンルの並び用)。
-    ジャンルのカードが今のカルーセルに丸ごと入るなら相乗りし、入らなければ次のカルーセルから始める。
-    1カルーセルに収まらない大きいジャンルは、今のカルーセルの残りから順に詰めて次へ続ける
+    """カード列を順にメッセージに詰める(1つのメッセージにまとめると決めたジャンルの並び用)。
+    ジャンルのカードが今のメッセージに丸ごと入るなら相乗りし、入らなければ次のメッセージから始める。
+    1通に収まらない大きいジャンルは、今のメッセージの残りから順に詰めて次へ続ける
     (カードは連番なので通をまたいでも続きと分かる)。"""
     cars: list[list[Entry]] = []
     cur: list[Entry] = []
@@ -975,9 +953,8 @@ def _pack_seq(blocks: list[list[Entry]]) -> list[list[Entry]]:
 
 
 def _pack_genres(blocks: list[list[Entry]], slots: int) -> list[list[Entry]]:
-    """ジャンルごとのカード列をメッセージ(カルーセル)に割り付ける。
-    原則1ジャンル=1メッセージ(縦に並ぶのでジャンル単位で追え、横送りも短く、件数の違うジャンル同士で
-    バブルの高さが揃えられて空白が出ることもない。2026-10-02 実画面で確認)。
+    """ジャンルごとのカード列をメッセージ(縦に積んだ1枚)に割り付ける。
+    原則1ジャンル=1メッセージ(ジャンル単位で追える。2026-10-02 実画面で確認)。
     通数が slots を超えるときだけ、隣り合うジャンルを合わせて1通にする。合わせるのは、合わせて通数が
     減る組のうちカードの合計が一番少ない組(=小さいジャンル同士。同数なら後ろの組)。
     それでも超えるときはそのまま返す(呼び出し側が見出しを削る)。"""
@@ -1006,10 +983,12 @@ def _omit_note(n: int) -> Entry:
 
 def _genre_carousels(grouped: dict[str, list[NewsItem]], digest_date, slot, now: datetime,
                      slots: int, rate: int = RATE_ALL) -> list[list[Entry]]:
-    """ジャンルごとのカードを slots 通以内のカルーセルにする。
+    """ジャンルごとのカードを slots 通以内のメッセージに割り付ける。
     入りきらないときは「その他の見出し」を末尾から削る(残りの多いジャンルから1件ずつ。どのジャンルも
-    見出しが偏って消えないように)。削った件数は最後のカルーセル末尾に「ほか N 件は省略」と出す
-    (黙って消さない)。見出しを全部削っても入らないときだけ、後ろのカードごと落とす。"""
+    見出しが偏って消えないように)。削った件数は最後のメッセージ末尾に「ほか N 件は省略」と出す
+    (黙って消さない)。見出しを全部削っても入らないときだけ、後ろのカードごと落とす。
+    1ジャンル=1通の詰め方(_pack_genres)で通数が足りない日は、ジャンルを前の通の残りから
+    記事単位で続けて詰める(flow)。見出しを削るのはそれでも入らないときだけ。"""
     units = {g: _genre_units(items) for g, items in grouped.items() if items}
     totals = {g: len(grouped[g]) for g in units}
     remaining = {g: sum(1 for t, _ in us if t == "brief") for g, us in units.items()}
@@ -1030,7 +1009,33 @@ def _genre_carousels(grouped: dict[str, list[NewsItem]], digest_date, slot, now:
                 cache[key] = _genre_pages(g, us[:len(us) - cut[g]], totals[g], digest_date, slot, now,
                                           rate)
             blocks.append(cache[key])
-        return _pack_genres(blocks, slots)
+        cars = _pack_genres(blocks, slots)
+        # 省略の注記まで入るときだけ1ジャンル1通を採る。注記が入らないのに採ると、二分探索が
+        # 見出しをさらに削った側に進み、通数が余ったまま掲載が減る(件数が増えると載る件数が減る逆転)。
+        k = sum(cut.values())
+        if len(cars) <= slots and (k == 0 or _fits(cars[-1], [_omit_note(k)])):
+            return cars
+        return flow(cut)
+
+    def flow(cut: dict[str, int]) -> list[list[Entry]]:
+        msgs: list[list[Entry]] = []
+        cur: list[Entry] = []
+        for g, us in units.items():
+            kept = us[:len(us) - cut[g]]
+            room = BUBBLE_MAX_BYTES - _byte_size(_stack([e[0] for e in cur])) if cur else None
+            pages = _genre_pages(g, kept, totals[g], digest_date, slot, now, rate, first_room=room)
+            if cur and not _fits(cur, pages[:1]):  # 残りに1件も入らない: 次の通から始める
+                msgs.append(cur)
+                cur = []
+                pages = _genre_pages(g, kept, totals[g], digest_date, slot, now, rate)
+            for i, page in enumerate(pages):
+                if i:
+                    msgs.append(cur)
+                    cur = []
+                cur.append(page)
+        if cur:
+            msgs.append(cur)
+        return msgs
 
     def ok(k: int) -> bool:
         cars = build(k)
@@ -1068,10 +1073,11 @@ def digest_specs(
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大 max_messages)に変換する。
 
-    1通目は2枚のカルーセル: 要点(日付見出し・目次・今日の要点5本・残り使用量)と
-    マーケット(市況・今日の予定・注目決算・決算サプライズ)。マーケットの中身が無ければ要点の1枚だけ。
-    2通目以降はジャンルごとのカード(grouped の順=genres.toml の順)。1ジャンルのカードは横に連続し、
-    中は 大きいニュース → 注目(score >= 50、要約つき)→ その他の見出し(見出しと出典)。
+    どの通も縦に長い1枚のバブル(カルーセル=横スワイプは使わない)。
+    1通目: 要点(日付見出し・目次・今日の要点5本・残り使用量)の下にマーケット(市況・今日の予定・
+    注目決算・決算サプライズ)。マーケットの中身が無ければ要点だけ。
+    2通目以降はジャンルごとのカード(grouped の順=genres.toml の順)を縦に積む。
+    カードの中は 大きいニュース → 注目(score >= 50、要約つき)→ その他の見出し(見出しと出典)。
     - big が0件のジャンルは rank 最上位の1件を大きいニュースに上げる。
     - 原則1ジャンル=1通。通数が足りない日だけ隣り合う小さいジャンルを1通にまとめる(_pack_genres)。
     - 件数は黙って削らない: 入りきらない分は最後に「ほか N 件は省略」(_genre_carousels)。
@@ -1095,22 +1101,27 @@ def digest_specs(
     # 組み直し、最も多く載る段のうち評価リンクが最も多い段を採る(評価のために記事の省略を増やさない)。
     # 日付/スロットが無い文脈(モック)は架空なので評価を出さない。
     rate = digest_date is not None and slot is not None
-    cars = _genre_carousels(grouped, digest_date, slot, now, max_messages - 1, RATE_ALL if rate else RATE_NONE)
-    if rate:
-        for level in (RATE_TOP, RATE_NONE):
-            if shown(cars) >= total:
-                break
-            trial = _genre_carousels(grouped, digest_date, slot, now, max_messages - 1, level)
-            if shown(trial) > shown(cars):  # 同数なら評価リンクの多い上の段のまま
-                cars = trial
-    toc = []
-    for g, items in grouped.items():
-        if not items:
-            continue
-        # max_messages を減らす=前に別のメッセージが入るので、その分だけ通番をずらす
-        nos = sorted({ci + 2 + MAX_MESSAGES - max_messages for ci, car in enumerate(cars) for e in car if e[2] == g})
-        kept = sum(e[1] for car in cars for e in car if e[2] == g)
-        toc.append((g, len(items), nos, len(items) - kept))
+
+    def layout(slots: int, offset: int):
+        """ジャンルを slots 通に詰めて、(通の列, 目次)。offset=ジャンルの1通目の通番 - 1。"""
+        cars = _genre_carousels(grouped, digest_date, slot, now, slots, RATE_ALL if rate else RATE_NONE)
+        if rate:
+            for level in (RATE_TOP, RATE_NONE):
+                if shown(cars) >= total:
+                    break
+                trial = _genre_carousels(grouped, digest_date, slot, now, slots, level)
+                if shown(trial) > shown(cars):  # 同数なら評価リンクの多い上の段のまま
+                    cars = trial
+        toc = []
+        for g, items in grouped.items():
+            if not items:
+                continue
+            # max_messages を減らす=前に別のメッセージが入るので、その分だけ通番をずらす
+            nos = sorted({ci + 1 + offset + MAX_MESSAGES - max_messages
+                          for ci, car in enumerate(cars) for e in car if e[2] == g})
+            kept = sum(e[1] for car in cars for e in car if e[2] == g)
+            toc.append((g, len(items), nos, len(items) - kept))
+        return cars, toc
 
     d = digest_date or now.date()
     slot_word = "夜" if slot == "evening" else "朝"
@@ -1118,24 +1129,37 @@ def digest_specs(
     points = _pick_points(grouped)
     alt = f"{slot_word}のニュース｜{points[0].title}" + (f" ほか{total - 1}件" if total > 1 else "")
     market_card = _market_bubble(market, schedule, now)
-    summary = _summary_bubble(toc, points, heading, total, digest_date, slot, market_card is not None,
-                              x_usage=x_usage, line_quota=line_quota)
-    if market_card is None:
-        first = summary
-    else:
-        # 2枚で 48000B を超えるときはマーケットの方を切り詰める(要点と目次を優先)
-        room = CAROUSEL_MAX_BYTES - _byte_size(_carousel([summary])) - 16
-        first = _carousel([summary, _fit_component(market_card, min(room, BUBBLE_MAX_BYTES))])
-        if _byte_size(first) > CAROUSEL_MAX_BYTES:  # 要点が極端に長い日。2枚で超えるならマーケットを外す
-            first = summary
 
-    specs: list[dict] = [{"type": "flex", "alt": alt[:ALT_MAX_CHARS], "contents": _guard_flex(first)}]
+    def summary_for(toc):
+        return _summary_bubble(toc, points, heading, total, digest_date, slot, market_card is not None,
+                               x_usage=x_usage, line_quota=line_quota)
+
+    cars, toc = layout(max_messages - 1, 1)
+    summary = summary_for(toc)
+    firsts = [summary]
+    if market_card is not None:
+        stacked = _stack([summary, market_card])
+        if _byte_size(stacked) <= BUBBLE_MAX_BYTES:
+            firsts = [stacked]
+        else:
+            # 要点の下に入らない日(予定・決算が多い日)はマーケットを2通目に独立させる。
+            # 黙って外すと市況・予定・決算が丸ごと消えるため、ジャンルの通を1通減らしてでも出す。
+            cars, toc = layout(max_messages - 2, 2)
+            summary = summary_for(toc)
+            mcard = market_card if _byte_size(_stack([market_card])) <= BUBBLE_MAX_BYTES else \
+                _fit_component(market_card, BUBBLE_MAX_BYTES - _byte_size(_stack([{"body": {}}])))
+            firsts = [summary, _stack([mcard])]
+
+    specs: list[dict] = []
+    for i, b in enumerate(firsts):
+        specs.append({"type": "flex", "alt": (alt if i == 0 else MARKET_ALT)[:ALT_MAX_CHARS],
+                      "contents": b if _byte_size(b) <= BUBBLE_MAX_BYTES else _note_bubble(TOO_LARGE_NOTE)})
     for car in cars:
         genres = list(dict.fromkeys(e[2] for e in car if e[2]))
         first_title = next((e[3] for e in car if e[3]), "")
         alt_c = "・".join(f"{_genre_label(g)} {len(grouped[g])}件" for g in genres) + f"｜{first_title}"
         specs.append({"type": "flex", "alt": alt_c[:ALT_MAX_CHARS],
-                      "contents": _guard_flex(_carousel([e[0] for e in car]))})
+                      "contents": _guard_flex([e[0] for e in car])})
     return specs
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+
+import pytest
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -59,10 +61,28 @@ def _bytes(obj) -> int:
     return len(json.dumps(obj, ensure_ascii=False).encode("utf-8"))
 
 
+def _unstack(bubble: dict) -> list[dict]:
+    """縦に積んだ1枚のバブル(_stack)を、カード相当(header があれば header、body を持つ dict)の列に戻す。
+    積んでいない単体のバブルはそのまま1枚として返す。"""
+    if bubble["body"].get("paddingAll") != "0px":
+        return [bubble]
+    cards = []
+    for sec in bubble["body"]["contents"]:
+        if sec.get("type") != "box":  # separator
+            continue
+        parts = sec["contents"]
+        cards.append({"header": parts[0], "body": parts[1]} if len(parts) == 2 else {"body": parts[0]})
+    return cards
+
+
 def _carousels(specs: list[dict]) -> list[dict]:
-    """2通目以降のジャンルのカルーセル(1通目の要点・マーケットは含めない)。"""
-    return [s["contents"] for s in specs[1:] if s["type"] == "flex"
-            and s["contents"]["type"] == "carousel"]
+    """2通目以降の各メッセージを、カードの列を持つ {"contents": [...]} に(1通目は含めない)。"""
+    return [{"contents": _unstack(s["contents"])} for s in _genre_specs(specs) if s["type"] == "flex"]
+
+
+def _genre_specs(specs: list[dict]) -> list[dict]:
+    """ジャンルの通だけ(1通目と、2通目に独立したマーケットを除く)。"""
+    return specs[2:] if len(specs) > 1 and specs[1].get("alt") == lc.MARKET_ALT else specs[1:]
 
 
 def test_genre_select_marks_selected():
@@ -76,14 +96,15 @@ def test_genre_select_marks_selected():
 
 def _summary(specs: list[dict]) -> dict:
     """1通目の要点カード(マーケットが無い日は1通目がこのバブルだけ)。"""
-    c = specs[0]["contents"]
-    return c if c["type"] == "bubble" else c["contents"][0]
+    return _unstack(specs[0]["contents"])[0]
 
 
 def _market(specs: list[dict]) -> dict | None:
-    """1通目のマーケットカード(無ければ None)。"""
-    c = specs[0]["contents"]
-    return c["contents"][1] if c["type"] == "carousel" else None
+    """マーケットカード(1通目の要点の下、入らない日は独立した2通目。無ければ None)。"""
+    if len(specs) > 1 and specs[1].get("alt") == lc.MARKET_ALT:
+        return _unstack(specs[1]["contents"])[0]
+    cards = _unstack(specs[0]["contents"])
+    return cards[1] if len(cards) > 1 else None
 
 
 def _toc(specs: list[dict]) -> list[list[str]]:
@@ -102,7 +123,8 @@ def _toc(specs: list[dict]) -> list[list[str]]:
 
 def _cards(specs: list[dict]) -> list[tuple[int, dict]]:
     """2通目以降のカードを (メッセージ番号(1始まり), バブル) で順に。"""
-    return [(no, b) for no, s in enumerate(specs[1:], 2) for b in s["contents"]["contents"]]
+    gs = _genre_specs(specs)
+    return [(no, b) for no, s in enumerate(gs, len(specs) - len(gs) + 1) for b in _unstack(s["contents"])]
 
 
 def _head(bubble: dict) -> list[str]:
@@ -122,13 +144,14 @@ def test_digest_specs_summary_then_genre_cards():
     assert "今日の要点" in texts and lc.MARKET_HINT not in texts
 
     ai, st = specs[1]["contents"], specs[2]["contents"]
-    assert ai["type"] == st["type"] == "carousel"
-    assert [_head(b) for b in ai["contents"] + st["contents"]] == [["AI", "1件"], ["株", "2件"]]
-    assert ai["contents"][0]["header"]["backgroundColor"] == "#4F46E5"
-    assert st["contents"][0]["header"]["backgroundColor"] == "#0F766E"
+    assert ai["type"] == st["type"] == "bubble"  # カルーセルでなく縦に長い1枚
+    ai_cards, st_cards = _unstack(ai), _unstack(st)
+    assert [_head(b) for b in ai_cards + st_cards] == [["AI", "1件"], ["株", "2件"]]
+    assert ai_cards[0]["header"]["backgroundColor"] == "#4F46E5"
+    assert st_cards[0]["header"]["backgroundColor"] == "#0F766E"
     assert specs[1]["alt"] == "AI 1件｜大きな出来事"
     assert specs[2]["alt"] == "株 2件｜小さな話題0"
-    stock = _texts(st["contents"][0]["body"])
+    stock = _texts(st_cards[0]["body"])
     assert stock.index("小さな話題0") < stock.index("その他の見出し") < stock.index("小さな話題1")
 
 
@@ -198,7 +221,8 @@ def test_market_block_format_sign_unit_color():
          "change_pct": 0.71, "asof": "2026-06-05", "kind": "yield"},
     ]
     specs = lc.digest_specs({"AI": [_big()]}, slot="morning", digest_date=D, market=market, now=NOW)
-    assert specs[0]["contents"]["type"] == "carousel" and len(specs[0]["contents"]["contents"]) == 2
+    assert len(_unstack(specs[0]["contents"])) == 2  # 要点の下にマーケットを積んだ1枚
+    assert specs[0]["contents"]["type"] == "bubble"
     body = _market(specs)["body"]["contents"]
     assert _texts(body)[:2] == ["マーケット", "市況（前日終値）"]
     rows = [c for c in body if c.get("type") == "box" and not c.get("action")]
@@ -439,7 +463,7 @@ def test_removed_genre_past_items_render_with_other_color():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert _toc(specs)[0] == ["●", "特大", "1件", "→ 2通目"]
-    card = specs[1]["contents"]["contents"][0]
+    card = _unstack(specs[1]["contents"])[0]
     assert _head(card) == ["特大", "1件"] and card["header"]["backgroundColor"] == lc.OTHER_COLOR
     assert "detail:20260608:morning:特大:0" in _bubble_datas(card)
     assert lc.detail_spec(grouped["特大"][0])["text"].startswith("【特大】過去の特大")
@@ -466,7 +490,7 @@ def test_big_block_detail_and_source_links():
         {"author": "x2", "kind": "x", "url": "https://x.com/x2/status/2"},
     ]
     specs = lc.digest_specs({"AI": [item]}, greeting=False, now=NOW)
-    bubble = specs[1]["contents"]["contents"][0]
+    bubble = _unstack(specs[1]["contents"])[0]
     texts = _texts(bubble["body"])
     assert texts[:3] == ["大きな出来事", "重要な要約", "日経・Bloomberg ほか2件・3時間前"]
     acts = _actions(bubble["body"])
@@ -481,7 +505,7 @@ def test_small_rows_listed_with_label_and_meta():
                          "created_at": "2026-06-05T23:00:00+00:00"}]  # NOW の2日前
     specs = lc.digest_specs({"株": [big, s0, s1]}, slot="morning", digest_date=D, now=NOW)
     assert len(specs) == 2
-    bubble = specs[1]["contents"]["contents"][0]
+    bubble = _unstack(specs[1]["contents"])[0]
     assert _head(bubble) == ["株", "3件"]
     body = bubble["body"]["contents"]
     assert "@v・2日前" in _texts(body)
@@ -508,7 +532,7 @@ def test_notable_row_shows_summary_truncated_and_keeps_tap():
     s_empty.summary = ""
     specs = lc.digest_specs({"株": [_big("株", 0), s_short, s_long, s_exact, s_empty]},
                             slot="morning", digest_date=D, now=NOW)
-    body = specs[1]["contents"]["contents"][0]["body"]["contents"]
+    body = _unstack(specs[1]["contents"])[0]["body"]["contents"]
     rows = [c for c in body if c.get("type") == "box" and c.get("action")]
     assert [_texts(r) for r in rows] == [
         ["小さな話題1", "短い要約", "@v", "評価する"],
@@ -568,20 +592,15 @@ def _bulk(genres: list[str], n: int, summary_len: int = 60) -> dict[str, list[Ne
 def _check_limits_and_coverage(grouped, specs) -> None:
     assert len(specs) <= lc.MAX_MESSAGES
     first = specs[0]["contents"]
-    if first["type"] == "carousel":
-        assert len(first["contents"]) == 2 and _bytes(first) <= lc.CAROUSEL_MAX_BYTES
-        assert all(_bytes(b) <= lc.BUBBLE_MAX_BYTES for b in first["contents"])
-    else:
-        assert _bytes(first) <= lc.BUBBLE_MAX_BYTES
+    assert first["type"] == "bubble" and _bytes(first) <= lc.BUBBLE_MAX_BYTES
+    assert len(_unstack(first)) <= 2  # 要点(+マーケット)
     for s in specs:
         assert len(s["alt"]) <= 400
         lc._spec_to_message(s)  # SDK が受け付ける形であること
-    for car in _carousels(specs):
-        assert len(car["contents"]) <= lc.CAROUSEL_MAX_BUBBLES
-        assert _bytes(car) <= lc.CAROUSEL_MAX_BYTES
-        for b in car["contents"]:
-            assert b["size"] == "giga"
-            assert _bytes(b) <= lc.BUBBLE_MAX_BYTES
+    for s in specs[1:]:
+        # カルーセルは使わず、どの通も縦に長い1枚のバブルで上限内
+        assert s["contents"]["type"] == "bubble" and s["contents"]["size"] == "giga"
+        assert _bytes(s["contents"]) <= lc.BUBBLE_MAX_BYTES
     datas = [a["data"] for a in _actions(specs) if a["type"] == "postback"]
     # 記事の行の postback は「詳細」か、末尾の「評価する」(rate:<記事キー>)のどちらか
     assert datas and all(DETAIL_RE.match(d) or RATE_RE.match(d) for d in datas)
@@ -703,11 +722,17 @@ def test_heavy_day_within_limits_and_market_card_fits():
     shown = set(d for car in _carousels(specs) for d in _bubble_datas(car))
     assert all(f"detail:20260608:morning:{g}:{it.rank}" in shown
                for g, items in grouped.items() for it in items if (it.score or 0) >= 50)
+    assert lc.TOO_LARGE_NOTE not in _texts(specs[0]["contents"])
+
+
+def test_heavy_day_market_card_keeps_all_sections():
+    """重い日でもマーケットカードは落ちず全部の節が載る(要点の下に入らなければ独立した2通目に)。"""
+    specs = lc.digest_specs(_heavy(), slot="morning", digest_date=D, market=_HEAVY_MARKET,
+                            schedule=_HEAVY_SCHEDULE, now=NOW)
     assert len(_schedule_lines(specs)) == 12
     assert len([c for c in _section(_market(specs), "市況（前日終値）") if c["type"] == "box"]) == 8
     assert len([c for c in _section(_market(specs), "注目決算") if c["type"] == "box"]) == 16
     assert len([c for c in _section(_market(specs), "決算サプライズ") if c["type"] == "box"]) == 10
-    assert lc.TOO_LARGE_NOTE not in _texts(specs[0]["contents"])
 
 
 def test_each_genre_gets_own_message_when_slots_allow():
@@ -719,7 +744,7 @@ def test_each_genre_gets_own_message_when_slots_allow():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
-    assert [{_head(b)[0] for b in s["contents"]["contents"]} for s in specs[1:]] == [
+    assert [{_head(b)[0] for b in _unstack(s["contents"])} for s in specs[1:]] == [
         {"AI"}, {"株"}, {"テクノロジー"}, {"話題"}]
     assert [row[3] for row in _toc(specs)] == ["→ 2通目", "→ 3通目", "→ 4通目", "→ 5通目"]
     assert specs[2]["alt"] == "株 12件｜株0"
@@ -733,7 +758,7 @@ def test_adjacent_small_genres_share_a_message_only_when_over_slots():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
-    assert [[_head(b)[0] for b in s["contents"]["contents"]] for s in specs[1:]] == [
+    assert [[_head(b)[0] for b in _unstack(s["contents"])] for s in specs[1:]] == [
         ["AI"], ["株"], ["仮想通貨", "テクノロジー"], ["話題", "ビジネス"]]
     assert [row[3] for row in _toc(specs)] == ["→ 2通目", "→ 3通目", "→ 4通目", "→ 4通目",
                                                "→ 5通目", "→ 5通目"]
@@ -741,7 +766,7 @@ def test_adjacent_small_genres_share_a_message_only_when_over_slots():
 
 
 def test_large_genre_spans_messages_with_continuous_numbering():
-    # 1ジャンル40件の big(要約400字)は 1通(48000B)に入らないので通をまたぎ、番号は通をまたいで連番
+    # 1ジャンル40件の big(要約400字)は 1通(28000B)に入らないので通をまたぎ、番号は通をまたいで連番
     grouped = _bulk(["AI"], 40, summary_len=400)
     for it in grouped["AI"]:
         it.importance = "big"
@@ -853,7 +878,7 @@ def test_genre_without_big_promotes_top_item():
     small_genre = [_small(2, "株"), _small(0, "株"), _small(1, "株")]  # 並びは rank 順でなくてよい
     grouped = {"AI": [_big()], "株": small_genre}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
-    stock = specs[2]["contents"]["contents"][0]
+    stock = _unstack(specs[2]["contents"])[0]
     assert _head(stock) == ["株", "3件"]
     assert _bubble_datas(stock) == ["detail:20260608:morning:株:0", "detail:20260608:morning:株:1",
                                     "detail:20260608:morning:株:2"]
@@ -893,43 +918,47 @@ def test_tier_split_by_score_boundary_49_50():
     grouped = {"AI": [_big(), _small(1, "AI", score=50), _small(2, "AI", score=49)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert len(specs) == 2
-    texts = _texts(specs[1]["contents"]["contents"][0]["body"])
+    texts = _texts(_unstack(specs[1]["contents"])[0]["body"])
     assert texts.index("注目") < texts.index("小さな話題1") < texts.index("その他の見出し") \
         < texts.index("小さな話題2")
     assert lc.NOTABLE_MIN_SCORE == 50
 
 
-def test_page_weight_and_position_header():
-    """1枚は重さ20まで(大きいニュース3・注目1.5・見出し1)。枚数は最小のまま各カードの重さを均す
-    (カルーセルのバブルは一番高いものに高さが揃うので、最後だけ短いと白い空白になる)。
-    ヘッダー右は「件数 k/n」(1枚なら件数だけ)。続きのページの先頭は区切り線でなく段の小見出しから。"""
+def test_page_split_by_bytes_and_position_header():
+    """1ジャンルは原則1枚(縦に長くてよい)。28000B を超えるときだけ記事単位で「件数 k/n」に分ける。
+    1枚なら件数だけ。続きのページの先頭は区切り線でなく段の小見出しから。"""
     def cards(items):
         specs = lc.digest_specs({"AI": items}, slot="morning", digest_date=D, now=NOW)
         _check_limits_and_coverage({"AI": items}, specs)
         return [b for _no, b in _cards(specs)]
 
-    assert lc.PAGE_WEIGHT_MAX == 20
-    # 3 + 1.5×12 = 21 → 2枚。均すと 10.5 ずつ(大1+注目5 / 注目7)。均さないと 3+1.5×11=19.5 と 1.5
-    notable = cards([_big("AI")] + [_small(i, "AI", score=80) for i in range(1, 13)])
-    assert [_head(b) for b in notable] == [["AI", "13件 1/2"], ["AI", "13件 2/2"]]
-    assert [len(_bubble_datas(b)) for b in notable] == [6, 7]
-    assert notable[1]["body"]["contents"][0].get("text") == "注目"
+    # 重さ(旧 PAGE_WEIGHT_MAX=20)では分けない: 3 + 1.5×12 も 3 + 1×30 も1枚
+    one_notable = cards([_big("AI")] + [_small(i, "AI", score=80) for i in range(1, 13)])
+    assert [_head(b) for b in one_notable] == [["AI", "13件"]]
+    assert len(_bubble_datas(one_notable[0])) == 13
 
-    # 3 + 1×17 = 20 → ちょうど1枚(ヘッダーは件数だけ)
-    one = cards([_big("AI")] + [_small(i, "AI", score=30) for i in range(1, 18)])
-    assert [_head(b) for b in one] == [["AI", "18件"]]
-
-    # 3 + 1×30 = 33 → 2枚を 17 と 16 に均す
     brief = cards([_big("AI")] + [_small(i, "AI", score=30) for i in range(1, 31)])
-    assert [len(_bubble_datas(b)) for b in brief] == [15, 16]
-    assert brief[1]["body"]["contents"][0].get("text") == "その他の見出し"
-    rows = [c for c in brief[1]["body"]["contents"] if c.get("action")]
-    assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する"] for i, r in enumerate(rows, 15))
+    assert [_head(b) for b in brief] == [["AI", "31件"]]
+    rows = [c for c in brief[0]["body"]["contents"] if c.get("action")]
+    assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する"] for i, r in enumerate(rows, 1))
     assert "小要約" not in _texts(brief)
     title, meta_row = rows[0]["contents"]
     assert (title["size"], title["color"], "weight" in title) == ("sm", lc.TEXT_COLOR, False)
     meta = meta_row["contents"][0]
     assert meta["size"] == "xxs" and not meta.get("wrap")  # 出典・時刻は1行
+
+    # バイト数を超える日だけ分け、ヘッダーは「k/n」。続きのページの先頭は段の小見出し
+    big = _bulk(["AI"], 40, summary_len=400)["AI"]
+    for it in big[1:]:
+        it.importance = "small"
+        it.score = 80
+        it.summary = "要" * 100
+    pages = cards(big)
+    n = len(pages)
+    assert n >= 2
+    assert [_head(b) for b in pages] == [["AI", f"40件 {k}/{n}"] for k in range(1, n + 1)]
+    assert pages[1]["body"]["contents"][0].get("text") == "注目"
+    assert sum(len(_bubble_datas(b)) for b in pages) == 40
 
 
 def _heavy7(kind: str) -> dict[str, list[NewsItem]]:
@@ -944,7 +973,7 @@ def _heavy7(kind: str) -> dict[str, list[NewsItem]]:
 
 
 def test_heavy_7_genres_x30_within_limits_for_any_tier_mix():
-    """注目が多い日・その他が多い日・半々の日のどれでも、5通・12枚・48000B・28000B を超えず、
+    """注目が多い日・その他が多い日・半々の日のどれでも、5通・28000B を超えず、
     全記事がどこかに出るか省略件数に数えられる。ジャンルのカードは連続し、目次は実際の通番と一致。"""
     for kind in ("notable", "brief", "mixed"):
         grouped = _heavy7(kind)
@@ -955,8 +984,9 @@ def test_heavy_7_genres_x30_within_limits_for_any_tier_mix():
         _check_limits_and_coverage(grouped, specs)
         _check_accounting(grouped, specs)
         if kind == "brief":
-            # 見出しだけなら 189件でも収まる(「評価する」付きで省略が出る日は評価なしで組み直す)
-            assert _omitted(specs) == 0
+            # 1通=28000B になったので 189件の見出しは入りきらない。省略は件数つきで出し(上の
+            # _check_accounting で出た記事 + 省略件数 = 全件)、big と注目は残す
+            assert 0 < _omitted(specs) < sum(len(v) for v in grouped.values())
 
 
 # ---- 詳細 ----
@@ -1079,12 +1109,12 @@ def test_bad_source_urls_drop_only_the_link():
 def test_guard_replaces_only_oversized_bubble():
     small = lc._note_bubble("ふつうのバブル")
     huge = lc._note_bubble("あ" * 20000)                         # 60000B 超
-    out = lc._guard_flex(lc._carousel([small, huge]))
-    assert out["contents"][0] == small
-    assert _texts(out["contents"][1]) == [lc.TOO_LARGE_NOTE]
-    assert _bytes(out) <= lc.CAROUSEL_MAX_BYTES
-    assert lc._guard_flex(small) == small
-    assert _texts(lc._guard_flex(huge)) == [lc.TOO_LARGE_NOTE]
+    out = lc._guard_flex([small, huge])
+    assert out["type"] == "bubble" and _bytes(out) <= lc.BUBBLE_MAX_BYTES
+    assert [_texts(c) for c in _unstack(out)] == [_texts(small), [lc.TOO_LARGE_NOTE]]
+    assert _unstack(out)[0]["body"] == small["body"]
+    assert _texts(lc._guard_flex([small])) == _texts(small)
+    assert _texts(lc._guard_flex([huge])) == [lc.TOO_LARGE_NOTE]
 
 
 def test_untrimmable_summary_does_not_break_push():
@@ -1095,8 +1125,10 @@ def test_untrimmable_summary_does_not_break_push():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert _texts(specs[0]["contents"]) == [lc.TOO_LARGE_NOTE]
-    datas = {d for car in _carousels(specs) for d in _bubble_datas(car)}
-    assert datas == {f"detail:20260608:morning:AI:{r}" for r in range(5)}  # 記事カードは届く
+    datas = [d for car in _carousels(specs) for d in _bubble_datas(car)]
+    # 記事カードは届く。1通=1枚で通数(4)が足りない5枚目だけは「ほか N 件は省略」に数えられる(黙って消えない)
+    assert len(datas) + _omitted(specs) == 5 and set(datas) <= {f"detail:20260608:morning:AI:{r}" for r in range(5)}
+    assert len(datas) == 4
 
 
 def test_schedule_block_keeps_important_events_over_many_early_ones():

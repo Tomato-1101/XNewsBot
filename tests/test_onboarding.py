@@ -143,15 +143,17 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="テスト"))
     specs = messenger.last_reply
-    # 先頭は「架空」警告、続いて現行レイアウト(要点+マーケットの2枚 → ジャンルごとのカルーセル)
+    # 先頭は「架空」警告、続いて現行レイアウト(要点の下にマーケットを積んだ1枚 → ジャンルごとの縦長1枚)
     assert specs[0]["type"] == "text" and "架空" in specs[0]["text"]
     first = specs[1]["contents"]
-    assert specs[1]["type"] == "flex" and first["type"] == "carousel" and len(first["contents"]) == 2
+    assert specs[1]["type"] == "flex" and first["type"] == "bubble"
+    assert len([c for c in first["body"]["contents"] if c.get("type") == "box"]) == 2  # 要点 + マーケット
     assert len(specs) <= 5  # reply 上限内(警告文の分だけジャンルの通数を減らす)
     import json
     blob = json.dumps(specs, ensure_ascii=False)
     # 全ジャンルが目次に出て、どのジャンルも省略されない
-    genres_shown = [b["header"]["contents"][0]["text"] for s in specs[2:] for b in s["contents"]["contents"]]
+    genres_shown = [sec["contents"][0]["contents"][0]["text"] for s in specs[2:]
+                    for sec in s["contents"]["body"]["contents"] if sec.get("type") == "box"]
     assert {"AI", "株", "仮想通貨", "テクノロジー", "話題"} <= set(genres_shown)
     assert "件は省略" not in blob and "特大" not in blob
     assert "市況（前日終値）" in blob  # 架空の市況も出る
