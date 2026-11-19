@@ -22,10 +22,11 @@
 #   scripts/review_digest.py が機械的に適用する(失敗時は未レビューのまま配信。XNEWS_REVIEW=0 で省略)。
 set -uo pipefail
 
-PROJ="/Users/tomato/Project/XNewsBot"
-PY="$PROJ/.venv/bin/python"
-CLAUDE="/Users/tomato/.local/bin/claude"
-LOG="$HOME/Library/Logs/xnewsbot-deliver.log"
+# 場所は環境変数で上書きできる(GitHub Actions 用。cloud/actions/deliver.sh が指定する)。Mac の既定は従来どおり。
+PROJ="${XNEWS_PROJ:-/Users/tomato/Project/XNewsBot}"
+PY="${XNEWS_PY:-$PROJ/.venv/bin/python}"
+CLAUDE="${XNEWS_CLAUDE_BIN:-/Users/tomato/.local/bin/claude}"
+LOG="${XNEWS_LOG:-$HOME/Library/Logs/xnewsbot-deliver.log}"
 export PATH="/Users/tomato/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 cd "$PROJ" || exit 1
 
@@ -81,13 +82,14 @@ run_with_timeout() {
 # 同じ内容が複数回 push されて LINE 無料枠(200通/月)を無駄に消費する。
 # mkdir は同名ディレクトリの同時作成に必ず1つしか成功しないのでロックとして使う
 # (macOS の bash 3.2 に flock は無い)。異常終了で残ったロックは mtime で回収する。
-LOCK_DIR="/tmp/xnewsbot-deliver.lock"
+LOCK_DIR="${XNEWS_LOCK_DIR:-/tmp/xnewsbot-deliver.lock}"
 LOCK_STALE_SEC=9900   # 最長の正常実行(収集10分 + claude 30分 + 上限解除待ち45分 + 再試行30分 + Codexレビュー15分 + 送信)より長い値
 OWN_LOCK=0
 acquire_lock() {
   if mkdir "$LOCK_DIR" 2>/dev/null; then OWN_LOCK=1; echo $$ > "$LOCK_DIR/pid" 2>/dev/null; return 0; fi
   local mtime age
-  mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
+  # GNU(Linux)の書式を先に試す。BSD(macOS)の stat は -c を知らず失敗するので従来の -f に落ちる
+  mtime=$(stat -c %Y "$LOCK_DIR" 2>/dev/null || stat -f %m "$LOCK_DIR" 2>/dev/null || echo 0)
   age=$(( $(date +%s) - mtime ))
   if [ "$age" -ge "$LOCK_STALE_SEC" ]; then
     log "古いロック(${age}s 経過)を回収して続行"
@@ -209,10 +211,16 @@ fi
 #   = 「8時に終わってなくても、終わったらすぐ送る」。8時を過ぎたら諦める、はしない。
 # 上限(3600s=60分)は、異常に大きな待ち(手動で変な時刻に起動した等)を保険で弾くだけ。
 # 45分前起動(plist)でも定刻待ちが効くよう、45分より大きく取る。
-wait_until() {
-  local hhmm="$1" today target_epoch now_epoch wait
+# 今日の HHMM の epoch 秒。BSD(macOS)の date を先に試し、使えなければ GNU(Linux)の -d で求める。
+hhmm_epoch() {
+  local hhmm="$1" today
   today=$(date +%Y-%m-%d)
-  target_epoch=$(date -j -f "%Y-%m-%d %H%M%S" "${today} ${hhmm}00" +%s 2>/dev/null) || return 0
+  date -j -f "%Y-%m-%d %H%M%S" "${today} ${hhmm}00" +%s 2>/dev/null \
+    || date -d "${today} ${hhmm:0:2}:${hhmm:2:2}:00" +%s 2>/dev/null
+}
+wait_until() {
+  local hhmm="$1" target_epoch now_epoch wait
+  target_epoch=$(hhmm_epoch "$hhmm") || return 0
   now_epoch=$(date +%s)
   wait=$((target_epoch - now_epoch))
   if [ "$wait" -gt 0 ] && [ "$wait" -le 3600 ]; then
@@ -225,7 +233,8 @@ wait_until() {
 
 # Claudeが未ログインでもCodex・記事原文で配信を継続する。
 CLAUDE_AVAILABLE=1
-if ! (cd /tmp && "$CLAUDE" auth status 2>/dev/null) | grep -q '"loggedIn": true'; then
+# CI はログインではなくトークン(CLAUDE_CODE_OAUTH_TOKEN)で動くので、設定されていればこの確認を飛ばす。
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && ! (cd /tmp && "$CLAUDE" auth status 2>/dev/null) | grep -q '"loggedIn": true'; then
   CLAUDE_AVAILABLE=0
   log "claude 未ログイン。収集後にCodexへ切り替える"
 fi
@@ -387,7 +396,7 @@ REVIEW_TIMEOUT=900
 REVIEW_SKIP=""
 if [ "$MODE" = due ]; then
   if [ "$SLOT" = morning ]; then DUE_HHMM="$MORNING_HHMM"; else DUE_HHMM="$EVENING_HHMM"; fi
-  DUE_EPOCH=$(date -j -f "%Y-%m-%d %H%M%S" "$(date +%Y-%m-%d) ${DUE_HHMM}00" +%s 2>/dev/null)
+  DUE_EPOCH=$(hhmm_epoch "$DUE_HHMM")
   if [ -n "$DUE_EPOCH" ]; then
     LEFT=$((DUE_EPOCH - $(date +%s)))
     REVIEW_TIMEOUT=$(review_timeout "$LEFT")

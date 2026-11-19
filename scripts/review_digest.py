@@ -81,6 +81,39 @@ def parse_answer(text: str) -> dict:
     return {"drop": ans.get("drop", []), "merge": ans.get("merge", [])}
 
 
+def reviewer() -> str:
+    """レビュー担当。既定は codex。GitHub Actions では XNEWS_REVIEWER=claude(Codex を置かない)。"""
+    return "claude" if os.environ.get("XNEWS_REVIEWER", "").strip().lower() == "claude" else "codex"
+
+
+def claude_argv(base: list[str]) -> list[str]:
+    # 安全フラグは xnewsbot/explain.py の build_argv と同じ。ツールは1つも与えない(Codex 版のツール無効と同じ扱い)。
+    # プロンプトは標準入力で渡す(全記事入りで長く、Linux は引数1つが 128KB までのため)。
+    return base + ["--model", "opus", "-p", "--tools", "", "--permission-mode", "dontAsk",
+                   "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence", "--safe-mode"]
+
+
+def run_claude(prompt: str, timeout: int = TIMEOUT) -> dict:
+    env_cmd = os.environ.get("XNEWS_REVIEW_CMD")
+    if env_cmd:
+        base = shlex.split(env_cmd)
+    else:
+        claude = os.environ.get("XNEWS_CLAUDE_BIN") or shutil.which("claude")
+        if not claude:
+            raise RuntimeError("Claude CLIが見つからない")
+        base = [claude]
+    with tempfile.TemporaryDirectory(prefix="xnews-review-") as cwd:
+        try:
+            run = subprocess.run(claude_argv(base), input=prompt, text=True, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=timeout, cwd=cwd)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Claude が{timeout}秒で終わらずタイムアウト") from None
+        if run.returncode:
+            # CLI診断は資格情報や入力全文を含むことがあるため出力しない。
+            raise RuntimeError(f"Claude CLI終了コード{run.returncode}")
+        return parse_answer(run.stdout)
+
+
 def run_codex(prompt: str, timeout: int = TIMEOUT) -> dict:
     env_cmd = os.environ.get("XNEWS_REVIEW_CMD")
     if env_cmd:
@@ -257,7 +290,8 @@ def review(raw: dict, curated: dict, timeout: int = TIMEOUT) -> tuple[dict | Non
         report["status"] = "skipped"
         return None, report, "Codex レビュー: 記事0件のため省略"
     try:
-        answer = run_codex(build_prompt(raw, curated), timeout)
+        run = run_claude if reviewer() == "claude" else run_codex
+        answer = run(build_prompt(raw, curated), timeout)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as e:
         report.update(status="failed", error=f"{type(e).__name__}: {e}")
         return None, report, f"Codex レビュー失敗のため未レビューで配信: {e}"
@@ -309,6 +343,8 @@ def main() -> None:
         Path(args.report).write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     except OSError as e:
         line += f"（report を書けず: {e}）"
+    if reviewer() == "claude":
+        line = line.replace("Codex", "Claude")  # ログで誰が見たか分かるように
     print(line)
 
 

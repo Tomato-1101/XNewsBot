@@ -279,3 +279,96 @@ def test_small_paper_detail_survives_review(tmp_path, raw, curated):
     line, cur, rep, _ = run_cli(tmp_path, raw, curated, answer)
     assert line.startswith('Codex レビュー: 7→6件')
     assert cur['genres']['論文'][0]['detail'] == '論文の解説。解説: 用語の説明。'
+
+
+# ---------------------------------------------------------------- XNEWS_REVIEWER=claude(GitHub Actions)
+
+# 偽の claude: 引数と標準入力を記録し、FAKE_ANSWER の中身を標準出力へ返す(-o は無い)。
+FAKE_CLAUDE = r'''
+import json, os, sys, time
+Path = __import__("pathlib").Path
+Path(os.environ["FAKE_LOG"]).write_text(json.dumps({"args": sys.argv[1:], "stdin": sys.stdin.read()}, ensure_ascii=False))
+if os.environ.get("FAKE_SLEEP"):
+    time.sleep(float(os.environ["FAKE_SLEEP"]))
+if os.environ.get("FAKE_RC"):
+    sys.exit(int(os.environ["FAKE_RC"]))
+sys.stdout.write(Path(os.environ["FAKE_ANSWER"]).read_text())
+'''
+
+
+def run_cli_claude(tmp_path, raw, curated, answer=None, args=(), **env_extra):
+    raw_p, cur_p, rep_p = tmp_path / 'raw.json', tmp_path / 'cur.json', tmp_path / 'rep' / 'r.json'
+    raw_p.write_text(json.dumps(raw, ensure_ascii=False))
+    cur_p.write_text(json.dumps(curated, ensure_ascii=False))
+    fake = tmp_path / 'fake_claude.py'
+    fake.write_text(FAKE_CLAUDE)
+    ans = tmp_path / 'answer.txt'
+    ans.write_text(answer if isinstance(answer, str) else json.dumps(answer or {'drop': [], 'merge': []},
+                                                                    ensure_ascii=False))
+    env = {'PATH': '/usr/bin:/bin', 'XNEWS_REVIEWER': 'claude', 'XNEWS_REVIEW_CMD': f'{sys.executable} {fake}',
+           'FAKE_LOG': str(tmp_path / 'fake.log'), 'FAKE_ANSWER': str(ans), **env_extra}
+    run = subprocess.run([sys.executable, str(SCRIPT), '--raw', str(raw_p), '--curated', str(cur_p),
+                          '--report', str(rep_p), *args], env=env, capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    return (run.stdout.strip(), json.loads(cur_p.read_text()), json.loads(rep_p.read_text()),
+            tmp_path / 'fake.log')
+
+
+def test_reviewer_defaults_to_codex(monkeypatch):
+    monkeypatch.delenv('XNEWS_REVIEWER', raising=False)
+    assert rd.reviewer() == 'codex'
+    monkeypatch.setenv('XNEWS_REVIEWER', 'Claude')
+    assert rd.reviewer() == 'claude'
+    monkeypatch.setenv('XNEWS_REVIEWER', 'gemini')   # 知らない値は既定(codex)
+    assert rd.reviewer() == 'codex'
+
+
+def test_claude_argv_is_opus_without_tools():
+    argv = rd.claude_argv(['/bin/claude'])
+    assert argv[:4] == ['/bin/claude', '--model', 'opus', '-p']
+    assert argv[argv.index('--tools') + 1] == ''            # ツールは1つも与えない
+    assert argv[argv.index('--permission-mode') + 1] == 'dontAsk'
+    assert argv[argv.index('--setting-sources') + 1] == ''
+    for flag in ('--strict-mcp-config', '--no-session-persistence', '--safe-mode'):
+        assert flag in argv
+    assert not any('Bash' in a or 'Read' in a or 'Web' in a for a in argv)
+
+
+def test_claude_reviewer_applies_same_answer(tmp_path, raw, curated):
+    answer = {'drop': [{'id': 'AI/1', 'reason': 'x'}], 'merge': []}
+    (tmp_path / 'a').mkdir()
+    (tmp_path / 'b').mkdir()
+    codex_line, codex_cur, _, _ = run_cli(tmp_path / 'a', raw, curated, answer)
+    line, cur, rep, log = run_cli_claude(tmp_path / 'b', raw, curated, answer)
+    assert line == codex_line.replace('Codex', 'Claude') == 'Claude レビュー: 6→5件（除外1・統合0）'
+    assert cur == codex_cur                                  # 同じ回答なら同じ適用結果
+    rec = json.loads(log.read_text())
+    assert rec['args'] == rd.claude_argv([])                 # プロンプトは引数に載せない
+    assert '# 入力 JSON' in rec['stdin'] and '選定基準' in rec['stdin']   # 同じプロンプトを標準入力で渡す
+
+
+def test_claude_reviewer_extracts_json_from_text(tmp_path, raw, curated):
+    text = '結果です\n```json\n{"drop":[{"id":"AI/1","reason":"x"}],"merge":[]}\n```'
+    line, _, _, _ = run_cli_claude(tmp_path, raw, curated, text)
+    assert line == 'Claude レビュー: 6→5件（除外1・統合0）'
+
+
+@pytest.mark.parametrize('env_extra', [{'FAKE_RC': '3'}, {'XNEWS_REVIEW_CMD': '/nonexistent/claude'}])
+def test_claude_reviewer_failure_keeps_curated(tmp_path, raw, curated, env_extra):
+    line, cur, rep, _ = run_cli_claude(tmp_path, raw, curated, **env_extra)
+    assert line.startswith('Claude レビュー失敗のため未レビューで配信')
+    assert cur == curated and rep['status'] == 'failed'
+
+
+def test_claude_reviewer_timeout_keeps_curated(tmp_path, raw, curated):
+    line, cur, rep, _ = run_cli_claude(tmp_path, raw, curated, args=('--timeout', '1'), FAKE_SLEEP='5')
+    assert 'Claude が1秒で終わらずタイムアウト' in line
+    assert cur == curated and rep['status'] == 'failed'
+
+
+def test_claude_reviewer_missing_cli(monkeypatch):
+    monkeypatch.delenv('XNEWS_REVIEW_CMD', raising=False)
+    monkeypatch.delenv('XNEWS_CLAUDE_BIN', raising=False)
+    monkeypatch.setattr(rd.shutil, 'which', lambda name: None)
+    with pytest.raises(RuntimeError, match='Claude CLIが見つからない'):
+        rd.run_claude('p', 1)

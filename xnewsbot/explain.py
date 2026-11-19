@@ -36,7 +36,8 @@ from .models import NewsExplanation, NewsItem
 
 log = logging.getLogger("xnewsbot.explain")
 
-CLAUDE_BIN = "/Users/tomato/.local/bin/claude"
+# GitHub Actions では場所が違うので環境変数で上書きできる(Mac の既定は従来どおり)
+CLAUDE_BIN = os.environ.get("XNEWS_CLAUDE_BIN") or "/Users/tomato/.local/bin/claude"
 MODEL = "sonnet"
 EFFORT = "medium"
 TOOLS = ("WebSearch", "WebFetch")
@@ -49,7 +50,8 @@ REQUIRED_HEADING = "【何が起きたか】"  # プロンプトの書式に従�
 MAX_RUNNING = 2                     # 同時に作る数の上限(サブスク枠を食い尽くさない)
 QUIET_START, QUIET_END = time(7, 0), time(8, 30)  # 朝のキュレーション(07:15〜)の時間帯は受け付けない
 # claude 子プロセスに渡す環境変数。LINE のトークン等の秘密を外部テキストを読むプロセスへ渡さない
-CLAUDE_ENV_KEYS = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TMPDIR", "SHELL")
+# CLAUDE_CODE_OAUTH_TOKEN は GitHub Actions での claude 自身の認証(Mac では未設定で、ログイン済みの認証を使う)
+CLAUDE_ENV_KEYS = ("HOME", "PATH", "USER", "LOGNAME", "LANG", "TMPDIR", "SHELL", "CLAUDE_CODE_OAUTH_TOKEN")
 # webhook プロセス内で「通数の判定→確保」を1区間にする(作成中の分を数え漏らさない)
 LINE_CLAIM_LOCK = threading.Lock()
 

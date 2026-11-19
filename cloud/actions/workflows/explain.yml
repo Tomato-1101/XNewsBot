@@ -1,0 +1,50 @@
+# XNewsBot の AI解説(cloud/DESIGN.md)。置き場所: 非公開リポ Tomato-1101/xnewsbot-cloud の .github/workflows/explain.yml
+# 正本は公開リポ Tomato-1101/XNewsBot の cloud/actions/workflows/。起動は Cloudflare Worker(LINE の「AI解説」)から。
+name: explain
+
+on:
+  workflow_dispatch:
+    inputs:
+      explanation_id:
+        description: "newsexplanation.id(Worker が確保済みの行)"
+        type: string
+        required: true
+
+# 同じ行を二重に作らない。別の記事の解説は並行してよい(同時に作る数は Worker が確保の時点で絞る)
+concurrency:
+  group: xnewsbot-explain-${{ inputs.explanation_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    # 生成は5分で打ち切られる(xnewsbot/explain.py の TIMEOUT)。準備と D1 の往復を足しても余る長さ
+    timeout-minutes: 20
+    env:
+      TZ: Asia/Tokyo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomato-1101/XNewsBot
+          ref: master
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code wrangler@4.123.0
+      - name: explain
+        env:
+          EXPLANATION_ID: ${{ inputs.explanation_id }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: bash cloud/actions/explain.sh "$EXPLANATION_ID"

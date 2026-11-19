@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "xnewsbot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  // genres.toml は実行時に読めないので、デプロイ・dev の前に JSON へ変換して同梱する
+  "build": { "command": "node scripts/build-genres.mjs" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "xnewsbot",
+      "database_id": "c88fa117-97bd-4119-8bf7-7ba48b79911f"
+    }
+  ],
+  "triggers": {
+    // UTC。07:25 JST=定刻の配信、12:30/17:00/21:00 JST=未配信がある日だけの復旧(cloud/DESIGN.md)
+    "crons": ["25 22 * * *", "30 3 * * *", "0 8 * * *", "0 12 * * *"]
+  },
+  "observability": { "enabled": true }
+}

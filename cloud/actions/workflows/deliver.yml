@@ -1,0 +1,60 @@
+# XNewsBot の配信(cloud/DESIGN.md)。置き場所: 非公開リポ Tomato-1101/xnewsbot-cloud の .github/workflows/deliver.yml
+# 正本は公開リポ Tomato-1101/XNewsBot の cloud/actions/workflows/。起動は Cloudflare Worker(Cron・LINE の操作)から。
+name: deliver
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "due / user / now / refresh / recover / render-mock"
+        type: choice
+        default: due
+        options: [due, user, now, refresh, recover, render-mock]
+      user:
+        description: "LINE の user/group id(mode=user のとき)"
+        type: string
+        default: ""
+
+# 配信同士は重ねない(同じ内容の二重 push は LINE の無料枠を減らす)。走っている配信は止めずに待つ
+concurrency:
+  group: xnewsbot-deliver
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deliver:
+    runs-on: ubuntu-latest
+    # ops/deliver.sh の最長(収集10分 + claude 30分 + 上限解除待ち45分 + 再試行30分 + レビュー15分 + 送信)より長く
+    timeout-minutes: 180
+    env:
+      TZ: Asia/Tokyo
+      XNEWS_REVIEWER: claude
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Tomato-1101/XNewsBot
+          ref: master
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g @anthropic-ai/claude-code wrangler@4.123.0
+      - name: deliver
+        env:
+          MODE: ${{ inputs.mode }}
+          TARGET: ${{ inputs.user }}
+          LINE_CHANNEL_SECRET: ${{ secrets.LINE_CHANNEL_SECRET }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          TWITTERAPI_IO_KEY: ${{ secrets.TWITTERAPI_IO_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          FEED_DEPLOY_KEY: ${{ secrets.FEED_DEPLOY_KEY }}
+        run: bash cloud/actions/deliver.sh "$MODE" "$TARGET"
