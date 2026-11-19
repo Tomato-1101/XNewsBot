@@ -151,19 +151,20 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     assert len(specs) <= 5  # reply 上限内(警告文の分だけジャンルの通数を減らす)
     import json
     blob = json.dumps(specs, ensure_ascii=False)
-    # 全ジャンルが目次に出て、どのジャンルも省略されない
+    # 全ジャンルがカードのヘッダーに出て、どのジャンルも省略されない
     genres_shown = [sec["contents"][0]["contents"][0]["text"] for s in specs[2:]
                     for sec in s["contents"]["body"]["contents"] if sec.get("type") == "box"]
     assert {"AI", "株", "仮想通貨", "テクノロジー", "話題"} <= set(genres_shown)
     assert "件は省略" not in blob and "特大" not in blob
     assert "市況（前日終値）" in blob  # 架空の市況も出る
     assert "RPA" not in blob          # 配信ジャンルから廃止済み
-    # 目次の通番は警告文の1通を数えた実際の位置(ジャンルは3通目から)
-    assert "→ 3" in blob and "→ 2" not in blob
+    # 目次は出さない(1通目に「目次」も「→ k通目」も無い)。ジャンルは警告文・要点の次の3通目から始まる
+    assert "目次" not in blob and "通目" not in blob
+    assert specs[2]["type"] == "flex" and genres_shown[0] in {"AI", "株", "仮想通貨", "テクノロジー", "話題"}
 
 
 def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
-    """モック返信(テスト)に今日の予定・仮想通貨の市況・小ニュースの要約が出て、5メッセージ以内。"""
+    """モック返信(テスト)に今日の予定・仮想通貨の市況が出て、小ニュースは見出しだけ(要約なし)で、5メッセージ以内。"""
     import json
 
     from xnewsbot import mockdata
@@ -185,9 +186,10 @@ def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):
     assert "LINE（配信）  今月 残り 152/200通・あと約50回／今回 3通" in summary
     cards = json.dumps(specs[2:], ensure_ascii=False)
     assert '"注目"' in cards and '"その他の見出し"' in cards
-    # 注目(score >= 50)の小ニュースは要約が一覧に出る(タップしなくても読める)
+    # 注目(score >= 50)の小ニュースは見出しだけが一覧に出て、要約は出さない(タップで詳細を開く)
     small = next(r for r in mockdata._MOCK if r[1] == "small" and r[0] == "AI" and r[2] >= 50)
-    assert small[4] in cards
+    assert small[3] in cards and small[4] not in cards
+    assert '"text": "›"' in cards and "詳細を読む" not in cards and "元記事" not in cards
 
 
 def test_help_mentions_schedule_and_new_genres(session, messenger):

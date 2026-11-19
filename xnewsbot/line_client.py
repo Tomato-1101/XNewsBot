@@ -133,7 +133,6 @@ SURPRISE_MAX_PER_COUNTRY = 5
 _COUNTRY_LABELS = {"JP": "日本", "US": "米国"}
 # 時刻が「21:30」「翌03:00」でない予定(昼ごろ・寄り前・引け後)の at は近似なので、過ぎても3時間は出す
 SCHEDULE_APPROX_GRACE = timedelta(hours=3)
-SMALL_SUMMARY_MAX = 100  # 小ニュースの要約の表示上限(字)。超えたら「…」で切る
 ALT_MAX_CHARS = 400
 DEFAULT_TZ = "Asia/Tokyo"
 _WEEKDAYS = "月火水木金土日"
@@ -539,40 +538,14 @@ def _sub_title(text: str) -> dict:
             "margin": "md"}
 
 
-def _msg_range(nos: list[int]) -> str:
-    """目次の行き先: 「→ 2通目」「→ 2〜3通目」。全部省略されたジャンルは「→ 省略」。"""
-    if not nos:
-        return "→ 省略"
-    lo, hi = min(nos), max(nos)
-    return f"→ {lo}通目" if lo == hi else f"→ {lo}〜{hi}通目"
-
-
-def _toc_row(genre: str, count: int, nos: list[int], dropped: int) -> dict:
-    """目次1行: ●(ジャンル色) ジャンル名 / N件 / → k通目(省略があれば件数も)。"""
-    color = _genre_color(genre)
-    where = _msg_range(nos) + (f"（{dropped}件省略）" if dropped and nos else "")
-    return {"type": "box", "layout": "horizontal", "margin": "sm", "spacing": "sm", "contents": [
-        {"type": "text", "text": "●", "size": "xs", "color": color, "flex": 0, "gravity": "center"},
-        {"type": "text", "text": _genre_label(genre), "size": "sm", "weight": "bold", "color": color,
-         "flex": 3},
-        {"type": "text", "text": f"{count}件", "size": "sm", "color": TEXT_COLOR, "align": "end",
-         "flex": 2},
-        {"type": "text", "text": where, "size": "sm", "color": SUB_COLOR, "align": "end", "flex": 5,
-         "wrap": True},
-    ]}
-
-
-def _summary_bubble(toc: list[tuple[str, int, list[int], int]], points: list[NewsItem],
-                    heading: str, total: int, digest_date, slot, has_market: bool,
-                    x_usage: dict | None = None, line_quota: dict | None = None) -> dict:
-    """1通目の1枚目: 見出し → 目次(ジャンルごとの件数と何通目か) → 今日の要点 → 残り使用量。"""
+def _summary_bubble(points: list[NewsItem], heading: str, total: int, digest_date, slot,
+                    has_market: bool, x_usage: dict | None = None,
+                    line_quota: dict | None = None) -> dict:
+    """1通目の1枚目: 見出し → 今日の要点 → 残り使用量。目次は 11-19 に本人指示で廃止。"""
     contents: list[dict] = [
         {"type": "text", "text": heading, "size": "lg", "weight": "bold", "color": TITLE_COLOR},
         {"type": "text", "text": f"計{total}件", "size": "xs", "color": SUB_COLOR},
-        {"type": "text", "text": "目次", "size": "sm", "weight": "bold", "color": TITLE_COLOR,
-         "margin": "xl"},
     ]
-    contents += [_toc_row(*row) for row in toc]
     if has_market:
         contents.append({"type": "text", "text": MARKET_HINT, "size": "xxs", "color": META_COLOR,
                          "margin": "md", "wrap": True})
@@ -746,62 +719,48 @@ NOTABLE_MIN_SCORE = 50
 TIER_HEADINGS = {"notable": "注目", "brief": "その他の見出し"}
 
 
+CHEVRON_COLOR = "#BBBBBB"
+BIG_BG = "#F5F6F8"
+
+
+def _title_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None,
+               title_style: dict, **box) -> dict:
+    """見出しだけの1行(11-19 本人指示: 要約は出さず、タップで詳細=解説を開く)。
+    左に 見出し → 出典・時刻(右端に「評価する」)、右端に「›」。行全体のタップで詳細。"""
+    left: list[dict] = [{"type": "text", "text": item.title, "wrap": True, **title_style}]
+    meta = _meta_row(item, action, now, rate_key, margin="xs")
+    if meta:
+        left.append(meta)
+    return {"type": "box", "layout": "horizontal", "spacing": "md", "action": action, **box,
+            "contents": [
+                {"type": "box", "layout": "vertical", "flex": 1, "contents": left},
+                {"type": "text", "text": "›", "size": "lg", "color": CHEVRON_COLOR, "flex": 0,
+                 "gravity": "center"},
+            ]}
+
+
 def _big_block(item: NewsItem, color: str, action: dict, now: datetime,
                rate_key: str | None = None) -> dict:
-    """大ニュース1件: 見出し → 要約 → 出典・時刻 → [詳細を読む][元記事]。"""
-    contents: list[dict] = [
-        {"type": "text", "text": item.title, "size": "md", "weight": "bold", "color": TITLE_COLOR,
-         "wrap": True},
-    ]
-    if item.summary:
-        contents.append({"type": "text", "text": item.summary, "size": "sm", "color": "#444444",
-                         "wrap": True, "margin": "sm"})
-    meta = _meta_row(item, action, now, rate_key, margin="sm", wrap=True)
-    if meta:
-        contents.append(meta)
-    # 2つのリンクを左に寄せて並べる(flex 0。既定の flex 1 だと「元記事」が中央から始まる)
-    links = [{"type": "text", "text": "詳細を読む", "size": "xs", "weight": "bold", "color": color,
-              "flex": 0, "action": action}]
-    # 不正な URL だけなら「元記事」リンクを省く(記事本体は出す)。先頭が不正でも他に使える URL があればそれを使う
-    url = next((u for u in map(_safe_uri, item.source_urls or []) if u), None)
-    if url:
-        links.append({"type": "text", "text": "元記事", "size": "xs", "color": SUB_COLOR, "flex": 0,
-                      "action": {"type": "uri", "label": "元記事", "uri": url}})
-    contents.append({"type": "box", "layout": "horizontal", "margin": "md", "spacing": "xl",
-                     "contents": links})
-    return {"type": "box", "layout": "vertical", "contents": contents}
+    """大きいニュース1件: 薄い灰色の札に、左端のジャンル色の帯と大きめの太字の見出し。"""
+    row = _title_row(item, action, now, rate_key,
+                     {"size": "md", "weight": "bold", "color": TITLE_COLOR})
+    bar = {"type": "box", "layout": "vertical", "width": "4px", "backgroundColor": color,
+           "cornerRadius": "2px", "contents": [{"type": "filler"}]}
+    row.pop("action")  # タップは札全体で受ける(同じ詳細の action を二重に持たない)
+    return {"type": "box", "layout": "horizontal", "spacing": "md", "backgroundColor": BIG_BG,
+            "cornerRadius": "md", "paddingAll": "12px", "action": action,
+            "contents": [bar, {**row, "flex": 1}]}
 
 
 def _notable_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
-    """注目ニュースの1行(行全体のタップで詳細): 見出し(太字) → 要約(長ければ「…」) → 出典・時刻。"""
-    contents: list[dict] = [
-        {"type": "text", "text": item.title, "size": "sm", "weight": "bold", "color": TITLE_COLOR,
-         "wrap": True},
-    ]
-    if item.summary:
-        summary = item.summary
-        if len(summary) > SMALL_SUMMARY_MAX:
-            summary = summary[:SMALL_SUMMARY_MAX].rstrip() + "…"
-        contents.append({"type": "text", "text": summary, "size": "xs", "color": "#555555",
-                         "wrap": True, "margin": "xs"})
-    meta = _meta_row(item, action, now, rate_key, margin="xs")
-    if meta:
-        contents.append(meta)
-    return {"type": "box", "layout": "vertical", "margin": "md", "action": action,
-            "contents": contents}
+    """注目ニュースの1行: 太字の見出し。"""
+    return _title_row(item, action, now, rate_key,
+                      {"size": "sm", "weight": "bold", "color": TITLE_COLOR}, margin="md")
 
 
 def _brief_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
-    """その他の見出しの1行: 見出し → 出典・時刻(1行)。要約は出さず、タップで詳細(要約と出典)を開く。
-    1行を軽くして1枚に8件並べるため。"""
-    contents: list[dict] = [
-        {"type": "text", "text": item.title, "size": "sm", "color": TEXT_COLOR, "wrap": True},
-    ]
-    meta = _meta_row(item, action, now, rate_key)
-    if meta:
-        contents.append(meta)
-    return {"type": "box", "layout": "vertical", "margin": "md", "action": action,
-            "contents": contents}
+    """その他の見出しの1行: 細字の見出し。"""
+    return _title_row(item, action, now, rate_key, {"size": "sm", "color": TEXT_COLOR}, margin="md")
 
 
 def _split_main_others(grouped: dict[str, list[NewsItem]]
@@ -851,8 +810,10 @@ def _page_body(genre: str, units: list[tuple[str, dict]]) -> list[dict]:
                 if body:
                     head["margin"] = "lg"
                 body.append(head)
+        elif tier == "big":  # 大きいニュースは札そのものが区切りなので線は引かず間を空ける
+            comp = {**comp, "margin": "md"}
         else:
-            body.append(_sep("lg") if tier == "big" else _sep("md", "#F2F2F2"))
+            body.append(_sep("md", "#F2F2F2"))
         body.append(comp)
         prev = tier
     return body
@@ -1115,14 +1076,14 @@ def digest_specs(
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大 max_messages)に変換する。
 
     どの通も縦に長い1枚のバブル(カルーセル=横スワイプは使わない)。
-    1通目: 要点(日付見出し・目次・今日の要点5本・残り使用量)の下にマーケット(市況・今日の予定・
+    1通目: 要点(日付見出し・今日の要点5本・残り使用量)の下にマーケット(市況・今日の予定・
     注目決算・決算サプライズ)。マーケットの中身が無ければ要点だけ。
     2通目以降はジャンルごとのカード(grouped の順=genres.toml の順)を縦に積む。
-    カードの中は 大きいニュース → 注目(score >= 50、要約つき)→ その他の見出し(見出しと出典)。
+    カードの中は 大きいニュース → 注目(score >= 50)→ その他の見出し。どれも見出しと出典だけで、
+    タップで詳細(解説)を開く。
     - big が0件のジャンルは rank 最上位の1件を大きいニュースに上げる。
     - 原則1ジャンル=1通。通数が足りない日だけ隣り合う小さいジャンルを1通にまとめる(_pack_genres)。
     - 件数は黙って削らない: 入りきらない分は最後に「ほか N 件は省略」(_genre_carousels)。
-    - 目次の「→ k通目」は実際に載ったメッセージの番号。
     - 0件のジャンルは出さない。全ジャンル0件ならテキスト1通。
     - greeting は互換のため残している(見出しは常に同じ)。
     - max_messages: 前に別のメッセージを足して送るとき(モック返信の警告文など)に減らす。
@@ -1143,8 +1104,8 @@ def digest_specs(
     # 日付/スロットが無い文脈(モック)は架空なので評価を出さない。
     rate = digest_date is not None and slot is not None
 
-    def layout(slots: int, offset: int):
-        """ジャンルを slots 通に詰めて、(通の列, 目次)。offset=ジャンルの1通目の通番 - 1。"""
+    def layout(slots: int) -> list[list[Entry]]:
+        """ジャンルを slots 通に詰める。"""
         cars = _genre_carousels(grouped, digest_date, slot, now, slots, RATE_ALL if rate else RATE_NONE)
         if rate:
             for level in (RATE_TOP, RATE_NONE):
@@ -1153,16 +1114,7 @@ def digest_specs(
                 trial = _genre_carousels(grouped, digest_date, slot, now, slots, level)
                 if shown(trial) > shown(cars):  # 同数なら評価リンクの多い上の段のまま
                     cars = trial
-        toc = []
-        for g, items in grouped.items():
-            if not items:
-                continue
-            # max_messages を減らす=前に別のメッセージが入るので、その分だけ通番をずらす
-            nos = sorted({ci + 1 + offset + MAX_MESSAGES - max_messages
-                          for ci, car in enumerate(cars) for e in car if e[2] == g})
-            kept = sum(e[1] for car in cars for e in car if e[2] == g)
-            toc.append((g, len(items), nos, len(items) - kept))
-        return cars, toc
+        return cars
 
     d = digest_date or now.date()
     slot_word = "夜" if slot == "evening" else "朝"
@@ -1171,12 +1123,9 @@ def digest_specs(
     alt = f"{slot_word}のニュース｜{points[0].title}" + (f" ほか{total - 1}件" if total > 1 else "")
     market_card = _market_bubble(market, schedule, now)
 
-    def summary_for(toc):
-        return _summary_bubble(toc, points, heading, total, digest_date, slot, market_card is not None,
-                               x_usage=x_usage, line_quota=line_quota)
-
-    cars, toc = layout(max_messages - 1, 1)
-    summary = summary_for(toc)
+    summary = _summary_bubble(points, heading, total, digest_date, slot, market_card is not None,
+                              x_usage=x_usage, line_quota=line_quota)
+    cars = layout(max_messages - 1)
     firsts = [summary]
     if market_card is not None:
         stacked = _stack([summary, market_card])
@@ -1185,8 +1134,7 @@ def digest_specs(
         else:
             # 要点の下に入らない日(予定・決算が多い日)はマーケットを2通目に独立させる。
             # 黙って外すと市況・予定・決算が丸ごと消えるため、ジャンルの通を1通減らしてでも出す。
-            cars, toc = layout(max_messages - 2, 2)
-            summary = summary_for(toc)
+            cars = layout(max_messages - 2)
             mcard = market_card if _byte_size(_stack([market_card])) <= BUBBLE_MAX_BYTES else \
                 _fit_component(market_card, BUBBLE_MAX_BYTES - _byte_size(_stack([{"body": {}}])))
             firsts = [summary, _stack([mcard])]

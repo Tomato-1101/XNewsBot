@@ -394,10 +394,12 @@ def test_every_row_has_rate_link_next_to_meta():
     for n in rates:
         assert (n["size"], n["color"], n["flex"]) == ("xxs", lc.META_COLOR, 0)
         assert "displayText" not in n["action"]
+    # 行(大きいニュースは札全体)のタップは詳細。評価リンクは各行のものがその行の記事のキー
     rows = [c for c in bubble["body"]["contents"] if c.get("type") == "box" and c.get("action")]
-    assert [r["action"]["data"] for r in rows] == ["detail:20260608:morning:AI:1",
+    assert [r["action"]["data"] for r in rows] == ["detail:20260608:morning:AI:0",
+                                                   "detail:20260608:morning:AI:1",
                                                    "detail:20260608:morning:AI:2"]
-    assert all(_rate_datas(r) == [keys[k + 1]] for k, r in enumerate(rows))
+    assert all(_rate_datas(r) == [keys[k]] for k, r in enumerate(rows))
     # 出典も時刻も無い記事でも「評価する」は出る。日付・スロットが無い表示(モック)には出さない(架空の記事なので)
     bare = _with_ids({"AI": [lc.NewsItem(genre="AI", importance="big", rank=0, title="出典なし")]}, 7)
     assert _rate_datas(lc.digest_specs(bare, slot="morning", digest_date=D, now=NOW)[1]) == [
@@ -446,7 +448,8 @@ def _top_scored(n: int):
 def test_middle_rate_tier_keeps_rate_links_on_big_and_notable_when_it_omits_nothing_more():
     """全行に評価を付けると省略が出るが、big と notable の行だけなら省略が増えない日は、
     評価なしに落とさず big／notable の行だけに「評価する」を残す。"""
-    grouped = _top_scored(38)  # 旧65件。1通=28000B では114件が全件入る上限に近い量
+    # 3ジャンル×36件(108件)。見出しだけの行は軽く、全件が入る上限は1ジャンル37件(111件)なので、その1つ手前
+    grouped = _top_scored(36)
     total = sum(len(v) for v in grouped.values())
 
     def count(level):

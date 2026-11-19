@@ -107,20 +107,6 @@ def _market(specs: list[dict]) -> dict | None:
     return cards[1] if len(cards) > 1 else None
 
 
-def _toc(specs: list[dict]) -> list[list[str]]:
-    """目次の行を [●, ジャンル名, 件数, 行き先] に。"""
-    body = _summary(specs)["body"]["contents"]
-    start = next((i for i, c in enumerate(body) if c.get("text") == "目次"), None)
-    if start is None:  # 要点カードが注記に差し替わった異常時
-        return []
-    rows = []
-    for c in body[start + 1:]:
-        if c.get("type") != "box":
-            break
-        rows.append(_texts(c))
-    return rows
-
-
 def _cards(specs: list[dict]) -> list[tuple[int, dict]]:
     """2通目以降のカードを (メッセージ番号(1始まり), バブル) で順に。"""
     gs = _genre_specs(specs)
@@ -131,6 +117,18 @@ def _head(bubble: dict) -> list[str]:
     return _texts(bubble["header"]) if "header" in bubble else []
 
 
+def _where(specs: list[dict]) -> dict[str, list[int]]:
+    """ジャンル名 -> そのジャンルのカードが実際に載ったメッセージ番号(1始まり・昇順)。
+    目次を廃止したので、ジャンルがどの通に載るかはメッセージの実物で確かめる。"""
+    where: dict[str, list[int]] = {}
+    for no, b in _cards(specs):
+        if "header" in b:
+            nos = where.setdefault(_head(b)[0], [])
+            if no not in nos:
+                nos.append(no)
+    return where
+
+
 def test_digest_specs_summary_then_genre_cards():
     # _small は score 40(< 50)なので、株の1件目は大きいニュースに上がり、2件目は「その他の見出し」
     grouped = {"話題": [], "AI": [_big()], "株": [_small(0), _small(1)]}
@@ -139,9 +137,11 @@ def test_digest_specs_summary_then_genre_cards():
     summary = specs[0]["contents"]
     assert summary["type"] == "bubble" and summary["size"] == "giga"  # マーケットが無い日は1枚
     texts = _texts(summary)
-    assert texts[:3] == ["6月8日(月) 朝のニュース", "計3件", "目次"]
-    assert _toc(specs) == [["●", "AI", "1件", "→ 2通目"], ["●", "株", "2件", "→ 3通目"]]  # 0件は出さない
-    assert "今日の要点" in texts and lc.MARKET_HINT not in texts
+    # 1通目は 見出し → 計N件 → 今日の要点。目次(ジャンルごとの件数と「→ k通目」)は出さない
+    assert texts[:3] == ["6月8日(月) 朝のニュース", "計3件", "今日の要点"]
+    assert "目次" not in texts and not any(t.startswith("→") for t in texts)
+    assert lc.MARKET_HINT not in texts
+    assert _where(specs) == {"AI": [2], "株": [3]}  # 0件のジャンルは通を作らない
 
     ai, st = specs[1]["contents"], specs[2]["contents"]
     assert ai["type"] == st["type"] == "bubble"  # カルーセルでなく縦に長い1枚
@@ -481,7 +481,6 @@ def test_removed_genre_past_items_render_with_other_color():
     grouped = {"特大": [_big("特大", 0, title="過去の特大")], "AI": [_big("AI", 0)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
-    assert _toc(specs)[0] == ["●", "特大", "1件", "→ 2通目"]
     card = _unstack(specs[1]["contents"])[0]
     assert _head(card) == ["特大", "1件"] and card["header"]["backgroundColor"] == lc.OTHER_COLOR
     assert "detail:20260608:morning:特大:0" in _bubble_datas(card)
@@ -495,8 +494,9 @@ def test_digest_specs_empty():
 
 # ---- ジャンルごとのカード ----
 
-def test_big_block_detail_and_source_links():
-    # 大ニュースは見出し+要約+出典/時刻+[詳細を読む](postback)+[元記事](uri)
+def test_big_block_is_title_only_with_meta_and_detail_tap():
+    # 大きいニュースは 見出し+出典/時刻+「›」だけ(要約・[詳細を読む]・[元記事] は出さない)。
+    # 札全体のタップが詳細 postback。元記事の URL は詳細(タップ後)の出典に残る
     item = _big()
     item.id = 42
     item.source_tweets = [
@@ -511,10 +511,15 @@ def test_big_block_detail_and_source_links():
     specs = lc.digest_specs({"AI": [item]}, greeting=False, now=NOW)
     bubble = _unstack(specs[1]["contents"])[0]
     texts = _texts(bubble["body"])
-    assert texts[:3] == ["大きな出来事", "重要な要約", "日経・Bloomberg ほか2件・3時間前"]
+    assert texts == ["大きな出来事", "日経・Bloomberg ほか2件・3時間前", "›"]
+    assert "重要な要約" not in texts and "詳細を読む" not in texts and "元記事" not in texts
     acts = _actions(bubble["body"])
-    assert {"type": "postback", "data": "detail:42", "displayText": "詳細: 大きな出来事"} in acts
-    assert {"type": "uri", "label": "元記事", "uri": "https://x.com/u/status/1"} in acts
+    detail = {"type": "postback", "data": "detail:42", "displayText": "詳細: 大きな出来事"}
+    assert acts == [detail]            # タップは札全体の1か所だけ。uri(元記事)リンクは無い
+    card = bubble["body"]["contents"][0]
+    assert card["action"] == detail and card["backgroundColor"] == lc.BIG_BG
+    detail_text = lc.detail_spec(item)["text"]
+    assert "重要な要約" in detail_text and "https://a/1" in detail_text  # 要約・出典 URL は詳細側にある
 
 
 def test_small_rows_listed_with_label_and_meta():
@@ -528,9 +533,12 @@ def test_small_rows_listed_with_label_and_meta():
     assert _head(bubble) == ["株", "3件"]
     body = bubble["body"]["contents"]
     assert "@v・2日前" in _texts(body)
-    smalls = [c for c in body if c.get("type") == "box" and c.get("action")]
+    rows = [c for c in body if c.get("type") == "box" and c.get("action")]
+    big_row, smalls = rows[0], rows[1:]
+    assert big_row["action"]["data"] == "detail:20260608:morning:株:0"
     assert [c["action"]["data"] for c in smalls] == ["detail:20260608:morning:株:1",
                                                     "detail:20260608:morning:株:2"]
+    assert all(_texts(c)[-1] == "›" for c in rows) and "小要約" not in _texts(body)  # 要約は出さず「›」
     # 大きいニュース → 小見出し「その他の見出し」 → 見出しの行
     heading = next(i for i, c in enumerate(body) if c.get("text") == "その他の見出し")
     assert body[heading - 1]["type"] == "separator" and body[heading]["size"] == "xs"
@@ -539,11 +547,12 @@ def test_small_rows_listed_with_label_and_meta():
     only_small = lc.digest_specs({"株": [_small(0)]}, slot="morning", digest_date=D, now=NOW)
     assert len(only_small) == 2
     texts = _texts(only_small[1]["contents"])
-    assert "小さな話題0" in texts and "詳細を読む" in texts and "その他の見出し" not in texts
+    assert "小さな話題0" in texts and "›" in texts and "その他の見出し" not in texts
+    assert "詳細を読む" not in texts and "小要約" not in texts
 
 
-def test_notable_row_shows_summary_truncated_and_keeps_tap():
-    """注目(score >= 50)は 見出し(太字) → 要約(100字超は「…」) → 出典・時刻 の順。要約が空なら出さない。"""
+def test_notable_row_shows_title_only_and_keeps_tap():
+    """注目(score >= 50)は 見出し(太字) → 出典・時刻 の左列と右端の「›」だけ。要約は長さ・有無にかかわらず出さない。"""
     s_short, s_long, s_exact, s_empty = (_small(i, score=60) for i in (1, 2, 3, 4))
     s_short.summary = "短い要約"
     s_long.summary = "あ" * 100 + "いう"
@@ -552,20 +561,16 @@ def test_notable_row_shows_summary_truncated_and_keeps_tap():
     specs = lc.digest_specs({"株": [_big("株", 0), s_short, s_long, s_exact, s_empty]},
                             slot="morning", digest_date=D, now=NOW)
     body = _unstack(specs[1]["contents"])[0]["body"]["contents"]
-    rows = [c for c in body if c.get("type") == "box" and c.get("action")]
-    assert [_texts(r) for r in rows] == [
-        ["小さな話題1", "短い要約", "@v", "評価する"],
-        ["小さな話題2", "あ" * 100 + "…", "@v", "評価する"],
-        ["小さな話題3", "え" * 100, "@v", "評価する"],          # ちょうど100字は切らない
-        ["小さな話題4", "@v", "評価する"],                       # 要約が空なら行ごと出さない
-    ]
-    title, summary, meta_row = rows[0]["contents"]
+    big_row, *rows = [c for c in body if c.get("type") == "box" and c.get("action")]
+    assert [_texts(r) for r in rows] == [[f"小さな話題{i}", "@v", "評価する", "›"] for i in (1, 2, 3, 4)]
+    assert not any(s in json.dumps(body, ensure_ascii=False) for s in ("短い要約", "あああ", "えええ"))
+    left, chevron = rows[0]["contents"]
+    title, meta_row = left["contents"]
     assert (title["size"], title["weight"], title["color"]) == ("sm", "bold", lc.TITLE_COLOR)
-    assert (summary["size"], summary["color"], summary["wrap"]) == ("xs", "#555555", True)
     assert meta_row["contents"][0]["size"] == "xxs"
+    assert (chevron["text"], chevron["flex"]) == ("›", 0)
     # 行のタップで詳細を開く動作は残す
     assert [r["action"]["data"] for r in rows] == [f"detail:20260608:morning:株:{i}" for i in (1, 2, 3, 4)]
-    assert s_long.summary == "あ" * 100 + "いう"     # 元データは変えない
     assert "注目" in _texts(body) and "その他の見出し" not in _texts(body)
 
 
@@ -625,7 +630,7 @@ def _check_limits_and_coverage(grouped, specs) -> None:
     assert datas and all(DETAIL_RE.match(d) or RATE_RE.match(d) for d in datas)
     assert any(DETAIL_RE.match(d) for d in datas)
     _check_genres_contiguous(grouped, specs)
-    _check_toc_matches(grouped, specs)
+    _check_no_toc(specs)
 
 
 def _check_genres_contiguous(grouped, specs) -> None:
@@ -654,18 +659,11 @@ def _check_genres_contiguous(grouped, specs) -> None:
         assert notes == [f"{total}件 {k}/{n}" for k in range(1, shown + 1)]
 
 
-def _check_toc_matches(grouped, specs) -> None:
-    """目次の「→ k通目」が、そのジャンルのカードが実際に載ったメッセージ番号と一致する。"""
-    where: dict[str, list[int]] = {}
-    for no, b in _cards(specs):
-        if "header" in b:
-            where.setdefault(_head(b)[0], []).append(no)
-    for _dot, label, count, dest in _toc(specs):
-        nos = where.get(label, [])
-        expect = lc._msg_range(nos)
-        assert dest.startswith(expect), (label, dest, nos)
-        genre = next(g for g in grouped if lc._genre_label(g) == label)
-        assert count == f"{len(grouped[genre])}件"
+def _check_no_toc(specs) -> None:
+    """目次は出さない: 1通目に「目次」も「→ k通目」も無く、どの通にも「→ …通目」「N件省略」の行き先表示が無い。"""
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "目次" not in blob and "通目" not in blob
+    assert "件省略）" not in blob
 
 
 def test_bulk_4_genres_x20_fits_and_keeps_every_item():
@@ -772,13 +770,13 @@ def test_each_genre_gets_own_message_when_slots_allow():
     assert len(specs) == 5
     assert [{_head(b)[0] for b in _unstack(s["contents"])} for s in specs[1:]] == [
         {"AI"}, {"株"}, {"テクノロジー"}, {"話題"}]
-    assert [row[3] for row in _toc(specs)] == ["→ 2通目", "→ 3通目", "→ 4通目", "→ 5通目"]
+    assert _where(specs) == {"AI": [2], "株": [3], "テクノロジー": [4], "話題": [5]}
     assert specs[2]["alt"] == "株 12件｜株0"
 
 
 def test_adjacent_small_genres_share_a_message_only_when_over_slots():
     """6ジャンルで通数(4)が足りない日だけ、隣り合うジャンルを1通にまとめる。まとめるのはカードの合計が
-    一番少ない組(同数なら後ろの組から)。目次の通番もそれに合わせる。"""
+    一番少ない組(同数なら後ろの組から)。"""
     genres = ["AI", "株", "暗号資産", "テクノロジー", "話題", "ビジネス"]
     grouped = _bulk(genres, 8)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
@@ -786,13 +784,14 @@ def test_adjacent_small_genres_share_a_message_only_when_over_slots():
     assert len(specs) == 5
     assert [[_head(b)[0] for b in _unstack(s["contents"])] for s in specs[1:]] == [
         ["AI"], ["株"], ["仮想通貨", "テクノロジー"], ["話題", "ビジネス"]]
-    assert [row[3] for row in _toc(specs)] == ["→ 2通目", "→ 3通目", "→ 4通目", "→ 4通目",
-                                               "→ 5通目", "→ 5通目"]
+    assert _where(specs) == {"AI": [2], "株": [3], "仮想通貨": [4], "テクノロジー": [4],
+                             "話題": [5], "ビジネス": [5]}
     assert specs[4]["alt"] == "話題 8件・ビジネス 8件｜話題の見出し00" + "あ" * 30
 
 
 def test_large_genre_spans_messages_with_continuous_numbering():
-    # 1ジャンル40件の big(要約400字)は 1通(28000B)に入らないので通をまたぎ、番号は通をまたいで連番
+    # 1ジャンル40件の big(見出し+出典・時刻+評価。要約は出さない)は 1通(28000B)に入らないので通をまたぎ、
+    # 番号は通をまたいで連番
     grouped = _bulk(["AI"], 40, summary_len=400)
     for it in grouped["AI"]:
         it.importance = "big"
@@ -803,7 +802,7 @@ def test_large_genre_spans_messages_with_continuous_numbering():
     assert [_head(b) for _no, b in cards] == [["AI", f"40件 {k}/{n}"] for k in range(1, n + 1)]
     nos = sorted({no for no, _b in cards})
     assert len(nos) >= 2 and nos == list(range(2, nos[-1] + 1))
-    assert _toc(specs) == [["●", "AI", "40件", f"→ 2〜{nos[-1]}通目"]]
+    assert _where(specs) == {"AI": nos}   # 目次は無いので、通番は実際に載った通で確かめる
     # 分割後のバブル先頭は区切り線で始めない
     assert all(b["body"]["contents"][0]["type"] != "separator" for _no, b in cards)
     datas = [d for _no, b in cards for d in _bubble_datas(b)]
@@ -824,15 +823,14 @@ def test_overflow_beyond_5_messages_shows_omitted_count():
     m = re.fullmatch(r"ほか (\d+) 件は省略", _texts(last_bubble)[0])
     assert m
     _check_accounting(grouped, specs)
-    toc = _toc(specs)
-    assert toc[-1][3] == "→ 省略"     # 全部落ちたジャンルも目次に出す
-    assert re.fullmatch(r"→ 5通目（\d+件省略）", toc[0][3]) is None  # AI は 2〜3通目
-    assert toc[0][3].startswith("→ 2")
+    where = _where(specs)
+    assert where["AI"][0] == 2        # 先頭のジャンルは2通目から。後ろのカードは丸ごと落ちうる
+    assert list(where) == [lc._genre_label(g) for g in grouped][:len(where)]
 
 
 def test_overflow_trims_brief_from_the_end_and_counts_it():
     """5通に入りきらない日は「その他の見出し」の末尾から削る(大きいニュース・注目は残す)。
-    削るのは残りの多いジャンルから1件ずつ。削った件数は最後の通の末尾と目次に出す。"""
+    削るのは残りの多いジャンルから1件ずつ。削った件数は最後の通の末尾に出す。"""
     genres = ["AI", "株", "暗号資産", "テクノロジー", "話題"]
     grouped = {}
     for g in genres:
@@ -854,9 +852,6 @@ def test_overflow_trims_brief_from_the_end_and_counts_it():
         ranks = [it.rank for it in grouped[g] if f"detail:20260608:morning:{g}:{it.rank}" in shown]
         assert ranks[:11] == list(range(11))                      # big と注目は全部
         assert ranks == list(range(len(ranks)))                   # 削ったのは末尾だけ
-    # 目次の省略件数の合計 = 末尾の「ほか N 件」
-    toc_dropped = [int(m.group(1)) for row in _toc(specs) for m in [re.search(r"（(\d+)件省略）", row[3])] if m]
-    assert sum(toc_dropped) == omitted
     # 見出しが一番多い AI から削る
     left = {g: sum(1 for d in shown if d.split(":")[3] == g) for g in genres}
     assert max(left.values()) - min(left.values()) <= 1
@@ -910,7 +905,9 @@ def test_genre_without_big_promotes_top_item():
                                     "detail:20260608:morning:株:2"]
     title = next(n for n in lc._text_nodes(stock["body"]) if n["text"] == "小さな話題0")
     assert (title["size"], title.get("weight")) == ("md", "bold")
-    assert "詳細を読む" in _texts(stock["body"])
+    assert "›" in _texts(stock["body"])
+    assert "詳細を読む" not in _texts(stock["body"])
+    assert stock["body"]["contents"][0]["backgroundColor"] == lc.BIG_BG  # 大きいニュースの札
 
 
 def test_every_item_appears_exactly_once():
@@ -958,17 +955,19 @@ def test_page_split_by_bytes_and_position_header():
         _check_limits_and_coverage({"AI": items}, specs)
         return [b for _no, b in _cards(specs)]
 
-    # 重さ(旧 PAGE_WEIGHT_MAX=20)では分けない: 3 + 1.5×12 も 3 + 1×30 も1枚
+    # 重さ(旧 PAGE_WEIGHT_MAX=20)では分けない: 大1 + 注目12 も 大1 + 見出し25 も1枚(26件は旧上限の重さを超える)
     one_notable = cards([_big("AI")] + [_small(i, "AI", score=80) for i in range(1, 13)])
     assert [_head(b) for b in one_notable] == [["AI", "13件"]]
     assert len(_bubble_datas(one_notable[0])) == 13
 
-    brief = cards([_big("AI")] + [_small(i, "AI", score=30) for i in range(1, 31)])
-    assert [_head(b) for b in brief] == [["AI", "31件"]]
-    rows = [c for c in brief[0]["body"]["contents"] if c.get("action")]
-    assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する"] for i, r in enumerate(rows, 1))
-    assert "小要約" not in _texts(brief)
-    title, meta_row = rows[0]["contents"]
+    brief = cards([_big("AI")] + [_small(i, "AI", score=30) for i in range(1, 26)])
+    assert [_head(b) for b in brief] == [["AI", "26件"]]
+    big_row, *rows = [c for c in brief[0]["body"]["contents"] if c.get("action")]
+    assert len(rows) == 25
+    assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する", "›"] for i, r in enumerate(rows, 1))
+    assert "小要約" not in _texts(brief[0]["body"])
+    left, _chevron = rows[0]["contents"]
+    title, meta_row = left["contents"]
     assert (title["size"], title["color"], "weight" in title) == ("sm", lc.TEXT_COLOR, False)
     meta = meta_row["contents"][0]
     assert meta["size"] == "xxs" and not meta.get("wrap")  # 出典・時刻は1行
@@ -1000,7 +999,7 @@ def _heavy7(kind: str) -> dict[str, list[NewsItem]]:
 
 def test_heavy_7_genres_x30_within_limits_for_any_tier_mix():
     """注目が多い日・その他が多い日・半々の日のどれでも、5通・28000B を超えず、
-    全記事がどこかに出るか省略件数に数えられる。ジャンルのカードは連続し、目次は実際の通番と一致。"""
+    全記事がどこかに出るか省略件数に数えられる。ジャンルのカードは連続し、目次は出ない。"""
     for kind in ("notable", "brief", "mixed"):
         grouped = _heavy7(kind)
         specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,
@@ -1103,9 +1102,10 @@ def test_safe_uri_keeps_host_and_checks_authority():
         assert lc._safe_uri(bad) is None, bad
 
 
-def test_bad_source_urls_drop_only_the_link():
-    """1023字・35000字・javascript:・空白入りの URL でも、uri は全部 http(s) かつ1000字以下になり、
-    記事本体は出て「元記事」リンクだけが省かれる。先頭が不正でも後ろに正しい URL があればそれを使う。"""
+def test_bad_source_urls_never_break_the_list():
+    """1023字・35000字・javascript:・空白入りの URL・URL なしの記事があっても、一覧は記事本体(見出し)が
+    全部出て、各行は詳細 postback だけを持つ。元記事の uri リンクは一覧に出さない(11-19 廃止)ので、
+    どの URL も一覧のメッセージに混ざらない。詳細(タップ後のテキスト)は上限内で作れる。"""
     url_sets = [
         [_BASE + "a" * (1023 - len(_BASE))],
         [_BASE + "b" * (35000 - len(_BASE))],
@@ -1125,11 +1125,14 @@ def test_bad_source_urls_drop_only_the_link():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
 
-    uris = [a["uri"] for a in _actions(specs) if a["type"] == "uri"]
-    assert uris == ["https://example.com/fallback"]
+    assert [a for a in _actions(specs) if a["type"] == "uri"] == []
+    blob = json.dumps(specs, ensure_ascii=False)
+    assert "javascript:" not in blob and "example.com" not in blob   # URL は一覧のどこにも入らない
     texts = _texts(_carousels(specs))
     assert all(f"記事{r}" in texts for r in range(len(url_sets)))  # 記事本体は全部出る
-    assert texts.count("元記事") == 1
+    assert "元記事" not in texts and "詳細を読む" not in texts
+    for it in items:   # 巨大な URL でも詳細は LINE のテキスト上限(5000字)内で作れる
+        assert len(lc.detail_spec(it)["text"]) <= lc.DETAIL_MAX_CHARS + 1
 
 
 def test_guard_replaces_only_oversized_bubble():
