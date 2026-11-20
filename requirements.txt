@@ -3,7 +3,10 @@ fastapi>=0.115
 uvicorn>=0.30
 pydantic>=2.7
 pydantic-settings>=2.3
-sqlmodel>=0.0.21
+# 版を固定(クラウドは毎回入れ直すので、最新が出ると手元のテストと違う版で動く)。sqlmodel 0.0.50 は
+# タイムゾーン無しの日時を拒み、評価の読み込みと AI 解説が落ちた(11-20)。上げるときは手元で全テストを通してから
+sqlmodel==0.0.38
+SQLAlchemy==2.0.50
 line-bot-sdk>=3.11
 APScheduler>=3.10
 httpx>=0.27
