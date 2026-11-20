@@ -23,6 +23,10 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
   Cloudflare Worker `xnewsbot`、データは D1 が正、朝の配信・復旧・AI 解説は非公開リポ `Tomato-1101/xnewsbot-cloud` の Actions
   (この公開リポの master を checkout して動く＝master への push がそのまま本番に効く)。下の launchd 5本は bootout＋disable 済み
   (plist は残す。Mac の xnewsbot.db はもう更新されない)。Mac に戻すときは Webhook を ngrok の URL に戻し、D1 から DB を書き戻してから bootstrap する。
+  - 例外として Mac で動かし続けるのは launchd `com.tomato.xnewsbot-jp`(毎日 07:00、`scripts/push_jp_schedule.py`、ログ `~/Library/Logs/xnewsbot-jp.log`)だけ。
+    株探(AWS WAF の CAPTCHA)と IRBANK(403)がクラウドの IP を弾くため、日本の注目決算と決算サプライズを家の回線で取って D1 の kv `jp_schedule` に置き、
+    07:25 からのクラウドの収集が当日分ならそれを使う(無い・失敗した側はクラウドで取り直す＝空になるだけ)。すり抜けはしない。
+  - クラウドは毎回 `pip install -r requirements.txt` するので依存は版を固定する(sqlmodel 0.0.50 で評価と AI 解説が落ちた。上げるときは手元で全テストを通してから)。
 
 - 常駐: launchd `com.tomato.xnewsbot`(uvicorn:18010) / `-admin`(管理画面 8011) / `-ngrok` / `-deliver`(07:15 起動→08:00 送信。キュレーションが約17分かかるため 2026-10-01 に45分前起動へ) /
   `-recover`(12:30・17:00・21:00 に `deliver.sh --recover`。当日朝が未配信の日だけ集め直して送る自動復旧。
