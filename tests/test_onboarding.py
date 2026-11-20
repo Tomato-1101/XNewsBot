@@ -151,16 +151,29 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     assert len(specs) <= 5  # reply 上限内(警告文の分だけジャンルの通数を減らす)
     import json
     blob = json.dumps(specs, ensure_ascii=False)
-    # 全ジャンルがカードのヘッダーに出て、どのジャンルも省略されない
-    genres_shown = [sec["contents"][0]["contents"][0]["text"] for s in specs[2:]
-                    for sec in s["contents"]["body"]["contents"] if sec.get("type") == "box"]
-    assert {"AI", "株", "仮想通貨", "テクノロジー", "話題"} <= set(genres_shown)
+    # 全ジャンルがカードに出て、どのジャンルも省略されない。ジャンルは各ジャンルの一番上の1件の印で読む
+    # (色帯のヘッダーは廃止)。印は 英字の名前=そのまま・ほか=先頭1文字(仮想通貨=仮)
+    def badges(node) -> list[tuple[str, str]]:
+        if isinstance(node, dict):
+            if node.get("type") == "box" and node.get("width") == "20px" and node.get("backgroundColor"):
+                return [(node["contents"][0]["text"], node["backgroundColor"])]
+            return [b for v in node.values() for b in badges(v)]
+        if isinstance(node, list):
+            return [b for v in node for b in badges(v)]
+        return []
+
+    from xnewsbot import line_client as lc
+    genres_shown = [b for s in specs[2:] for b in badges(s["contents"])]
+    expected = [(m, lc._genre_color(g)) for m, g in
+                [("AI", "AI"), ("株", "株"), ("仮", "暗号資産"), ("テ", "テクノロジー"), ("話", "話題")]]
+    assert set(expected) <= set(genres_shown)
+    assert len(genres_shown) == len(set(genres_shown))  # 印はジャンルごとに1つだけ(2件目以降には付かない)
     assert "件は省略" not in blob and "特大" not in blob
     assert "市況（前日終値）" in blob  # 架空の市況も出る
     assert "RPA" not in blob          # 配信ジャンルから廃止済み
     # 目次は出さない(1通目に「目次」も「→ k通目」も無い)。ジャンルは警告文・要点の次の3通目から始まる
     assert "目次" not in blob and "通目" not in blob
-    assert specs[2]["type"] == "flex" and genres_shown[0] in {"AI", "株", "仮想通貨", "テクノロジー", "話題"}
+    assert specs[2]["type"] == "flex" and genres_shown[0] in expected
 
 
 def test_mock_reply_shows_schedule_crypto_and_summaries(session, messenger):

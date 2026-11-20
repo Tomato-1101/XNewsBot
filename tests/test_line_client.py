@@ -62,7 +62,8 @@ def _bytes(obj) -> int:
 
 
 def _unstack(bubble: dict) -> list[dict]:
-    """縦に積んだ1枚のバブル(_stack)を、カード相当(header があれば header、body を持つ dict)の列に戻す。
+    """縦に積んだ1枚のバブル(_stack)を、カード相当(body を持つ dict)の列に戻す。
+    ジャンルのカードに色帯のヘッダーは無い(11-20 廃止)ので、各段は body 1つだけ。
     積んでいない単体のバブルはそのまま1枚として返す。"""
     if bubble["body"].get("paddingAll") != "0px":
         return [bubble]
@@ -70,8 +71,8 @@ def _unstack(bubble: dict) -> list[dict]:
     for sec in bubble["body"]["contents"]:
         if sec.get("type") != "box":  # separator
             continue
-        parts = sec["contents"]
-        cards.append({"header": parts[0], "body": parts[1]} if len(parts) == 2 else {"body": parts[0]})
+        (body,) = sec["contents"]
+        cards.append({"body": body})
     return cards
 
 
@@ -113,8 +114,33 @@ def _cards(specs: list[dict]) -> list[tuple[int, dict]]:
     return [(no, b) for no, s in enumerate(gs, len(specs) - len(gs) + 1) for b in _unstack(s["contents"])]
 
 
-def _head(bubble: dict) -> list[str]:
-    return _texts(bubble["header"]) if "header" in bubble else []
+def _badges(node) -> list[tuple[str, str]]:
+    """カード内のジャンルの印(ジャンル色の20px四角+白い文字)を、(文字, 背景色) で出てくる順に取り出す。
+    印が付くのは各ジャンルの一番上の1件だけ(色帯のヘッダーは廃止)。"""
+    out: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        if node.get("type") == "box" and node.get("width") == "20px" and node.get("backgroundColor"):
+            out.append((node["contents"][0]["text"], node["backgroundColor"]))
+        else:
+            for v in node.values():
+                out += _badges(v)
+    elif isinstance(node, list):
+        for v in node:
+            out += _badges(v)
+    return out
+
+
+def _genre(bubble: dict) -> str | None:
+    """カードのジャンル(表示名)。ヘッダーも、続きのページには印も無いので、行の「詳細」postback
+    (detail:日付:slot:ジャンル:番号)から読む。1枚のカードに2ジャンルは混ざらない。注記だけのカードは None。"""
+    keys = {d.split(":")[3] for d in _bubble_datas(bubble) if d.count(":") == 4}
+    assert len(keys) <= 1, keys
+    return lc._genre_label(next(iter(keys))) if keys else None
+
+
+def _count(bubble: dict) -> int:
+    """カードに載った記事数(「詳細」postback の数)。件数の表示は無くなったので実物の数で数える。"""
+    return len(_bubble_datas(bubble))
 
 
 def _where(specs: list[dict]) -> dict[str, list[int]]:
@@ -122,8 +148,9 @@ def _where(specs: list[dict]) -> dict[str, list[int]]:
     目次を廃止したので、ジャンルがどの通に載るかはメッセージの実物で確かめる。"""
     where: dict[str, list[int]] = {}
     for no, b in _cards(specs):
-        if "header" in b:
-            nos = where.setdefault(_head(b)[0], [])
+        g = _genre(b)
+        if g is not None:
+            nos = where.setdefault(g, [])
             if no not in nos:
                 nos.append(no)
     return where
@@ -146,9 +173,12 @@ def test_digest_specs_summary_then_genre_cards():
     ai, st = specs[1]["contents"], specs[2]["contents"]
     assert ai["type"] == st["type"] == "bubble"  # カルーセルでなく縦に長い1枚
     ai_cards, st_cards = _unstack(ai), _unstack(st)
-    assert [_head(b) for b in ai_cards + st_cards] == [["AI", "1件"], ["株", "2件"]]
-    assert ai_cards[0]["header"]["backgroundColor"] == "#4F46E5"
-    assert st_cards[0]["header"]["backgroundColor"] == "#0F766E"
+    # 色帯のヘッダー(ジャンル名・「N件」)は無い。ジャンルの一番上の1件にだけジャンル色の印が付く
+    assert "header" not in ai and "header" not in st
+    assert not any(re.search(r"\d+件", t) for t in _texts(ai) + _texts(st))
+    assert [(_genre(b), _count(b)) for b in ai_cards + st_cards] == [("AI", 1), ("株", 2)]
+    assert _badges(ai_cards[0]) == [("AI", "#4F46E5")]        # 英字の名前はそのまま2文字まで
+    assert _badges(st_cards[0]) == [("株", "#0F766E")]        # 2件あっても印は先頭の1件だけ
     assert specs[1]["alt"] == "AI 1件｜大きな出来事"
     assert specs[2]["alt"] == "株 2件｜小さな話題0"
     stock = _texts(st_cards[0]["body"])
@@ -469,9 +499,10 @@ def test_earnings_and_surprise_hidden_when_empty():
 def test_new_genre_colors_use_genre_label():
     grouped = {"暗号資産": [_big("暗号資産")], "話題": [_big("話題")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
-    heads = [b["header"] for _no, b in _cards(specs)]
-    assert [h["backgroundColor"] for h in heads] == ["#B45309", "#A21CAF"]
-    assert [_texts(h)[0] for h in heads] == [lc._genre_label("暗号資産"), lc._genre_label("話題")]
+    cards = [b for _no, b in _cards(specs)]
+    # 札の色は GENRE_COLORS、1文字は表示名の先頭(暗号資産の表示名は仮想通貨なので「仮」)
+    assert [_badges(b) for b in cards] == [[("仮", "#B45309")], [("話", "#A21CAF")]]
+    assert lc._genre_label("暗号資産") == "仮想通貨" and lc._genre_mark("暗号資産") == "仮"
 
 
 def test_removed_genre_past_items_render_with_other_color():
@@ -482,7 +513,7 @@ def test_removed_genre_past_items_render_with_other_color():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     card = _unstack(specs[1]["contents"])[0]
-    assert _head(card) == ["特大", "1件"] and card["header"]["backgroundColor"] == lc.OTHER_COLOR
+    assert _badges(card) == [("特", lc.OTHER_COLOR)] and _count(card) == 1
     assert "detail:20260608:morning:特大:0" in _bubble_datas(card)
     assert lc.detail_spec(grouped["特大"][0])["text"].startswith("【特大】過去の特大")
 
@@ -511,13 +542,18 @@ def test_big_block_is_title_only_with_meta_and_detail_tap():
     specs = lc.digest_specs({"AI": [item]}, greeting=False, now=NOW)
     bubble = _unstack(specs[1]["contents"])[0]
     texts = _texts(bubble["body"])
-    assert texts == ["大きな出来事", "日経・Bloomberg ほか2件・3時間前", "›"]
+    assert texts == ["AI", "大きな出来事", "日経・Bloomberg ほか2件・3時間前", "›"]  # 先頭はジャンルの印
+    assert _badges(bubble) == [("AI", "#4F46E5")]
     assert "重要な要約" not in texts and "詳細を読む" not in texts and "元記事" not in texts
     acts = _actions(bubble["body"])
     detail = {"type": "postback", "data": "detail:42", "displayText": "詳細: 大きな出来事"}
     assert acts == [detail]            # タップは札全体の1か所だけ。uri(元記事)リンクは無い
     card = bubble["body"]["contents"][0]
     assert card["action"] == detail and card["backgroundColor"] == lc.BIG_BG
+    # 左端の4pxの色帯は廃止。ジャンルの先頭の1件だけ、行の左端に印が付く
+    row = card["contents"][0]
+    assert row["contents"][0]["width"] == "20px" and row["contents"][0]["backgroundColor"] == "#4F46E5"
+    assert '"width": "4px"' not in json.dumps(bubble)
     detail_text = lc.detail_spec(item)["text"]
     assert "重要な要約" in detail_text and "https://a/1" in detail_text  # 要約・出典 URL は詳細側にある
 
@@ -530,7 +566,8 @@ def test_small_rows_listed_with_label_and_meta():
     specs = lc.digest_specs({"株": [big, s0, s1]}, slot="morning", digest_date=D, now=NOW)
     assert len(specs) == 2
     bubble = _unstack(specs[1]["contents"])[0]
-    assert _head(bubble) == ["株", "3件"]
+    assert _genre(bubble) == "株" and _count(bubble) == 3
+    assert _badges(bubble) == [("株", "#0F766E")]  # 印は先頭の big の1行だけ。その他の見出しの行には付かない
     body = bubble["body"]["contents"]
     assert "@v・2日前" in _texts(body)
     rows = [c for c in body if c.get("type") == "box" and c.get("action")]
@@ -539,6 +576,7 @@ def test_small_rows_listed_with_label_and_meta():
     assert [c["action"]["data"] for c in smalls] == ["detail:20260608:morning:株:1",
                                                     "detail:20260608:morning:株:2"]
     assert all(_texts(c)[-1] == "›" for c in rows) and "小要約" not in _texts(body)  # 要約は出さず「›」
+    assert _badges(big_row) == [("株", "#0F766E")] and all(not _badges(c) for c in smalls)
     # 大きいニュース → 小見出し「その他の見出し」 → 見出しの行
     heading = next(i for i, c in enumerate(body) if c.get("text") == "その他の見出し")
     assert body[heading - 1]["type"] == "separator" and body[heading]["size"] == "xs"
@@ -562,7 +600,9 @@ def test_notable_row_shows_title_only_and_keeps_tap():
                             slot="morning", digest_date=D, now=NOW)
     body = _unstack(specs[1]["contents"])[0]["body"]["contents"]
     big_row, *rows = [c for c in body if c.get("type") == "box" and c.get("action")]
+    # 注目の行は 見出し → 出典 → 評価する → 「›」 だけ。ジャンルの印(先頭の big の行だけ)は付かない
     assert [_texts(r) for r in rows] == [[f"小さな話題{i}", "@v", "評価する", "›"] for i in (1, 2, 3, 4)]
+    assert _badges(big_row) == [("株", "#0F766E")] and not any(_badges(r) for r in rows)
     assert not any(s in json.dumps(body, ensure_ascii=False) for s in ("短い要約", "あああ", "えええ"))
     left, chevron = rows[0]["contents"]
     title, meta_row = left["contents"]
@@ -634,29 +674,28 @@ def _check_limits_and_coverage(grouped, specs) -> None:
 
 
 def _check_genres_contiguous(grouped, specs) -> None:
-    """ジャンルのカードは横に連続し(別ジャンルが割り込まない)、grouped の順に並ぶ。
-    1枚に2ジャンルが混ざらず、ヘッダー右の「k/n」が 1 から連番。"""
-    labels = []
+    """ジャンルのカードは連続し(別ジャンルが割り込まない)、grouped の順に並ぶ。
+    1枚に2ジャンルが混ざらず、ジャンルの印は各ジャンルの一番上の1件(最初のカードの先頭)にだけ付く。"""
+    runs: list[tuple[str, list[dict]]] = []
     for _no, b in _cards(specs):
-        if "header" not in b:   # 省略注記
+        label = _genre(b)
+        if label is None:   # 省略注記
             continue
-        label = _head(b)[0]
-        if not labels or labels[-1][0] != label:
-            labels.append((label, []))
-        labels[-1][1].append(_head(b)[1])
+        if not runs or runs[-1][0] != label:
+            runs.append((label, []))
+        runs[-1][1].append(b)
         genre = next(g for g in grouped if lc._genre_label(g) == label)
         assert all(d.split(":")[3] == genre for d in _bubble_datas(b) if d.count(":") == 4)
     order = [lc._genre_label(g) for g, items in grouped.items() if items]
-    assert [lb for lb, _ in labels] == order[:len(labels)]
+    assert [lb for lb, _ in runs] == order[:len(runs)]
     dropped_cards = "件は省略" in json.dumps(specs, ensure_ascii=False)
-    for label, notes in labels:
-        shown = len(notes)
-        total = len(grouped[next(g for g in grouped if lc._genre_label(g) == label)])
-        if notes == [f"{total}件"]:
-            continue
-        n = int(notes[0].rsplit("/", 1)[1])
-        assert n == shown or (dropped_cards and n > shown)
-        assert notes == [f"{total}件 {k}/{n}" for k in range(1, shown + 1)]
+    for label, cards in runs:
+        genre = next(g for g in grouped if lc._genre_label(g) == label)
+        assert [_badges(b) for b in cards][0][:1] == [(lc._genre_mark(genre), lc._genre_color(genre))]
+        assert sum(len(_badges(b)) for b in cards) == 1   # 印はジャンルに1つだけ(続きのカードには無い)
+        shown = sum(_count(b) for b in cards)
+        total = len(grouped[genre])
+        assert shown == total or (dropped_cards and shown < total)
 
 
 def _check_no_toc(specs) -> None:
@@ -768,9 +807,14 @@ def test_each_genre_gets_own_message_when_slots_allow():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
-    assert [{_head(b)[0] for b in _unstack(s["contents"])} for s in specs[1:]] == [
+    assert [{_genre(b) for b in _unstack(s["contents"])} for s in specs[1:]] == [
         {"AI"}, {"株"}, {"テクノロジー"}, {"話題"}]
     assert _where(specs) == {"AI": [2], "株": [3], "テクノロジー": [4], "話題": [5]}
+    # 印は各ジャンルの一番上の1件だけ(株の12件の big も2件目以降には付かない)
+    assert [_badges(s["contents"]) for s in specs[1:]] == [
+        [("AI", "#4F46E5")], [("株", "#0F766E")], [("テ", lc._genre_color("テクノロジー"))],
+        [("話", lc._genre_color("話題"))]]
+    assert sum(_count(b) for b in _unstack(specs[2]["contents"])) == 12
     assert specs[2]["alt"] == "株 12件｜株0"
 
 
@@ -782,8 +826,11 @@ def test_adjacent_small_genres_share_a_message_only_when_over_slots():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
-    assert [[_head(b)[0] for b in _unstack(s["contents"])] for s in specs[1:]] == [
+    assert [[_genre(b) for b in _unstack(s["contents"])] for s in specs[1:]] == [
         ["AI"], ["株"], ["仮想通貨", "テクノロジー"], ["話題", "ビジネス"]]
+    # 相乗りした通でも、印は各ジャンルの一番上の1件にそれぞれ1つずつ
+    assert [[m for m, _c in _badges(s["contents"])] for s in specs[1:]] == [
+        ["AI"], ["株"], ["仮", "テ"], ["話", lc._genre_mark("ビジネス")]]
     assert _where(specs) == {"AI": [2], "株": [3], "仮想通貨": [4], "テクノロジー": [4],
                              "話題": [5], "ビジネス": [5]}
     assert specs[4]["alt"] == "話題 8件・ビジネス 8件｜話題の見出し00" + "あ" * 30
@@ -798,11 +845,13 @@ def test_large_genre_spans_messages_with_continuous_numbering():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     cards = _cards(specs)
-    n = len(cards)
-    assert [_head(b) for _no, b in cards] == [["AI", f"40件 {k}/{n}"] for k in range(1, n + 1)]
+    assert {_genre(b) for _no, b in cards} == {"AI"} and sum(_count(b) for _no, b in cards) == 40
     nos = sorted({no for no, _b in cards})
     assert len(nos) >= 2 and nos == list(range(2, nos[-1] + 1))
     assert _where(specs) == {"AI": nos}   # 目次は無いので、通番は実際に載った通で確かめる
+    # 印は最初のカードの先頭の1件だけ。2通目以降(続きのページ)の先頭には付かない
+    assert _badges(cards[0][1]) == [("AI", "#4F46E5")]
+    assert all(not _badges(b) for _no, b in cards[1:])
     # 分割後のバブル先頭は区切り線で始めない
     assert all(b["body"]["contents"][0]["type"] != "separator" for _no, b in cards)
     datas = [d for _no, b in cards for d in _bubble_datas(b)]
@@ -882,7 +931,8 @@ def test_genre_cards_ordered_big_then_notable_then_brief():
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     for g, items in grouped.items():
-        cards = [b for _no, b in _cards(specs) if _head(b) and _head(b)[0] == lc._genre_label(g)]
+        cards = [b for _no, b in _cards(specs) if _genre(b) == lc._genre_label(g)]
+        assert [m for b in cards for m, _c in _badges(b)] == [lc._genre_mark(g)]  # 印は先頭の1件だけ
         seq = [int(d.rsplit(":", 1)[1]) for b in cards for d in _bubble_datas(b)]
         notable = [i for i in range(2, 16) if i % 2]
         brief = [i for i in range(2, 16) if not i % 2]
@@ -900,7 +950,8 @@ def test_genre_without_big_promotes_top_item():
     grouped = {"AI": [_big()], "株": small_genre}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     stock = _unstack(specs[2]["contents"])[0]
-    assert _head(stock) == ["株", "3件"]
+    assert _genre(stock) == "株" and _count(stock) == 3
+    assert _badges(stock) == [("株", "#0F766E")]   # 繰り上げた先頭の1件にだけ印
     assert _bubble_datas(stock) == ["detail:20260608:morning:株:0", "detail:20260608:morning:株:1",
                                     "detail:20260608:morning:株:2"]
     title = next(n for n in lc._text_nodes(stock["body"]) if n["text"] == "小さな話題0")
@@ -948,8 +999,8 @@ def test_tier_split_by_score_boundary_49_50():
 
 
 def test_page_split_by_bytes_and_position_header():
-    """1ジャンルは原則1枚(縦に長くてよい)。28000B を超えるときだけ記事単位で「件数 k/n」に分ける。
-    1枚なら件数だけ。続きのページの先頭は区切り線でなく段の小見出しから。"""
+    """1ジャンルは原則1枚(縦に長くてよい)。28000B を超えるときだけ記事単位でページに分ける。
+    印は最初のページの先頭の1件だけ。続きのページの先頭は区切り線でなく段の小見出しから。"""
     def cards(items):
         specs = lc.digest_specs({"AI": items}, slot="morning", digest_date=D, now=NOW)
         _check_limits_and_coverage({"AI": items}, specs)
@@ -957,11 +1008,11 @@ def test_page_split_by_bytes_and_position_header():
 
     # 重さ(旧 PAGE_WEIGHT_MAX=20)では分けない: 大1 + 注目12 も 大1 + 見出し25 も1枚(26件は旧上限の重さを超える)
     one_notable = cards([_big("AI")] + [_small(i, "AI", score=80) for i in range(1, 13)])
-    assert [_head(b) for b in one_notable] == [["AI", "13件"]]
-    assert len(_bubble_datas(one_notable[0])) == 13
+    assert [(_genre(b), _count(b)) for b in one_notable] == [("AI", 13)]
+    assert _badges(one_notable[0]) == [("AI", "#4F46E5")]
 
     brief = cards([_big("AI")] + [_small(i, "AI", score=30) for i in range(1, 26)])
-    assert [_head(b) for b in brief] == [["AI", "26件"]]
+    assert [(_genre(b), _count(b)) for b in brief] == [("AI", 26)]
     big_row, *rows = [c for c in brief[0]["body"]["contents"] if c.get("action")]
     assert len(rows) == 25
     assert all(_texts(r) == [f"小さな話題{i}", "@v", "評価する", "›"] for i, r in enumerate(rows, 1))
@@ -972,7 +1023,7 @@ def test_page_split_by_bytes_and_position_header():
     meta = meta_row["contents"][0]
     assert meta["size"] == "xxs" and not meta.get("wrap")  # 出典・時刻は1行
 
-    # バイト数を超える日だけ分け、ヘッダーは「k/n」。続きのページの先頭は段の小見出し
+    # バイト数を超える日だけ分ける。続きのページの先頭は段の小見出しで、ジャンルの印は付かない
     big = _bulk(["AI"], 40, summary_len=400)["AI"]
     for it in big[1:]:
         it.importance = "small"
@@ -981,7 +1032,8 @@ def test_page_split_by_bytes_and_position_header():
     pages = cards(big)
     n = len(pages)
     assert n >= 2
-    assert [_head(b) for b in pages] == [["AI", f"40件 {k}/{n}"] for k in range(1, n + 1)]
+    assert {_genre(b) for b in pages} == {"AI"}
+    assert _badges(pages[0]) == [("AI", "#4F46E5")] and all(not _badges(b) for b in pages[1:])
     assert pages[1]["body"]["contents"][0].get("text") == "注目"
     assert sum(len(_bubble_datas(b)) for b in pages) == 40
 

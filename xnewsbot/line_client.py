@@ -157,6 +157,21 @@ def _genre_color(genre: str) -> str:
     return GENRE_COLORS.get(genre, OTHER_COLOR)
 
 
+def _genre_mark(genre: str) -> str:
+    """ジャンルの一番上の1件の左に付ける短い印(英字の名前はそのまま=AI、ほかは先頭1文字=仮・論・株)。"""
+    label = _genre_label(genre)
+    return label[:2] if label.isascii() else label[:1]
+
+
+def _mark_badge(genre: str) -> dict:
+    """ジャンル色の小さな四角に白い印。11-20 本人指示でジャンルの色帯ヘッダーの代わりに、大きいニュースの横にだけ付ける
+    (全行に付けたら「キモい」と却下。付けるのはジャンルの一番上の1件だけ)。"""
+    return {"type": "box", "layout": "vertical", "width": "20px", "height": "20px", "flex": 0,
+            "backgroundColor": _genre_color(genre), "cornerRadius": "4px", "justifyContent": "center",
+            "contents": [{"type": "text", "text": _genre_mark(genre), "size": "xxs", "weight": "bold",
+                          "color": "#FFFFFF", "align": "center"}]}
+
+
 def _detail_data(item: NewsItem, digest_date: date | None, slot: str | None) -> str:
     """「詳細を見る」postback の data。
 
@@ -724,15 +739,16 @@ BIG_BG = "#F5F6F8"
 
 
 def _title_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None,
-               title_style: dict, **box) -> dict:
+               title_style: dict, badge: bool = False, **box) -> dict:
     """見出しだけの1行(11-19 本人指示: 要約は出さず、タップで詳細=解説を開く)。
-    左に 見出し → 出典・時刻(右端に「評価する」)、右端に「›」。行全体のタップで詳細。"""
+    (大きいニュースだけ左端にジャンルの印)、見出し → 出典・時刻(右端に「評価する」)、右端に「›」。行全体のタップで詳細。"""
     left: list[dict] = [{"type": "text", "text": item.title, "wrap": True, **title_style}]
-    meta = _meta_row(item, action, now, rate_key, margin="xs")
+    meta = _meta_row(item, action, now, rate_key)
     if meta:
         left.append(meta)
     return {"type": "box", "layout": "horizontal", "spacing": "md", "action": action, **box,
             "contents": [
+                *([_mark_badge(item.genre)] if badge else []),
                 {"type": "box", "layout": "vertical", "flex": 1, "contents": left},
                 {"type": "text", "text": "›", "size": "lg", "color": CHEVRON_COLOR, "flex": 0,
                  "gravity": "center"},
@@ -740,27 +756,24 @@ def _title_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None
 
 
 def _big_block(item: NewsItem, color: str, action: dict, now: datetime,
-               rate_key: str | None = None) -> dict:
-    """大きいニュース1件: 薄い灰色の札に、左端のジャンル色の帯と大きめの太字の見出し。"""
+               rate_key: str | None = None, badge: bool = False) -> dict:
+    """大きいニュース1件: 薄い灰色の札に大きめの太字の見出し。badge=ジャンルの先頭の1件だけ左にジャンルの印。"""
     row = _title_row(item, action, now, rate_key,
-                     {"size": "md", "weight": "bold", "color": TITLE_COLOR})
-    bar = {"type": "box", "layout": "vertical", "width": "4px", "backgroundColor": color,
-           "cornerRadius": "2px", "contents": [{"type": "filler"}]}
+                     {"size": "md", "weight": "bold", "color": TITLE_COLOR}, badge=badge)
     row.pop("action")  # タップは札全体で受ける(同じ詳細の action を二重に持たない)
-    return {"type": "box", "layout": "horizontal", "spacing": "md", "backgroundColor": BIG_BG,
-            "cornerRadius": "md", "paddingAll": "12px", "action": action,
-            "contents": [bar, {**row, "flex": 1}]}
+    return {"type": "box", "layout": "vertical", "backgroundColor": BIG_BG,
+            "cornerRadius": "md", "paddingAll": "10px", "action": action, "contents": [row]}
 
 
 def _notable_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
     """注目ニュースの1行: 太字の見出し。"""
     return _title_row(item, action, now, rate_key,
-                      {"size": "sm", "weight": "bold", "color": TITLE_COLOR}, margin="md")
+                      {"size": "sm", "weight": "bold", "color": TITLE_COLOR}, margin="sm")
 
 
 def _brief_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None = None) -> dict:
     """その他の見出しの1行: 細字の見出し。"""
-    return _title_row(item, action, now, rate_key, {"size": "sm", "color": TEXT_COLOR}, margin="md")
+    return _title_row(item, action, now, rate_key, {"size": "sm", "color": TEXT_COLOR}, margin="sm")
 
 
 def _split_main_others(grouped: dict[str, list[NewsItem]]
@@ -803,35 +816,27 @@ def _page_body(genre: str, units: list[tuple[str, dict]]) -> list[dict]:
     for tier, comp in units:
         if tier != prev:
             if body:
-                body.append(_sep("xl"))
+                body.append(_sep("lg"))
             if tier in TIER_HEADINGS:
                 head = {"type": "text", "text": TIER_HEADINGS[tier], "size": "xs", "weight": "bold",
                         "color": color}
                 if body:
-                    head["margin"] = "lg"
+                    head["margin"] = "md"
                 body.append(head)
         elif tier == "big":  # 大きいニュースは札そのものが区切りなので線は引かず間を空ける
-            comp = {**comp, "margin": "md"}
+            comp = {**comp, "margin": "sm"}
         else:
-            body.append(_sep("md", "#F2F2F2"))
+            body.append(_sep("sm", "#F2F2F2"))
         body.append(comp)
         prev = tier
     return body
 
 
 def _genre_bubble(genre: str, head: str, note: str, body: list[dict]) -> dict:
-    """ジャンル色ヘッダー(左にジャンル名、右に「52件 1/5」)のバブル。"""
-    return {
-        "type": "bubble", "size": "giga",
-        "header": {"type": "box", "layout": "horizontal", "backgroundColor": _genre_color(genre),
-                   "paddingAll": "12px", "contents": [
-                       {"type": "text", "text": head, "size": "md", "weight": "bold",
-                        "color": "#FFFFFF", "flex": 1},
-                       {"type": "text", "text": note, "size": "sm", "color": "#FFFFFF",
-                        "align": "end", "gravity": "center", "flex": 0},
-                   ]},
-        "body": {"type": "box", "layout": "vertical", "paddingAll": "16px", "contents": body},
-    }
+    """ジャンルのカード。11-20 本人指示で色帯ヘッダー(ジャンル名・件数)をやめ、ジャンルの一番上の1件の印で示す
+    (head・note は呼び出し側の互換のため受け取るだけ)。ジャンルの境目は _stack の区切り線。"""
+    return {"type": "bubble", "size": "giga",
+            "body": {"type": "box", "layout": "vertical", "paddingAll": "12px", "contents": body}}
 
 
 # 「評価する」を付ける範囲(段)。重い日は上の段から順に落として、記事の省略を増やさない
@@ -850,7 +855,9 @@ def _genre_pages(genre: str, units: list[tuple[str, NewsItem]], total: int, dige
     def rk(it: NewsItem, level: int) -> str | None:
         return _rate_key(it, digest_date, slot) if rate >= level else None
 
-    builders = {"big": lambda it, a: _big_block(it, color, a, now, rk(it, RATE_TOP)),
+    # ジャンルの印はジャンルの一番上の1件にだけ付ける(11-20 本人指示。全行・全 big に付けたら却下)
+    builders = {"big": lambda it, a: _big_block(it, color, a, now, rk(it, RATE_TOP),
+                                                badge=it is units[0][1]),
                 "notable": lambda it, a: _notable_row(it, a, now, rk(it, RATE_TOP)),
                 "brief": lambda it, a: _brief_row(it, a, now, rk(it, RATE_ALL))}
     if not units:
