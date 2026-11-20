@@ -6,7 +6,9 @@
 - 目的: 本人「スクロールが大変、縦に長すぎる」。横並びにせず件数も減らさずに短くする。
 - 決定: 見出しを幅20以内(1行)に短く要約(出典行は残す)／行間を詰める／ジャンルの色帯ヘッダーをやめ、
   各ジャンルの一番上の1件の左にだけ小さな印。本人「それで確定」。ブランチ claude/news-layout-redesign-6057fc。
-- 次: テスト修正→コミット→master へ反映。クラウド移行(本体 89de55c)の切り替えはこの後。
+- 済: 3cf3c0e で master 反映。11-20 15:00 にクラウドへ切り替え(Mac の launchd 5本停止→D1 を本番 DB で入れ直し→
+  xnewsbot-cloud にワークフロー→render-mock 成功→LINE Webhook を Worker へ。旧 URL は ngrok の silicon-shack-copilot)。
+- 次: 11-21 07:25 の Cron→Actions の初回本番配信を確認(ログは xnewsbot-cloud の Actions)。管理画面のクラウド化は後回し。
 - 別件(未調査): 11-19 朝は collect 全滅(07:57)で未配信、21:09 の recover で配信された。
 
 ## 縦スクロール化・採用基準・決算予定の拡充（11-11 更新）

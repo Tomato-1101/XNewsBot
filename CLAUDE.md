@@ -19,6 +19,11 @@ X(Twitter) 発ニュースを Claude Code でキュレーションし LINE Bot �
 
 ## 運用・検証
 
+- **2026-11-20 15:00 にクラウドへ切り替え済み**（PC を閉じても動く。設計は `cloud/DESIGN.md`）。LINE の Webhook は
+  Cloudflare Worker `xnewsbot`、データは D1 が正、朝の配信・復旧・AI 解説は非公開リポ `Tomato-1101/xnewsbot-cloud` の Actions
+  (この公開リポの master を checkout して動く＝master への push がそのまま本番に効く)。下の launchd 5本は bootout＋disable 済み
+  (plist は残す。Mac の xnewsbot.db はもう更新されない)。Mac に戻すときは Webhook を ngrok の URL に戻し、D1 から DB を書き戻してから bootstrap する。
+
 - 常駐: launchd `com.tomato.xnewsbot`(uvicorn:18010) / `-admin`(管理画面 8011) / `-ngrok` / `-deliver`(07:15 起動→08:00 送信。キュレーションが約17分かかるため 2026-10-01 に45分前起動へ) /
   `-recover`(12:30・17:00・21:00 に `deliver.sh --recover`。当日朝が未配信の日だけ集め直して送る自動復旧。
   配信済みの日は `pipeline.py pending` を見て即終了するので無害。21:00 の回も失敗したときだけ
