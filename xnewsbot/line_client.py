@@ -746,9 +746,10 @@ BIG_BG = "#F5F6F8"
 
 def _title_row(item: NewsItem, action: dict, now: datetime, rate_key: str | None,
                title_style: dict, badge: bool = False, **box) -> dict:
-    """見出しだけの1行(11-19 本人指示: 要約は出さず、タップで詳細=解説を開く)。
+    """見出しだけの1件(11-19 本人指示: 要約は出さず、タップで詳細=解説を開く)。
     (大きいニュースだけ左端にジャンルの印)、見出し → 出典・時刻(右端に「評価する」)、右端に「›」。行全体のタップで詳細。"""
-    left: list[dict] = [{"type": "text", "text": item.title, "wrap": True, **title_style}]
+    # 見出しは2行まで(11-20 本人「2行が限界、3行は無し」)。プロンプトの幅36で収まらなかった分は LINE が「…」で切る
+    left: list[dict] = [{"type": "text", "text": item.title, "wrap": True, "maxLines": 2, **title_style}]
     meta = _meta_row(item, action, now, rate_key)
     if meta:
         left.append(meta)
