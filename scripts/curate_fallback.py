@@ -46,9 +46,12 @@ def validate(raw: dict, result: dict) -> dict:
             idxs = item.get("source_idxs")
             if not isinstance(idxs, list) or any(type(i) is not int or not 0 <= i < len(raw["genres"][genre]) for i in idxs):
                 raise ValueError("source_idxsが不正")
-            if not idxs and not (genre == "株" and raw.get("indicator_results")):
+            # 週のまとめ(raw の recaps があるジャンル)は配信履歴から作るので、候補の根拠が無くてよい
+            if not idxs and not (genre == "株" and raw.get("indicator_results")) \
+                    and genre not in (raw.get("recaps") or {}):
                 raise ValueError("根拠が空")
-            big += item["importance"] == "big"
+            # 週のまとめ(根拠なし)は通常のニュースの big 枠を使わない
+            big += item["importance"] == "big" and (bool(idxs) or genre not in (raw.get("recaps") or {}))
             count += 1
         if big > 3:
             raise ValueError("bigが3件超")

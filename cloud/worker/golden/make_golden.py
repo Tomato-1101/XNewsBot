@@ -46,7 +46,7 @@ add("_help_spec", {}, onboarding._help_spec())
 SUBS = [
     {},
     {"enabled_genres": ["AI", "株"], "morning_hour": 7, "morning_minute": 5, "evening_hour": 0, "evening_minute": 0},
-    {"enabled_genres": ["話題"], "morning_enabled": False},
+    {"enabled_genres": ["ロボティクス"], "morning_enabled": False},
     {"enabled_genres": ["AI"], "evening_enabled": False, "morning_hour": 23, "morning_minute": 59},
 ]
 for s in SUBS:
@@ -76,7 +76,7 @@ ITEMS = [
     {"id": 3, "genre": "特大", "genres": [], "title": "見出しC", "summary": "", "detail": "",
      "source_urls": ["https://example.com/1", "", "https://example.com/3", "https://example.com/4"],
      "source_tweets": []},
-    {"id": 4, "genre": "話題", "genres": ["話題"], "title": "長い" * 50, "summary": "あ" * 6000, "detail": "",
+    {"id": 4, "genre": "ロボティクス", "genres": ["ロボティクス"], "title": "長い" * 50, "summary": "あ" * 6000, "detail": "",
      "source_urls": [], "source_tweets": SOURCES[3:8]},
     {"id": 5, "genre": "株", "genres": ["株"], "title": "絵文字😀の記事", "summary": "", "detail": "😀" * 4900,
      "source_urls": [], "source_tweets": []},

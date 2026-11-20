@@ -158,7 +158,7 @@ def _where(specs: list[dict]) -> dict[str, list[int]]:
 
 def test_digest_specs_summary_then_genre_cards():
     # _small は score 40(< 50)なので、株の1件目は大きいニュースに上がり、2件目は「その他の見出し」
-    grouped = {"話題": [], "AI": [_big()], "株": [_small(0), _small(1)]}
+    grouped = {"ロボティクス": [], "AI": [_big()], "株": [_small(0), _small(1)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert [s["type"] for s in specs] == ["flex", "flex", "flex"]  # 要点 + 1ジャンル1通
     summary = specs[0]["contents"]
@@ -201,7 +201,7 @@ def test_points_order_big_by_score_then_small():
         "株": [_big("株", 0, score=85, title="株大"), _small(1, "株", score=60)],
         "テクノロジー": [_big("テクノロジー", 0, score=70, title="テック大"),
                        _small(1, "テクノロジー", score=60)],
-        "話題": [_big("話題", 0, score=10, title="話題大")],
+        "ロボティクス": [_big("ロボティクス", 0, score=10, title="話題大")],
     }
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     # big を score 降順(同点はジャンル順) → small を score 降順、最大5本
@@ -214,18 +214,30 @@ def test_points_order_big_by_score_then_small():
 
 
 def test_points_exclude_paper_genre_even_when_filling_with_small():
-    """論文ジャンルは要点に入れない(big が足りず small で埋めるときも、score が高くても使わない)。"""
+    """private のジャンル(競合)は要点に入れない(big が足りず small で埋めるときも、score が高くても使わない)。"""
     grouped = {"AI": [_big("AI", 0, score=70, title="AI大"), _small(1, "AI", score=30)],
-               "論文": [_small(i, "論文", score=55) for i in range(5)]}
+               "競合": [_small(i, "競合", score=55) for i in range(5)]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert _point_titles(_summary(specs)) == ["AI大", "小さな話題1"]
 
 
+def test_empty_note_line_in_first_message():
+    """今日のダイジェストが0件だったジャンルは、empty_note があれば1通目の末尾に小さく1行出す。"""
+    grouped = {"AI": [_big("AI", 0, title="AI大")], "競合": [], "株": []}
+    specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW, empty_genres=["競合", "株"])
+    note = next(n for n in lc._text_nodes(_summary(specs)["body"]) if n["text"] == "競合 新しい動きなし")
+    assert note["size"] == "xxs"
+    assert not any(n["text"].startswith("株 ") for n in lc._text_nodes(_summary(specs)["body"]))  # empty_note 無し
+    assert len(specs) == 2      # 0件のジャンルの通は増えない
+    plain = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
+    assert "競合 新しい動きなし" not in _texts(_summary(plain))
+
+
 def test_points_always_genre_first_when_configured(monkeypatch):
     """常時ジャンル(selectable=false)を将来また置いたときは、その big を score に関係なく先頭に。"""
-    monkeypatch.setattr(lc, "ALWAYS_KEYS", ["話題"])
+    monkeypatch.setattr(lc, "ALWAYS_KEYS", ["ロボティクス"])
     grouped = {"AI": [_big("AI", 0, score=70, title="AI大")],
-               "話題": [_big("話題", 0, score=10, title="話題大")]}
+               "ロボティクス": [_big("ロボティクス", 0, score=10, title="話題大")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     assert _point_titles(_summary(specs)) == ["話題大", "AI大"]
 
@@ -497,11 +509,11 @@ def test_earnings_and_surprise_hidden_when_empty():
 
 
 def test_new_genre_colors_use_genre_label():
-    grouped = {"暗号資産": [_big("暗号資産")], "話題": [_big("話題")]}
+    grouped = {"暗号資産": [_big("暗号資産")], "ロボティクス": [_big("ロボティクス")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     cards = [b for _no, b in _cards(specs)]
     # 札の色は GENRE_COLORS、1文字は表示名の先頭(暗号資産の表示名は仮想通貨なので「仮」)
-    assert [_badges(b) for b in cards] == [[("仮", "#B45309")], [("話", "#A21CAF")]]
+    assert [_badges(b) for b in cards] == [[("仮", "#B45309")], [("ロ", "#6D28D9")]]
     assert lc._genre_label("暗号資産") == "仮想通貨" and lc._genre_mark("暗号資産") == "仮"
 
 
@@ -706,7 +718,7 @@ def _check_no_toc(specs) -> None:
 
 
 def test_bulk_4_genres_x20_fits_and_keeps_every_item():
-    grouped = _bulk(["AI", "株", "テクノロジー", "話題"], 20)
+    grouped = _bulk(["AI", "株", "テクノロジー", "ロボティクス"], 20)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     # 取りこぼしなし: 全記事がカルーセルのどこかに(タップで詳細を引ける形で)出る
@@ -719,10 +731,10 @@ def test_bulk_4_genres_x20_fits_and_keeps_every_item():
 
 
 def _heavy() -> dict[str, list[NewsItem]]:
-    """重い日の実例: AI35(big5+small30)・株25・暗号資産20・テクノロジー25・話題28(旧特大の big 3件を含む)。
+    """重い日の実例: AI35(big5+small30)・株25・暗号資産20・テクノロジー25・ロボティクス28(big 3件を含む)。
     見出し40字前後・big の要約150字・small の要約100字・出典つき(big 3件・small 2件)。
     small の先頭6件は注目(score >= 50)、残りはその他の見出し。"""
-    plan = [("AI", 5, 30), ("株", 3, 22), ("暗号資産", 3, 17), ("テクノロジー", 3, 22), ("話題", 6, 22)]
+    plan = [("AI", 5, 30), ("株", 3, 22), ("暗号資産", 3, 17), ("テクノロジー", 3, 22), ("ロボティクス", 6, 22)]
     out: dict[str, list[NewsItem]] = {}
     for g, n_big, n_small in plan:
         items = []
@@ -803,17 +815,17 @@ def test_each_genre_gets_own_message_when_slots_allow():
     揃えられて空白が出ることもない)。4ジャンルなら2〜5通目に1つずつ。"""
     grouped = {"AI": [_big("AI", 0)],
                "株": [_big("株", r, title=f"株{r}") for r in range(12)],
-               "テクノロジー": [_big("テクノロジー", 0)], "話題": [_small(0, "話題")]}
+               "テクノロジー": [_big("テクノロジー", 0)], "ロボティクス": [_small(0, "ロボティクス")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
     assert [{_genre(b) for b in _unstack(s["contents"])} for s in specs[1:]] == [
-        {"AI"}, {"株"}, {"テクノロジー"}, {"話題"}]
-    assert _where(specs) == {"AI": [2], "株": [3], "テクノロジー": [4], "話題": [5]}
+        {"AI"}, {"株"}, {"テクノロジー"}, {"ロボティクス"}]
+    assert _where(specs) == {"AI": [2], "株": [3], "テクノロジー": [4], "ロボティクス": [5]}
     # 印は各ジャンルの一番上の1件だけ(株の12件の big も2件目以降には付かない)
     assert [_badges(s["contents"]) for s in specs[1:]] == [
         [("AI", "#4F46E5")], [("株", "#0F766E")], [("テ", lc._genre_color("テクノロジー"))],
-        [("話", lc._genre_color("話題"))]]
+        [("ロ", lc._genre_color("ロボティクス"))]]
     assert sum(_count(b) for b in _unstack(specs[2]["contents"])) == 12
     assert specs[2]["alt"] == "株 12件｜株0"
 
@@ -821,19 +833,19 @@ def test_each_genre_gets_own_message_when_slots_allow():
 def test_adjacent_small_genres_share_a_message_only_when_over_slots():
     """6ジャンルで通数(4)が足りない日だけ、隣り合うジャンルを1通にまとめる。まとめるのはカードの合計が
     一番少ない組(同数なら後ろの組から)。"""
-    genres = ["AI", "株", "暗号資産", "テクノロジー", "話題", "ビジネス"]
+    genres = ["AI", "株", "暗号資産", "テクノロジー", "ロボティクス", "ビジネス"]
     grouped = _bulk(genres, 8)
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     assert len(specs) == 5
     assert [[_genre(b) for b in _unstack(s["contents"])] for s in specs[1:]] == [
-        ["AI"], ["株"], ["仮想通貨", "テクノロジー"], ["話題", "ビジネス"]]
+        ["AI"], ["株"], ["仮想通貨", "テクノロジー"], ["ロボティクス", "ビジネス"]]
     # 相乗りした通でも、印は各ジャンルの一番上の1件にそれぞれ1つずつ
     assert [[m for m, _c in _badges(s["contents"])] for s in specs[1:]] == [
-        ["AI"], ["株"], ["仮", "テ"], ["話", lc._genre_mark("ビジネス")]]
+        ["AI"], ["株"], ["仮", "テ"], ["ロ", lc._genre_mark("ビジネス")]]
     assert _where(specs) == {"AI": [2], "株": [3], "仮想通貨": [4], "テクノロジー": [4],
-                             "話題": [5], "ビジネス": [5]}
-    assert specs[4]["alt"] == "話題 8件・ビジネス 8件｜話題の見出し00" + "あ" * 30
+                             "ロボティクス": [5], "ビジネス": [5]}
+    assert specs[4]["alt"] == "ロボティクス 8件・ビジネス 8件｜ロボティクスの見出し00" + "あ" * 30
 
 
 def test_large_genre_spans_messages_with_continuous_numbering():
@@ -861,7 +873,7 @@ def test_large_genre_spans_messages_with_continuous_numbering():
 def test_overflow_beyond_5_messages_shows_omitted_count():
     # 基本的に起きない量(全部 big で削れる見出しが無い)。入りきらない分は後ろのカードごと落とし、
     # 黙って消さず「ほか N 件は省略」を最後に出す
-    grouped = _bulk(["AI", "株", "テクノロジー", "話題"], 150, summary_len=400)
+    grouped = _bulk(["AI", "株", "テクノロジー", "ロボティクス"], 150, summary_len=400)
     for items in grouped.values():
         for it in items:
             it.importance = "big"
@@ -880,7 +892,7 @@ def test_overflow_beyond_5_messages_shows_omitted_count():
 def test_overflow_trims_brief_from_the_end_and_counts_it():
     """5通に入りきらない日は「その他の見出し」の末尾から削る(大きいニュース・注目は残す)。
     削るのは残りの多いジャンルから1件ずつ。削った件数は最後の通の末尾に出す。"""
-    genres = ["AI", "株", "暗号資産", "テクノロジー", "話題"]
+    genres = ["AI", "株", "暗号資産", "テクノロジー", "ロボティクス"]
     grouped = {}
     for g in genres:
         grouped[g] = [_big(g, 0)]
@@ -927,7 +939,7 @@ def _bubble_datas(bubble) -> list[str]:
 def test_genre_cards_ordered_big_then_notable_then_brief():
     """ジャンルの中は 大きいニュース → 注目 → その他の見出し が途切れず続き、段の変わり目に小見出し。"""
     grouped = {g: [_big(g, 0), _big(g, 1)] + [_small(i, g, score=70 if i % 2 else 30) for i in range(2, 16)]
-               for g in ["AI", "株", "暗号資産", "話題"]}
+               for g in ["AI", "株", "暗号資産", "ロボティクス"]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     _check_limits_and_coverage(grouped, specs)
     for g, items in grouped.items():
@@ -964,7 +976,7 @@ def test_genre_without_big_promotes_top_item():
 def test_every_item_appears_exactly_once():
     """全記事がジャンルのカードのどこか1か所だけに出る(省略注記が無い量のとき)。"""
     grouped = {"AI": [_big("AI", 0), _big("AI", 1), _small(2, "AI")],
-               "株": [_small(0), _small(1)], "話題": [_big("話題", 0), _small(1, "話題")]}
+               "株": [_small(0), _small(1)], "ロボティクス": [_big("ロボティクス", 0), _small(1, "ロボティクス")]}
     specs = lc.digest_specs(grouped, slot="morning", digest_date=D, now=NOW)
     datas = [d for s in specs[1:] for d in _bubble_datas(s["contents"])]
     assert sorted(datas) == sorted(f"detail:20260608:morning:{g}:{it.rank}"
@@ -1041,7 +1053,7 @@ def test_page_split_by_bytes_and_position_header():
 def _heavy7(kind: str) -> dict[str, list[NewsItem]]:
     """7ジャンル×30件(先頭3件 big)・要約100字。kind で主以外の score を決める。
     「特大」(廃止)・「ビジネス」(未登録)も混ぜて、genres.toml に無いジャンルでも落ちないことを見る。"""
-    genres = ["AI", "株", "暗号資産", "テクノロジー", "話題", "特大", "ビジネス"]
+    genres = ["AI", "株", "暗号資産", "テクノロジー", "ロボティクス", "特大", "ビジネス"]
     grouped = _bulk(genres, 30, summary_len=100)
     for items in grouped.values():
         for k, it in enumerate(items[3:]):

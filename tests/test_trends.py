@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from pathlib import Path
 
-from xnewsbot import genres, newsfeeds, trends
+from xnewsbot import newsfeeds, trends
 from xnewsbot.newsfeeds import FeedItem
 
 FIX = Path(__file__).resolve().parent / "fixtures"
@@ -210,14 +210,6 @@ def test_alphaxiv_hot_failure_and_broken_shape_are_empty(monkeypatch):
     # null など dict でない要素は飛ばす(残りは順位どおり)
     broken = {"papers": [None, "x", _ax()["papers"][0]]}
     assert [c["trend"]["rank"] for c in trends.parse_alphaxiv(broken)] == [1]
-
-
-def test_paper_genre_uses_only_alphaxiv():
-    assert genres.trend_sources("論文") == ["alphaxiv_hot"]
-    assert not genres.keywords("論文") and not genres.keywords_en("論文") and not genres.accounts("論文")
-    assert not genres.feeds("論文") and not genres.x_queries("論文")
-    keys = genres.GENRE_KEYS
-    assert keys.index("論文") == keys.index("監視アカウント") + 1
 
 
 # --- 失敗時 ---

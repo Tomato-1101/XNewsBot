@@ -276,3 +276,27 @@ def test_統合_生成ファイルだけがpushされる(monkeypatch, tmp_path):
     assert state["pushed"] == head
     # 2回目は変更なしで push しない
     assert pf.main() == 0
+
+
+def test_非公開ジャンルは公開しない(monkeypatch, session):
+    import contextlib
+    from sqlmodel import select
+    from xnewsbot import db, digest
+    from xnewsbot.curator import parse_curated
+    from xnewsbot.models import NewsItem
+    from tests.conftest import curated_items, make_tweets
+
+    d = date(2026, 11, 5)
+    for g in ("AI", "競合"):
+        digest.ingest_curated(session, g, d, "morning", parse_curated(curated_items(1, 1)), make_tweets(3))
+    for it in session.exec(select(NewsItem).where(NewsItem.genre == "競合")).all():
+        it.title = "競合だけの見出し"
+        session.add(it)
+    ai = session.exec(select(NewsItem).where(NewsItem.genre == "AI")).first()
+    ai.genres = ["AI", "競合"]   # ジャンル横断のタグにも非公開の名前を出さない
+    session.add(ai)
+    session.commit()
+    monkeypatch.setattr(db, "get_session", lambda: contextlib.nullcontext(session))
+    day = pf.load_day_from_db(d, "morning", NOW)
+    text = json.dumps(day, ensure_ascii=False)
+    assert "競合" not in text and ai.title in text

@@ -4,17 +4,54 @@
 本モジュールは起動時に1度読み込み、辞書として公開する。
 collect 時は 日本語(keywords, lang:ja)・英語(keywords_en, lang:en)・公式(accounts, from:)の
 最大3クエリになり、exclude 語・exclude_accounts は除外する。feeds は直取り RSS(pipeline collect)。
-x_queries はキーワードを使わない生クエリ(話題ジャンルの「いいねが極端に多い日本語の投稿」用)、
-trend_sources は急上昇ワード・はてブ等の話題の取得元(xnewsbot.trends)、news_max はニュース候補の上限。
+x_queries はキーワードを使わない生クエリ(AI ジャンルの当事者アカウントの from: など)、
+trend_sources は新モデルの登録一覧等の追加の取得元(xnewsbot.trends)、news_max はニュース候補の上限。
 watch=true のジャンルは上の収集を使わず、管理画面で登録した監視アカウントの全投稿を集める(xnewsbot.watch)。
+公開しない設定(競合ジャンルの語・アカウント等)は、環境変数 XNEWS_PRIVATE_DIR のフォルダの genres.toml から
+同じ key のジャンルへ足す(_overlay)。未設定・ファイルなしなら何も足さない。
 """
 
 from __future__ import annotations
 
+import os
+import sys
 import tomllib
 from pathlib import Path
 
 GENRES_FILE = Path(__file__).resolve().parent.parent / "config" / "genres.toml"
+# 公開しない設定の置き場所(非公開リポ xnewsbot-cloud の private/)を指す環境変数
+PRIVATE_DIR_ENV = "XNEWS_PRIVATE_DIR"
+# 上書き用 genres.toml で「後ろに足す」項目。これ以外(min_faves 等)は上書きする
+_LIST_FIELDS = ("keywords", "keywords_en", "accounts", "exclude", "exclude_accounts", "feeds",
+                "x_queries", "trend_sources")
+_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def private_dir() -> Path | None:
+    v = os.environ.get(PRIVATE_DIR_ENV, "").strip()
+    return Path(v) if v else None
+
+
+def _overlay(public: list[dict]) -> None:
+    """XNEWS_PRIVATE_DIR/genres.toml があれば、同じ key の公開ジャンルに足す(リストは後ろに追加・ほかは上書き)。"""
+    d = private_dir()
+    f = d / "genres.toml" if d else None
+    if not f or not f.is_file():
+        return
+    with f.open("rb") as fh:
+        data = tomllib.load(fh)
+    by_key = {g.get("key"): g for g in public}
+    for g in data.get("genre", []):
+        base = by_key.get(g.get("key"))
+        if base is None:
+            raise ValueError(f"{f}: 公開側の genres.toml に無い key です: {g.get('key')}")
+        for k, v in g.items():
+            if k == "key":
+                continue
+            if k in _LIST_FIELDS:
+                base[k] = list(base.get(k, [])) + list(v)
+            else:
+                base[k] = v
 
 
 def _feed(genre: str, f: dict) -> dict:
@@ -34,11 +71,22 @@ def _xq(genre: str, q: dict) -> dict:
     return {"query": query, "max": int(q.get("max", 40)), "min_faves": int(mf) if mf is not None else None}
 
 
+def _weekday(genre: str, v) -> str | None:
+    if v is None:
+        return None
+    w = str(v).strip().lower()
+    if w not in _WEEKDAYS:
+        raise ValueError(f"genres.toml: {genre} の weekly_recap は {'/'.join(_WEEKDAYS)} のどれかにしてください: {v}")
+    return w
+
+
 def _load() -> dict[str, dict]:
     with GENRES_FILE.open("rb") as f:
         data = tomllib.load(f)
     out: dict[str, dict] = {}
-    for g in data.get("genre", []):
+    entries = data.get("genre", [])
+    _overlay(entries)
+    for g in entries:
         key = g.get("key")
         if not key:
             raise ValueError(f"genres.toml: key の無い [[genre]] があります: {g}")
@@ -59,6 +107,12 @@ def _load() -> dict[str, dict]:
             "news_max": g.get("news_max"),  # None なら pipeline の既定(NEWS_PER_GENRE)
             "selectable": bool(g.get("selectable", True)),  # false=常時ジャンル(全員に常時配信)
             "watch": bool(g.get("watch", False)),  # true=監視アカウントの全投稿を集めるジャンル
+            # true=公開フィードに載せず、配信前レビューで除外・統合せず、今日の要点にも入れない
+            "private": bool(g.get("private", False)),
+            "dedupe_days": int(g["dedupe_days"]) if g.get("dedupe_days") is not None else None,
+            "weekly_recap": _weekday(key, g.get("weekly_recap")),
+            "empty_note": str(g.get("empty_note") or ""),
+            "context_file": str(g["context_file"]) if g.get("context_file") else None,
             # 廃止(2026-10-01): 英語は keywords_en の別クエリで集める。互換のため読み込みだけ残す。
             "lang": str(g.get("lang", "ja")).strip().lower(),
             "note": g.get("note", ""),
@@ -77,6 +131,8 @@ SELECTABLE_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["selectable"]]
 ALWAYS_KEYS: list[str] = [k for k in GENRE_KEYS if not GENRES[k]["selectable"]]
 # 監視アカウントの全投稿を集めるジャンル(watch=true)
 WATCH_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["watch"]]
+# 公開しないジャンル(private=true)
+PRIVATE_KEYS: list[str] = [k for k in GENRE_KEYS if GENRES[k]["private"]]
 
 
 def is_valid_genre(name: str) -> bool:
@@ -89,6 +145,10 @@ def is_always(genre: str) -> bool:
 
 def is_watch(genre: str) -> bool:
     return genre in WATCH_KEYS
+
+
+def is_private(genre: str) -> bool:
+    return genre in PRIVATE_KEYS
 
 
 def display_genres(enabled: list[str]) -> list[str]:
@@ -156,3 +216,39 @@ def news_max(genre: str) -> int | None:
     """ニュース候補の上限(未指定なら None → pipeline の既定)。"""
     v = GENRES[genre].get("news_max")
     return int(v) if v is not None else None
+
+
+def dedupe_days(genre: str) -> int | None:
+    """この日数内に配信した記事を候補から除くジャンルの日数(未指定なら None)。"""
+    return GENRES.get(genre, {}).get("dedupe_days")
+
+
+def weekly_recap(genre: str) -> str | None:
+    """週のまとめを作る曜日("mon".."sun"。未指定なら None)。"""
+    return GENRES.get(genre, {}).get("weekly_recap")
+
+
+def is_recap_day(genre: str, day) -> bool:
+    w = weekly_recap(genre)
+    return w is not None and _WEEKDAYS[day.weekday()] == w
+
+
+def empty_note(genre: str) -> str:
+    """その日のニュースが0件のとき1通目に出す文(無ければ空)。"""
+    return GENRES.get(genre, {}).get("empty_note", "")
+
+
+def context_text(genre: str) -> str:
+    """context_file(XNEWS_PRIVATE_DIR の中のファイル)の中身。指定が無ければ空。
+    読めなければ stderr に1行出して空(参考情報なしでキュレーションするだけ)。"""
+    name = GENRES[genre].get("context_file")
+    if not name:
+        return ""
+    d = private_dir()
+    try:
+        if d is None:
+            raise FileNotFoundError(f"{PRIVATE_DIR_ENV} が未設定")
+        return (d / name).read_text(encoding="utf-8")
+    except (OSError, ValueError) as e:
+        print(f"  {genre}: context_file を読めず参考情報なしで続行 ({type(e).__name__}: {e})", file=sys.stderr)
+        return ""

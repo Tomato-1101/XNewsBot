@@ -137,7 +137,7 @@ def test_collect_raw_query_without_keywords(monkeypatch):
         {"id": "4", "viewCount": 10, "likeCount": 90000, "text": "プレゼント企画です", "createdAt": ""},
     ]
     monkeypatch.setattr(xclient, "fetch_with_retry", _route(ja=ja, calls=calls))
-    out = xclient.collect("話題", settings=_Settings(), keys=["k"])
+    out = xclient.collect("ロボティクス", settings=_Settings(), keys=["k"])
     assert calls == [("lang:ja min_faves:20000 -filter:replies within_time:24h", 60)]
     assert [t["text"] for t in out] == ["バズった話"]
 

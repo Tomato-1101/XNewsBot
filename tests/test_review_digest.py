@@ -38,7 +38,7 @@ def item(title, imp='small', score=50, genres=None, idxs=(0,), detail=''):
 def raw():
     cand = [{'text': f'候補{i}', 'source': 'news', 'url': f'https://example.com/{i}'} for i in range(5)]
     return {'date': '2026-10-29', 'slot': 'morning',
-            'genres': {'AI': list(cand), 'テクノロジー': list(cand), '話題': list(cand)},
+            'genres': {'AI': list(cand), 'テクノロジー': list(cand), 'ロボティクス': list(cand)},
             'recent_titles': {'AI': ['昨日の見出し']},
             'preferences': {'good': [{'genre': 'AI', 'title': '好きな記事'}], 'bad': []}}
 
@@ -51,7 +51,7 @@ def curated():
                item('AIの続報', 'small', 45, ['AI'], (2,))],
         'テクノロジー': [item('OpenAI資金調達の別記事', 'small', 60, ['テクノロジー']),
                     item('新型スマホ発表', 'small', 55, ['テクノロジー'], (1,))],
-        '話題': [item('大きな話題', 'small', 70, ['話題'])],
+        'ロボティクス': [item('大きな話題', 'small', 70, ['ロボティクス'])],
     }}
 
 
@@ -106,18 +106,18 @@ def test_drop_and_cross_genre_merge(tmp_path, raw, curated):
 
 def test_invalid_ops_are_ignored_individually(tmp_path, raw, curated):
     answer = {'drop': [{'id': 'AI/99', 'reason': 'x'}, {'id': '無いジャンル/0', 'reason': 'x'},
-                       {'id': '話題/0', 'reason': '重複して出る'}, {'id': 'テクノロジー/1', 'reason': '有効'}],
+                       {'id': 'ロボティクス/0', 'reason': '重複して出る'}, {'id': 'テクノロジー/1', 'reason': '有効'}],
               'merge': [{'into': 'AI/0', 'from': ['AI/0'], 'summary': '', 'detail': ''},
-                        {'into': '話題/0', 'from': ['AI/2'], 'summary': '', 'detail': ''},
+                        {'into': 'ロボティクス/0', 'from': ['AI/2'], 'summary': '', 'detail': ''},
                         {'into': 'AI/1', 'from': [], 'summary': '', 'detail': ''}]}
     line, cur, rep, _ = run_cli(tmp_path, raw, curated, answer)
     assert line.startswith('Codex レビュー: 6→5件（除外1・統合0）')
     assert titles(cur, 'テクノロジー') == ['OpenAI資金調達の別記事']
-    assert titles(cur, '話題') == ['大きな話題']
+    assert titles(cur, 'ロボティクス') == ['大きな話題']
     assert len(titles(cur, 'AI')) == 3
     reasons = [i['reason'] for i in rep['ignored']]
     assert reasons.count('存在しない id') == 2
-    assert sum('複数の操作' in r for r in reasons) == 3   # into=from と 話題/0 の drop・merge
+    assert sum('複数の操作' in r for r in reasons) == 3   # into=from と ロボティクス/0 の drop・merge
     assert 'from が空' in reasons
 
 
@@ -229,10 +229,10 @@ def test_big_detail_is_passed_in_full(tmp_path, raw, curated):
 
 def test_review_emptied_genres_are_recorded(tmp_path, raw, curated):
     """レビューでジャンルが空になったら review_emptied に残す(ingest が前の回の記事を空で置き換えるため)。"""
-    answer = {'drop': [{'id': '話題/0', 'reason': '範囲外'}], 'merge': []}
+    answer = {'drop': [{'id': 'ロボティクス/0', 'reason': '範囲外'}], 'merge': []}
     line, cur, _, _ = run_cli(tmp_path, raw, curated, answer)
     assert line == 'Codex レビュー: 6→5件（除外1・統合0）'
-    assert cur['genres']['話題'] == [] and cur['review_emptied'] == ['話題']
+    assert cur['genres']['ロボティクス'] == [] and cur['review_emptied'] == ['ロボティクス']
     _, cur, _, _ = run_cli(tmp_path, raw, curated, {'drop': [{'id': 'AI/1', 'reason': 'x'}], 'merge': []})
     assert 'review_emptied' not in cur
 
@@ -250,35 +250,35 @@ def test_big_merge_into_small_is_ignored(tmp_path, raw, curated):
     assert 'OpenAIが資金調達' not in titles(cur, 'AI') and rep['ignored'] == []
 
 
-def test_paper_items_are_never_dropped_or_merged(curated):
-    """論文は alphaXiv の順位で選ぶので drop も merge も機械的に拒否する(論文→AI・AI→論文・論文どうし)。"""
-    curated['genres']['論文'] = [item('論文A', 'small', 52, ['論文']), item('論文B', 'small', 50, ['論文'], (1,))]
+def test_private_items_are_never_dropped_or_merged(curated):
+    """private のジャンル(競合)は本人向けなので drop も merge も機械的に拒否する(競合→AI・AI→競合・競合どうし)。"""
+    curated['genres']['競合'] = [item('競合A', 'small', 52, ['競合']), item('競合B', 'small', 50, ['競合'], (1,))]
     for answer, reason in [
-            ({'drop': [{'id': '論文/1', 'reason': '範囲外'}], 'merge': []}, '論文の記事は除外しない'),
-            ({'drop': [], 'merge': [{'into': 'AI/1', 'from': ['論文/0'], 'summary': '', 'detail': ''}]},
-             '論文の記事は統合しない'),
-            ({'drop': [], 'merge': [{'into': '論文/0', 'from': ['AI/1'], 'summary': '', 'detail': ''}]},
-             '論文の記事は統合しない'),
-            ({'drop': [], 'merge': [{'into': '論文/0', 'from': ['論文/1'], 'summary': '', 'detail': ''}]},
-             '論文の記事は統合しない')]:
+            ({'drop': [{'id': '競合/1', 'reason': '範囲外'}], 'merge': []}, '非公開ジャンルの記事は除外しない'),
+            ({'drop': [], 'merge': [{'into': 'AI/1', 'from': ['競合/0'], 'summary': '', 'detail': ''}]},
+             '非公開ジャンルの記事は統合しない'),
+            ({'drop': [], 'merge': [{'into': '競合/0', 'from': ['AI/1'], 'summary': '', 'detail': ''}]},
+             '非公開ジャンルの記事は統合しない'),
+            ({'drop': [], 'merge': [{'into': '競合/0', 'from': ['競合/1'], 'summary': '', 'detail': ''}]},
+             '非公開ジャンルの記事は統合しない')]:
         drops, merges, ignored = rd.plan(curated, answer)
         assert drops == [] and merges == [] and [i['reason'] for i in ignored] == [reason]
-    # 論文以外の merge は今までどおり通る
+    # 非公開ジャンル以外の merge は今までどおり通る
     drops, merges, ignored = rd.plan(curated, {'drop': [], 'merge': [
         {'into': 'テクノロジー/0', 'from': ['AI/1'], 'summary': '', 'detail': ''}]})
     assert len(merges) == 1 and ignored == []
 
 
-def test_small_paper_detail_survives_review(tmp_path, raw, curated):
-    """small の論文の detail は適用後も消えない(review が small の detail を消す経路が無い)。"""
-    raw['genres']['論文'] = raw['genres']['AI']
-    paper = item('論文A', 'small', 52, ['論文'])
-    paper['detail'] = '論文の解説。解説: 用語の説明。'
-    curated['genres']['論文'] = [paper]
+def test_small_private_detail_survives_review(tmp_path, raw, curated):
+    """small の非公開ジャンルの記事の detail は適用後も消えない(review が small の detail を消す経路が無い)。"""
+    raw['genres']['競合'] = raw['genres']['AI']
+    paper = item('競合A', 'small', 52, ['競合'])
+    paper['detail'] = '競合の動きの解説。解説: 用語の説明。'
+    curated['genres']['競合'] = [paper]
     answer = {'drop': [{'id': 'AI/1', 'reason': '不要'}], 'merge': []}
     line, cur, rep, _ = run_cli(tmp_path, raw, curated, answer)
     assert line.startswith('Codex レビュー: 7→6件')
-    assert cur['genres']['論文'][0]['detail'] == '論文の解説。解説: 用語の説明。'
+    assert cur['genres']['競合'][0]['detail'] == '競合の動きの解説。解説: 用語の説明。'
 
 
 # ---------------------------------------------------------------- XNEWS_REVIEWER=claude(GitHub Actions)

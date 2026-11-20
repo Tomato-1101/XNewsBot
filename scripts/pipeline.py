@@ -41,6 +41,7 @@ from xnewsbot.curator import parse_curated  # noqa: E402
 from xnewsbot.db import get_session, init_db  # noqa: E402
 from xnewsbot.genres import ALWAYS_KEYS, GENRE_KEYS, is_valid_genre, is_watch, keywords  # noqa: E402
 from xnewsbot.genres import feeds, keywords_en, news_max, trend_sources, x_queries  # noqa: E402
+from xnewsbot.genres import context_text, dedupe_days, is_recap_day  # noqa: E402
 from xnewsbot.models import SLOTS, Subscriber  # noqa: E402
 from xnewsbot.models import DeliveryAlert, GenreDigest, NewsItem  # noqa: E402
 from xnewsbot.scheduler import deliver_to_subscriber, slot_for_now  # noqa: E402
@@ -247,13 +248,15 @@ def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
     「新しい進展がある続報だけ」にさせる。読めなくても収集は続ける(再掲判定なしになるだけ)。
     """
     out: dict[str, list[str]] = {g: [] for g in genres}
+    # dedupe_days のあるジャンル(同じ話を二度出さないジャンル)だけ、その日数分まで広げる
+    span = {g: dedupe_days(g) or RECENT_DAYS for g in genres}
     try:
         init_db()
         with get_session() as session:
             rows = session.exec(
-                select(GenreDigest.genre, NewsItem.title)
+                select(GenreDigest.genre, NewsItem.title, GenreDigest.digest_date)
                 .join(NewsItem, NewsItem.genre_digest_id == GenreDigest.id)
-                .where(GenreDigest.digest_date >= day - timedelta(days=RECENT_DAYS))
+                .where(GenreDigest.digest_date >= day - timedelta(days=max(span.values(), default=RECENT_DAYS)))
                 .where(GenreDigest.digest_date <= day - timedelta(days=1))
                 .where(GenreDigest.genre.in_(genres))
                 .order_by(GenreDigest.digest_date.desc(), NewsItem.rank)
@@ -262,9 +265,76 @@ def _recent_titles(genres: list[str], day: date) -> dict[str, list[str]]:
         print(f"  直近の見出しを読めませんでした(再掲判定なしで続行): {type(e).__name__}: {e}",
               file=sys.stderr)
         return out
-    for g, title in rows:
-        if title and title not in out[g]:
+    for g, title, d in rows:
+        if title and title not in out[g] and d >= day - timedelta(days=span[g]):
             out[g].append(title)
+    return out
+
+
+def _delivered_urls(session, genre: str, day: date, days: int) -> set[str]:
+    """genre が day の前日〜days 日前に配信した記事の出典 URL(当日は含めない。trends.delivered_paper_ids と同じ範囲)。"""
+    rows = session.exec(
+        select(NewsItem.source_urls)
+        .join(GenreDigest, NewsItem.genre_digest_id == GenreDigest.id)
+        .where(GenreDigest.genre == genre)
+        .where(GenreDigest.digest_date >= day - timedelta(days=days))
+        .where(GenreDigest.digest_date <= day - timedelta(days=1))
+    ).all()
+    return {u for urls in rows for u in urls or [] if isinstance(u, str) and u}
+
+
+def _drop_delivered(cands_by_genre: dict[str, list[dict]], day: date) -> None:
+    """dedupe_days のあるジャンルの候補から、配信済みの URL のものを除く(その場で書き換え。DB は読むだけ)。
+    DB を読めなければ除外なしで続ける(収集は止めない。再掲は recent_titles でキュレーションが抑える)。"""
+    for g, cands in cands_by_genre.items():
+        days = dedupe_days(g)
+        if not days:
+            continue
+        try:
+            init_db()
+            with get_session() as session:
+                seen = _delivered_urls(session, g, day, days)
+        except Exception as e:
+            print(f"  {g}: 配信済みの記事を読めず除外なしで続行 ({type(e).__name__}: {e})", file=sys.stderr)
+            continue
+        fresh = [c for c in cands if c.get("url") not in seen]
+        print(f"  {g}: 配信済み(直近{days}日)の候補を {len(cands) - len(fresh)} 件除外", file=sys.stderr)
+        cands_by_genre[g] = fresh
+
+
+def _genre_context(genres: list[str]) -> dict[str, list[str]]:
+    """context_file のあるジャンルの参考情報(事業の説明など)。1行1要素(空行は除く)。読めなかったジャンルは載せない。
+    1つの文字列にしないのは、raw の1行が長いと Read ツールが 2000 字で切り捨てるため(_trim と同じ理由)。"""
+    out = {}
+    for g in genres:
+        lines = [ln.rstrip() for ln in context_text(g).splitlines() if ln.strip()]
+        if lines:
+            out[g] = lines
+    return out
+
+
+def _recaps(genres: list[str], day: date) -> dict[str, list[dict]]:
+    """週のまとめを作る曜日(weekly_recap)のジャンルについて、直近 dedupe_days 日(前日まで)に配信した記事を
+    日付の新しい順で返す。その曜日でないジャンルは載せない。DB を読めなければ載せない(まとめなしで続ける)。"""
+    out: dict[str, list[dict]] = {}
+    for g in genres:
+        if not is_recap_day(g, day):
+            continue
+        try:
+            init_db()
+            with get_session() as session:
+                rows = session.exec(
+                    select(GenreDigest.digest_date, NewsItem.title, NewsItem.summary)
+                    .join(NewsItem, NewsItem.genre_digest_id == GenreDigest.id)
+                    .where(GenreDigest.genre == g)
+                    .where(GenreDigest.digest_date >= day - timedelta(days=dedupe_days(g) or RECENT_DAYS))
+                    .where(GenreDigest.digest_date <= day - timedelta(days=1))
+                    .order_by(GenreDigest.digest_date.desc(), NewsItem.rank)
+                ).all()
+        except Exception as e:
+            print(f"  {g}: 配信履歴を読めず週のまとめなしで続行 ({type(e).__name__}: {e})", file=sys.stderr)
+            continue
+        out[g] = [{"date": d.isoformat(), "title": t, "summary": sm} for d, t, sm in rows]
     return out
 
 
@@ -330,6 +400,13 @@ def _dump_raw(out: dict) -> str:
     lines.append("},")
     # 古い raw を split し直したときは無いので空で書く(curate_prompt はキーがある前提で読む)
     lines.append(f'"preferences": {d(out.get("preferences") or {"good": [], "bad": []})},')
+    # ジャンルの参考情報(1行1要素)と週のまとめ用の配信履歴(1行1件)。無いジャンルはキーごと無い
+    for key in ("genre_context", "recaps"):
+        lines.append(f'"{key}": {{')
+        kv = list((out.get(key) or {}).items())
+        for n, (g, rows) in enumerate(kv):
+            lines += [f"{d(g)}: ["] + block(rows, last=n == len(kv) - 1)
+        lines.append("},")
     lines.append('"genres": {')
     gs = list(out["genres"].items())
     for n, (g, cands) in enumerate(gs):
@@ -426,6 +503,9 @@ def cmd_collect(args) -> None:
             cands_by_genre[g] = cands
             stats[g] = (n_x, n_off, news)
 
+    # 本文取得の前に除く(配信済みの記事の本文を取りに行かない)
+    _drop_delivered(cands_by_genre, day)
+
     x_usage = compute_x_usage(balance_before, _total_balance(keys))
     if x_usage:
         print(f"  X クレジット: 今回 {x_usage['used']:,} 使用・残り {x_usage['remaining']:,}",
@@ -472,6 +552,8 @@ def cmd_collect(args) -> None:
            "earnings_surprises": sched.get("surprises") or [],
            "recent_titles": _recent_titles(genres, day),
            "preferences": _preferences(),
+           "genre_context": _genre_context(genres),
+           "recaps": _recaps(genres, day),
            "genres": cands_by_genre}
 
     text = _dump_raw(out)
@@ -559,13 +641,14 @@ def _advance_watch_state(raw: dict, cur_genres: dict, local_date: date) -> None:
 
 
 # キュレーションを並列に分けるときのジャンルの組。同じ出来事が重なりやすいジャンルを同じ組に入れる
-# 組をまたぐ同じ出来事は1件にまとめられない。試走5で重複した5件中4件がテクノロジーと話題の間だったので同じ組にする。
+# (組をまたぐ同じ出来事は1件にまとめられない)。
 # 監視アカウントのジャンル(watch=true)はここに入れない。登録アカウントが増えても他のジャンルの
 # キュレーションを圧迫しないよう、候補があれば raw の大きさに関わらず必ず独立した組にする(split_raw)。
-# 2026-10-02 特大を廃止して話題へ統合。重なりの実績があるテクノロジーと話題を同じ組に保ち、10-02 朝の raw(522KB)で
-# 大きさが釣り合う分け方にした(AI+株+暗号資産 257KB / テクノロジー+話題(旧特大込み) 237KB)。
-# 論文(2026-11-01 追加)は AI と同じ組: 同じ論文が AI の候補(記事・X)にも出やすく、組をまたぐと1件にまとめられない。
-CURATE_GROUPS = [["AI", "株", "暗号資産", "論文"], ["テクノロジー", "話題"]]
+# 2026-11-20 話題・論文を廃止し、ロボティクス・競合を追加。
+# 競合は AI と同じ組: AI 教育・AI コミュニティの話で、同じ出来事が AI の候補にも出やすい。
+# ロボティクスはテクノロジーと同じ組: ロボットは 11-20 までテクノロジーの範囲で、同じ記事が両方の候補に出やすい。
+# 株・暗号資産は、いちばん候補の多い AI の組を軽くするためテクノロジー側に置く。
+CURATE_GROUPS = [["AI", "競合"], ["株", "暗号資産", "テクノロジー", "ロボティクス"]]
 # raw がこれ未満なら分割しない。1セッションで読み切れる大きさなら、組をまたぐ重複を避けられる
 # 1セッションの方がよい(288KB では問題なく、489KB で文脈があふれ自動圧縮が走った。2026-10-02 実測)。
 SPLIT_MIN_BYTES = 300_000
@@ -598,6 +681,8 @@ def split_raw(raw: dict, whole: bool = False) -> list[dict]:
             continue
         part = {k: raw[k] for k in _SPLIT_KEEP_KEYS if k in raw}  # 古い raw には earnings_surprises が無い
         part["recent_titles"] = {g: t for g, t in raw.get("recent_titles", {}).items() if g in grp}
+        for key in ("genre_context", "recaps"):  # その組のジャンルの分だけ渡す
+            part[key] = {g: v for g, v in (raw.get(key) or {}).items() if g in grp}
         part["genres"] = {g: c for g, c in genres.items() if g in grp}
         parts.append(part)
     return parts

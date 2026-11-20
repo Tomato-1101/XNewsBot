@@ -71,9 +71,9 @@ def test_missing_for_delivery_includes_always_genres(session, monkeypatch):
     assert genres.ALWAYS_KEYS == []
     assert scheduler.missing_for_delivery(session, sub, D, "morning") == []
     # 常時ジャンル(selectable=false)をまた置いた場合: それが未完成ならまだ配信しない
-    monkeypatch.setattr(genres, "ALWAYS_KEYS", ["話題"])
-    assert scheduler.missing_for_delivery(session, sub, D, "morning") == ["話題"]
-    digest.ingest_curated(session, "話題", D, "morning", [], [])
+    monkeypatch.setattr(genres, "ALWAYS_KEYS", ["ロボティクス"])
+    assert scheduler.missing_for_delivery(session, sub, D, "morning") == ["ロボティクス"]
+    digest.ingest_curated(session, "ロボティクス", D, "morning", [], [])
     assert scheduler.missing_for_delivery(session, sub, D, "morning") == []
 
 
@@ -91,6 +91,22 @@ def test_deliver_to_subscriber_from_db(session, messenger):
     assert sub.last_evening_on == D
     assert sub.last_morning_on is None
     assert "flex" in [s["type"] for s in specs]
+
+
+def test_deliver_shows_empty_note_only_when_digest_exists_with_no_items(session, messenger):
+    digest.ingest_curated(session, "AI", D, "morning", parse_curated(curated_items(1, 1)), make_tweets(3))
+    sub = _onboarded(line_user_id="U8", enabled_genres=["AI", "競合"])
+    session.add(sub)
+    session.commit()
+    now = datetime(2026, 6, 8, 8, 0, tzinfo=JST)
+    # 競合のダイジェストがまだ無い(未収集)ときは出さない
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now,
+                                            mark_delivered=False)
+    assert "新しい動きなし" not in json.dumps(specs, ensure_ascii=False)
+    digest.ingest_curated(session, "競合", D, "morning", [], [])
+    specs = scheduler.deliver_to_subscriber(session, sub, "morning", messenger=messenger, now_local=now)
+    assert "競合 新しい動きなし" in json.dumps(specs[0], ensure_ascii=False)
+    assert "新しい動きなし" not in json.dumps(specs[1:], ensure_ascii=False)
 
 
 def test_deliver_to_subscriber_explicit_digest_date(session, messenger):

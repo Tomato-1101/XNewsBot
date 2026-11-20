@@ -225,17 +225,20 @@ def load_day_from_db(d: date, slot: str, now: datetime) -> dict:
     """既存の読み出し関数(digest.get_genre_digest / items_of_digest)で、表示順(GENRE_KEYS)に集める。"""
     from xnewsbot import digest
     from xnewsbot.db import get_session
-    from xnewsbot.genres import GENRE_KEYS, GENRES
+    from xnewsbot.genres import GENRE_KEYS, GENRES, is_private
 
     rows: list[tuple[str, list[dict]]] = []
     with get_session() as s:
         for key in GENRE_KEYS:
+            if is_private(key):  # 非公開ジャンル(競合など)は公開しない
+                continue
             dg = digest.get_genre_digest(s, key, d, slot)
             if not dg:
                 continue
             label = GENRES[key]["label"]
             items = [
-                {"genres": [GENRES[g]["label"] if g in GENRES else g for g in (it.genres or [key])],
+                {"genres": [GENRES[g]["label"] if g in GENRES else g for g in (it.genres or [key])
+                            if not is_private(g)],
                  "importance": it.importance, "rank": it.rank, "score": it.score, "title": it.title,
                  "summary": it.summary, "detail": it.detail, "source_urls": it.source_urls,
                  "source_tweets": it.source_tweets}

@@ -411,7 +411,7 @@ def test_rate_links_stay_within_line_limits_on_heavy_days():
     """重い日(約130〜160件)でも 5通・各通28000B を超えない。入りきる日は出た記事すべてに「評価する」が付き、
     「評価する」のせいで省略が出る日は段を落として組み直す(省略は最も多く載る段と同じ件数。評価のために記事を削らない)。"""
     # 入りきる日。重いマーケットは独立した2通目になるので、残り3通に収まる量(5ジャンル×10件)にする(旧: 32件でも全件入った)
-    g5 = _bulk(["AI", "株", "暗号資産", "テクノロジー", "話題"], 10, summary_len=100)
+    g5 = _bulk(["AI", "株", "暗号資産", "テクノロジー", "ロボティクス"], 10, summary_len=100)
     for grouped, expect_all in ((_heavy(), False), (g5, True)):
         _with_ids(grouped)
         specs = lc.digest_specs(grouped, slot="morning", digest_date=D, market=_HEAVY_MARKET,

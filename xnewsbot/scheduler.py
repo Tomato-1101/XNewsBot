@@ -103,6 +103,9 @@ def deliver_to_subscriber(
     )
     if skip_if_empty and not any(grouped.values()):
         return []
+    # 今日のダイジェストはあるが0件だったジャンル(empty_note のあるものは1通目に「新しい動きなし」等を1行出す)
+    empty_genres = [g for g, items in grouped.items()
+                    if not items and digest.get_genre_digest(session, g, local_date, slot)]
     market = digest.get_market(session, local_date, slot)
     schedule = digest.get_schedule(session, local_date, slot)
     x_usage = digest.get_x_usage(session, local_date, slot)
@@ -110,7 +113,7 @@ def deliver_to_subscriber(
     line_quota = fetch_quota(sub.push_target) if fetch_quota else None
     specs = lc.digest_specs(grouped, greeting=greeting, slot=slot, digest_date=local_date,
                             market=market, now=now_local, schedule=schedule, x_usage=x_usage,
-                            line_quota=line_quota)
+                            line_quota=line_quota, empty_genres=empty_genres)
     messenger.push(sub.push_target, specs)  # push_to(グループ等)があればそこへ、無ければ1:1
     if mark_delivered:
         sub.set_last_on(slot, local_date)

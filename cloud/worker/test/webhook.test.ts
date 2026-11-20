@@ -326,7 +326,7 @@ describe("設定済みのテキストコマンド", () => {
 
   it("キャンセルは編集中の選択を捨てて done に戻す", async () => {
     for (const t of ["キャンセル", "やめる", "中止", "cancel", "やめ"]) {
-      db.raw.exec(`UPDATE subscriber SET onboarding_step = 'genres', pending_genres = '["話題"]'`);
+      db.raw.exec(`UPDATE subscriber SET onboarding_step = 'genres', pending_genres = '["ロボティクス"]'`);
       await post([msg(t)]);
       expect(sub()).toMatchObject({ onboarding_step: "done", pending_genres: '["AI","株"]' });
       expect(lastTexts()).toStrictEqual(["操作をキャンセルしました。設定は変更していません。", "メニュー"]);
@@ -403,11 +403,11 @@ describe("設定済みの postback", () => {
     await post([pb("genre_edit")]);
     expect(sub()).toMatchObject({ onboarding_step: "genres", pending_genres: '["AI","株"]' });
     await post([pb("genre:AI")]);
-    await post([pb("genre:話題")]);
+    await post([pb("genre:ロボティクス")]);
     await post([pb("genre_done")]);
-    expect(sub()).toMatchObject({ enabled_genres: '["株","話題"]', onboarding_step: "done" });
+    expect(sub()).toMatchObject({ enabled_genres: '["株","ロボティクス"]', onboarding_step: "done" });
     expect(lastTexts()).toStrictEqual([
-      "ジャンルを変更しました。\n現在の設定\n・ジャンル: 株 / 話題\n・朝の配信: 08:00\n・夜の配信: 21:00", "メニュー",
+      "ジャンルを変更しました。\n現在の設定\n・ジャンル: 株 / ロボティクス\n・朝の配信: 08:00\n・夜の配信: 21:00", "メニュー",
     ]);
   });
 

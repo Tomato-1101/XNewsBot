@@ -21,7 +21,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from .feedback import title_hash
-from .genres import ALWAYS_KEYS, GENRES, SELECTABLE_KEYS
+from .genres import ALWAYS_KEYS, GENRES, PRIVATE_KEYS, SELECTABLE_KEYS, empty_note
 from .models import SLOT_LABEL, NewsItem, Subscriber
 
 log = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ def settings_summary_text(sub: Subscriber) -> str:
 # ヘッダー背景(白文字)と白背景の文字の両方に使うので、白とのコントラスト 4.5 以上の濃さにする。
 # 廃止したジャンル(特大など)の過去記事は OTHER_COLOR で出す。
 GENRE_COLORS = {"AI": "#4F46E5", "株": "#0F766E", "テクノロジー": "#0369A1",
-                "暗号資産": "#B45309", "話題": "#A21CAF"}
+                "暗号資産": "#B45309", "ロボティクス": "#6D28D9", "競合": "#BE123C"}
 OTHER_COLOR = "#475569"   # 上記以外のジャンル
 TITLE_COLOR = "#111111"
 TEXT_COLOR = "#222222"
@@ -123,7 +123,7 @@ DOWN_COLOR = "#1565C0"
 SURPRISE_UP_COLOR = "#15803D"
 SURPRISE_DOWN_COLOR = "#B91C1C"
 POINTS_MAX = 5
-POINTS_EXCLUDE = {"論文"}  # 今日の要点に入れないジャンル
+POINTS_EXCLUDE = set(PRIVATE_KEYS)  # 今日の要点に入れないジャンル(genres.toml の private=true。競合など)
 SCHEDULE_MAX = 12        # 今日の予定の最大行数
 # 注目決算・決算サプライズの1国あたりの最大行数(マーケットのカードを PC で縦に長くしすぎないため)
 EARNINGS_MAX_PER_COUNTRY = 8
@@ -365,7 +365,7 @@ def _pick_points(grouped: dict[str, list[NewsItem]]) -> list[NewsItem]:
     """今日の要点(最大5本): 常時ジャンル(genres.toml の selectable=false)の big をすべて先頭
     → 他ジャンルの big を score 降順 → 足りなければ small を score 降順。同点はジャンル順・rank 順。
     2026-10-02 に特大を廃止して常時ジャンルは無くなったので、今は big の score 順 → small の score 順。
-    論文ジャンル(POINTS_EXCLUDE)は使わない(ニュースではなく alphaXiv の順位で選んだ論文で、要点の枠を埋めないため)。"""
+    非公開ジャンル(POINTS_EXCLUDE)は使わない(本人向けに広く拾った記事で、要点の枠を埋めないため)。"""
     pairs = [(gi, g, it) for gi, (g, items) in enumerate(grouped.items()) if g not in POINTS_EXCLUDE
              for it in items]
 
@@ -555,8 +555,9 @@ def _sub_title(text: str) -> dict:
 
 def _summary_bubble(points: list[NewsItem], heading: str, total: int, digest_date, slot,
                     has_market: bool, x_usage: dict | None = None,
-                    line_quota: dict | None = None) -> dict:
-    """1通目の1枚目: 見出し → 今日の要点 → 残り使用量。目次は 11-19 に本人指示で廃止。"""
+                    line_quota: dict | None = None, empty_genres: list[str] | None = None) -> dict:
+    """1通目の1枚目: 見出し → 今日の要点 → 残り使用量。目次は 11-19 に本人指示で廃止。
+    empty_genres(今日は0件だったジャンル)のうち genres.toml の empty_note があるものは、末尾に1行ずつ出す。"""
     contents: list[dict] = [
         {"type": "text", "text": heading, "size": "lg", "weight": "bold", "color": TITLE_COLOR},
         {"type": "text", "text": f"計{total}件", "size": "xs", "color": SUB_COLOR},
@@ -572,6 +573,11 @@ def _summary_bubble(points: list[NewsItem], heading: str, total: int, digest_dat
     contents += _section_title("残り使用量")
     contents.append(_x_usage_row(x_usage))
     contents.append(_line_quota_row(line_quota))
+
+    for g in empty_genres or []:
+        if empty_note(g):
+            contents.append({"type": "text", "text": f"{_genre_label(g)} {empty_note(g)}", "size": "xxs",
+                             "color": META_COLOR, "margin": "md", "wrap": True})
 
     bubble = {"type": "bubble", "size": "giga",
               "body": {"type": "box", "layout": "vertical", "paddingAll": "20px", "contents": contents}}
@@ -1079,6 +1085,7 @@ def digest_specs(
     digest_date: date | None = None, market: list[dict] | None = None,
     now: datetime | None = None, schedule: list[dict] | None = None,
     x_usage: dict | None = None, line_quota: dict | None = None, max_messages: int = MAX_MESSAGES,
+    empty_genres: list[str] | None = None,
 ) -> list[dict]:
     """購読ジャンルの NewsItem 群を配信メッセージ(spec列、最大 max_messages)に変換する。
 
@@ -1094,6 +1101,7 @@ def digest_specs(
     - 0件のジャンルは出さない。全ジャンル0件ならテキスト1通。
     - greeting は互換のため残している(見出しは常に同じ)。
     - max_messages: 前に別のメッセージを足して送るとき(モック返信の警告文など)に減らす。
+    - empty_genres: 今日のダイジェストはあるが記事0件だったジャンル。empty_note のあるものだけ1通目の末尾に1行出す。
     """
     total = sum(len(items) for items in grouped.values())
     if not total:
@@ -1131,7 +1139,7 @@ def digest_specs(
     market_card = _market_bubble(market, schedule, now)
 
     summary = _summary_bubble(points, heading, total, digest_date, slot, market_card is not None,
-                              x_usage=x_usage, line_quota=line_quota)
+                              x_usage=x_usage, line_quota=line_quota, empty_genres=empty_genres)
     cars = layout(max_messages - 1)
     firsts = [summary]
     if market_card is not None:

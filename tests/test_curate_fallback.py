@@ -18,7 +18,7 @@ def raw():
         {'text': '新しい日本語AIモデルを公開', 'source': 'news', 'url': 'https://example.com/b'},
         {'text': '個人のAIへの感想', 'url': 'https://example.com/c'},
         {'text': 'English title', 'source': 'news', 'url': 'https://example.com/d'},
-    ], '話題': []}}
+    ], 'ロボティクス': []}}
 
 
 def test_original_preserves_source_and_omits_duplicates_x_and_english(raw):
@@ -28,7 +28,7 @@ def test_original_preserves_source_and_omits_duplicates_x_and_english(raw):
     assert item['title'] == raw['genres']['AI'][0]['text']
     assert item['summary'] == '原文の概要です。'
     assert item['source_idxs'] == [0]
-    assert result['genres']['話題'] == []
+    assert result['genres']['ロボティクス'] == []
 
 
 def test_valid_claude_never_calls_codex(raw, monkeypatch, tmp_path):
@@ -64,7 +64,7 @@ def test_both_llms_fail_uses_original(raw, monkeypatch, tmp_path):
 def test_rejects_invalid_outputs(raw, mutation):
     result = cf.original_news(raw)
     item = result['genres']['AI'][0]
-    if mutation == 'missing': result['genres'] = {'話題': [copy.deepcopy(item)]}
+    if mutation == 'missing': result['genres'] = {'ロボティクス': [copy.deepcopy(item)]}
     elif mutation == 'idx': item['source_idxs'] = [999]
     elif mutation == 'boolidx': item['source_idxs'] = [True]
     elif mutation == 'score': item['score'] = '30'
@@ -78,13 +78,13 @@ def test_rejects_invalid_outputs(raw, mutation):
 def test_missing_genre_without_candidates_is_filled(raw, monkeypatch, tmp_path):
     # 分割実行では候補0件のジャンルがどの組にも入らず、merge 結果から欠ける
     result = cf.original_news(raw)
-    del result['genres']['話題']
+    del result['genres']['ロボティクス']
     output = tmp_path / 'curated.json'
     output.write_text(json.dumps(result))
     monkeypatch.setattr(cf, 'codex_curate', lambda r: pytest.fail('Codex must not run'))
     curated, route = cf.recover(raw, output, tmp_path / 'reason')
     assert route == 'claude'
-    assert curated['genres']['話題'] == []
+    assert curated['genres']['ロボティクス'] == []
     assert not (tmp_path / 'reason').exists()
 
 
@@ -115,8 +115,8 @@ def test_codex_invocation_is_isolated_and_validated(raw, monkeypatch):
 
 
 def test_original_deduplicates_urls_across_genres(raw):
-    raw['genres']['話題'] = [dict(raw['genres']['AI'][0], text='同じURLの別見出し')]
-    assert cf.original_news(raw)['genres']['話題'] == []
+    raw['genres']['ロボティクス'] = [dict(raw['genres']['AI'][0], text='同じURLの別見出し')]
+    assert cf.original_news(raw)['genres']['ロボティクス'] == []
 
 
 def test_original_ingest_does_not_advance_watch_state(raw, monkeypatch, tmp_path, session):
@@ -145,3 +145,14 @@ def test_original_ingest_does_not_advance_watch_state(raw, monkeypatch, tmp_path
     monkeypatch.setattr(pl, 'get_session', fake_session)
     pl.cmd_ingest(SimpleNamespace(raw=str(raw_path), curated=str(cur_path), date=None, slot=None))
     assert state.read_text() == before
+
+
+def test_weekly_recap_item_may_have_no_sources(raw):
+    """週のまとめ(raw の recaps があるジャンル)は配信履歴から作るので source_idxs が空でも通す。"""
+    raw['genres']['競合'] = [{'text': '競合の新しい動き', 'source': 'news', 'url': 'https://example.com/r'}]
+    result = cf.original_news(raw)
+    recap = dict(copy.deepcopy(result['genres']['競合'][0]), title='今週の競合まとめ', source_idxs=[])
+    result['genres']['競合'].append(recap)
+    with pytest.raises(ValueError, match='根拠が空'): cf.validate(raw, result)
+    raw['recaps'] = {'競合': []}
+    cf.validate(raw, result)

@@ -32,20 +32,34 @@ def _write_raw(tmp_path: Path, raw: dict) -> Path:
 
 
 def test_split_raw_groups_and_unknown_goes_to_smaller():
-    genres = {"テクノロジー": [{"text": "x" * 10}], "AI": [{"text": "a" * 5000}],
-              "暗号資産": [{"text": "s"}], "話題": [], "新ジャンル": [{"text": "n"}]}
+    genres = {"テクノロジー": [{"text": "x" * 10}], "AI": [{"text": "a" * 5000}], "競合": [{"text": "k"}],
+              "暗号資産": [{"text": "s"}], "ロボティクス": [], "新ジャンル": [{"text": "n"}]}
     parts = pl.split_raw(_raw(genres))
-    assert [list(p["genres"]) for p in parts] == [["AI", "暗号資産"], ["テクノロジー", "話題", "新ジャンル"]]
+    assert [list(p["genres"]) for p in parts] == [
+        ["AI", "競合"], ["テクノロジー", "暗号資産", "ロボティクス", "新ジャンル"]]
     # recent_titles はその組のジャンルだけ。共通キーはそのまま
-    assert list(parts[1]["recent_titles"]) == ["テクノロジー", "話題", "新ジャンル"]
+    assert list(parts[1]["recent_titles"]) == ["テクノロジー", "暗号資産", "ロボティクス", "新ジャンル"]
     for p in parts:
         for k in ("date", "tz", "slot", "market", "schedule", "indicator_results"):
             assert p[k] == _raw(genres)[k]
 
 
+def test_split_raw_passes_genre_context_and_recaps_to_own_group():
+    raw = _raw({"AI": [{"text": "a"}], "競合": [{"text": "k"}], "株": [{"text": "s"}]})
+    raw["genre_context"] = {"競合": ["事業の説明"]}
+    raw["recaps"] = {"競合": [{"date": "2026-11-22", "title": "t", "summary": "s"}]}
+    p0, p1 = pl.split_raw(raw)
+    assert list(p0["genres"]) == ["AI", "競合"] and list(p1["genres"]) == ["株"]
+    assert p0["genre_context"] == raw["genre_context"] and p0["recaps"] == raw["recaps"]
+    assert p1["genre_context"] == {} and p1["recaps"] == {}
+    # 古い raw(キーが無い)でも分けられる
+    old = pl.split_raw(_raw({"AI": [{"text": "a"}], "株": [{"text": "s"}]}))
+    assert [p["genre_context"] for p in old] == [{}, {}]
+
+
 def test_split_raw_skips_empty_group():
-    parts = pl.split_raw(_raw({"テクノロジー": [{"text": "s"}], "話題": []}))
-    assert len(parts) == 1 and list(parts[0]["genres"]) == ["テクノロジー", "話題"]
+    parts = pl.split_raw(_raw({"テクノロジー": [{"text": "s"}], "ロボティクス": []}))
+    assert len(parts) == 1 and list(parts[0]["genres"]) == ["テクノロジー", "ロボティクス"]
 
 
 def test_cmd_split_small_raw_is_not_split(tmp_path, capsys):
@@ -58,7 +72,7 @@ def test_cmd_split_small_raw_is_not_split(tmp_path, capsys):
 def test_cmd_split_large_raw_keeps_candidates_and_i(tmp_path, capsys):
     big = "本" * 2000  # 1候補 約6KB
     genres = {g: [{"text": f"{g}{j}", "body": big} for j in range(10)]
-              for g in ("AI", "株", "暗号資産", "テクノロジー", "話題")}
+              for g in ("AI", "競合", "株", "暗号資産", "テクノロジー", "ロボティクス")}
     raw = _raw(genres)
     p = _write_raw(tmp_path, raw)
     assert p.stat().st_size >= pl.SPLIT_MIN_BYTES
@@ -68,8 +82,8 @@ def test_cmd_split_large_raw_keeps_candidates_and_i(tmp_path, capsys):
                      str(tmp_path / "xnews_morning_raw.p1.json")]
     whole = json.loads(p.read_text(encoding="utf-8"))
     p0, p1 = (json.loads(Path(x).read_text(encoding="utf-8")) for x in paths)
-    assert list(p0["genres"]) == ["AI", "株", "暗号資産"]
-    assert list(p1["genres"]) == ["テクノロジー", "話題"]
+    assert list(p0["genres"]) == ["AI", "競合"]
+    assert list(p1["genres"]) == ["株", "暗号資産", "テクノロジー", "ロボティクス"]
     for part in (p0, p1):
         for g, cands in part["genres"].items():
             assert cands == whole["genres"][g]  # 候補も `i` も元の raw と同じ
@@ -86,11 +100,11 @@ def _write(tmp_path: Path, name: str, text: str) -> str:
 
 def test_cmd_merge_combines_genres(tmp_path):
     a = _write(tmp_path, "a.json", json.dumps({"genres": {"AI": [{"title": "x"}]}}))
-    b = _write(tmp_path, "b.json", json.dumps({"genres": {"株": [], "話題": [{"title": "y"}]}}))
+    b = _write(tmp_path, "b.json", json.dumps({"genres": {"株": [], "ロボティクス": [{"title": "y"}]}}))
     out = tmp_path / "cur.json"
     pl.cmd_merge(SimpleNamespace(out=str(out), parts=[a, b]))
     assert json.loads(out.read_text(encoding="utf-8")) == {
-        "genres": {"AI": [{"title": "x"}], "株": [], "話題": [{"title": "y"}]}}
+        "genres": {"AI": [{"title": "x"}], "株": [], "ロボティクス": [{"title": "y"}]}}
 
 
 @pytest.mark.parametrize("second", [

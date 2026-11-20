@@ -788,3 +788,95 @@ def test_dump_raw_includes_x_usage_on_one_line():
     assert json.loads(text)["x_usage"] == {"used": 9870, "remaining": 3_040_677}
     assert '"x_usage": {"used": 9870, "remaining": 3040677},' in text.splitlines()
     assert json.loads(pl._dump_raw({**base, "x_usage": None}))["x_usage"] is None
+
+
+# --- 競合(dedupe_days / weekly_recap / context_file) ---
+
+def _add_digest(session, d, genre, items):
+    gd = GenreDigest(digest_date=d, genre=genre)
+    session.add(gd)
+    session.commit()
+    session.refresh(gd)
+    for i, (title, url) in enumerate(items):
+        session.add(NewsItem(genre_digest_id=gd.id, genre=genre, rank=i, title=title, summary=f"{title}の要約",
+                             source_urls=[url]))
+    session.commit()
+
+
+def _use_session(monkeypatch, session):
+    monkeypatch.setattr(pl, "init_db", lambda: None)
+    monkeypatch.setattr(pl, "get_session", lambda: contextlib.nullcontext(session))
+
+
+def test_drop_delivered_removes_urls_sent_within_dedupe_days(monkeypatch, session, capsys):
+    day = date(2026, 11, 20)
+    _add_digest(session, day - timedelta(days=1), "競合", [("昨日", "https://r/1")])
+    _add_digest(session, day - timedelta(days=60), "競合", [("60日前", "https://r/60")])
+    _add_digest(session, day - timedelta(days=61), "競合", [("61日前", "https://r/61")])   # 範囲外
+    _add_digest(session, day, "競合", [("当日", "https://r/0")])                           # 当日は含めない
+    _add_digest(session, day - timedelta(days=1), "AI", [("AI", "https://a/1")])
+    _use_session(monkeypatch, session)
+    cands = {"競合": [{"url": u} for u in ("https://r/1", "https://r/60", "https://r/61", "https://r/0", "https://a/1")],
+             "AI": [{"url": "https://a/1"}]}
+    pl._drop_delivered(cands, day)
+    assert [c["url"] for c in cands["競合"]] == ["https://r/61", "https://r/0", "https://a/1"]
+    assert cands["AI"] == [{"url": "https://a/1"}]      # dedupe_days の無いジャンルは触らない
+    assert capsys.readouterr().err.strip() == "競合: 配信済み(直近60日)の候補を 2 件除外"
+
+
+def test_drop_delivered_db_error_keeps_candidates(monkeypatch, capsys):
+    def boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(pl, "init_db", boom)
+    cands = {"競合": [{"url": "https://r/1"}]}
+    pl._drop_delivered(cands, date(2026, 11, 20))
+    assert cands == {"競合": [{"url": "https://r/1"}]}
+    assert capsys.readouterr().err.strip().startswith("競合: 配信済みの記事を読めず除外なしで続行")
+
+
+def test_recent_titles_uses_dedupe_days_only_for_that_genre(monkeypatch, session):
+    day = date(2026, 11, 20)
+    for g in ("競合", "AI"):
+        _add_digest(session, day - timedelta(days=2), g, [(f"{g}2日前", "https://x/2")])
+        _add_digest(session, day - timedelta(days=30), g, [(f"{g}30日前", "https://x/30")])
+        _add_digest(session, day - timedelta(days=61), g, [(f"{g}61日前", "https://x/61")])
+    _use_session(monkeypatch, session)
+    assert pl._recent_titles(["AI", "競合"], day) == {"AI": ["AI2日前"], "競合": ["競合2日前", "競合30日前"]}
+
+
+def test_recaps_only_on_recap_weekday(monkeypatch, session):
+    monday = date(2026, 11, 23)
+    _add_digest(session, monday - timedelta(days=3), "競合", [("金曜の動き", "https://r/a"), ("金曜の動き2", "https://r/b")])
+    _add_digest(session, monday - timedelta(days=1), "競合", [("日曜の動き", "https://r/c")])
+    _add_digest(session, monday - timedelta(days=61), "競合", [("古い", "https://r/d")])
+    _add_digest(session, monday, "競合", [("当日", "https://r/e")])
+    _add_digest(session, monday - timedelta(days=1), "AI", [("AI", "https://a/1")])
+    _use_session(monkeypatch, session)
+    assert pl._recaps(["AI", "競合"], monday) == {"競合": [     # 新しい順。AI は weekly_recap が無いので載らない
+        {"date": "2026-11-22", "title": "日曜の動き", "summary": "日曜の動きの要約"},
+        {"date": "2026-11-20", "title": "金曜の動き", "summary": "金曜の動きの要約"},
+        {"date": "2026-11-20", "title": "金曜の動き2", "summary": "金曜の動き2の要約"}]}
+    assert pl._recaps(["AI", "競合"], monday + timedelta(days=1)) == {}
+    # 月曜で配信履歴が無くてもキーは出す(キュレーションが「まとめを作る日」だと分かる)
+    assert pl._recaps(["競合"], monday - timedelta(days=70)) == {"競合": []}
+
+
+def test_genre_context_is_lines_and_skipped_without_private_dir(monkeypatch, tmp_path, capsys):
+    monkeypatch.delenv("XNEWS_PRIVATE_DIR", raising=False)
+    assert pl._genre_context(["AI", "競合"]) == {}
+    assert "context_file を読めず" in capsys.readouterr().err
+    (tmp_path / "aixone.md").write_text("# 事業\n\n学生と経営者のコミュニティ\n", encoding="utf-8")
+    monkeypatch.setenv("XNEWS_PRIVATE_DIR", str(tmp_path))
+    assert pl._genre_context(["AI", "競合"]) == {"競合": ["# 事業", "学生と経営者のコミュニティ"]}
+
+
+def test_dump_raw_roundtrips_genre_context_and_recaps():
+    raw = {"date": "2026-11-23", "tz": "Asia/Tokyo", "slot": "morning", "market": [], "schedule": [],
+           "indicator_results": [], "recent_titles": {"競合": []}, "genres": {"競合": [{"text": "a"}]},
+           "genre_context": {"競合": ["# 事業", "説明"]},
+           "recaps": {"競合": [{"date": "2026-11-22", "title": "t", "summary": "s"}]}}
+    text = pl._dump_raw(raw)
+    back = json.loads(text)
+    assert back["genre_context"] == raw["genre_context"] and back["recaps"] == raw["recaps"]
+    assert back["genres"] == {"競合": [{"i": 0, "text": "a"}]}
+    assert max(len(line) for line in text.splitlines()) < 2000

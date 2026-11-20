@@ -36,6 +36,12 @@ jobs:
         with:
           repository: Tomato-1101/XNewsBot
           ref: master
+      # 公開しない設定(競合ジャンルの語・事業の説明)。このワークフローを置いた非公開リポ自身の private/ を読む。
+      # 公開リポの checkout の後に置く(先だと checkout の掃除で消える)。以降のステップに権限を残さない
+      - uses: actions/checkout@v4
+        with:
+          path: private-repo
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -57,4 +63,5 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           FEED_DEPLOY_KEY: ${{ secrets.FEED_DEPLOY_KEY }}
+          XNEWS_PRIVATE_DIR: ${{ github.workspace }}/private-repo/private
         run: bash cloud/actions/deliver.sh "$MODE" "$TARGET"

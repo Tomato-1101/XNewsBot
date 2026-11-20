@@ -165,7 +165,7 @@ def test_mock_trigger_replies_sample_layout(session, messenger):
     from xnewsbot import line_client as lc
     genres_shown = [b for s in specs[2:] for b in badges(s["contents"])]
     expected = [(m, lc._genre_color(g)) for m, g in
-                [("AI", "AI"), ("株", "株"), ("仮", "暗号資産"), ("テ", "テクノロジー"), ("話", "話題")]]
+                [("AI", "AI"), ("株", "株"), ("仮", "暗号資産"), ("テ", "テクノロジー"), ("ロ", "ロボティクス")]]
     assert set(expected) <= set(genres_shown)
     assert len(genres_shown) == len(set(genres_shown))  # 印はジャンルごとに1つだけ(2件目以降には付かない)
     assert "件は省略" not in blob and "特大" not in blob
@@ -209,7 +209,7 @@ def test_help_mentions_schedule_and_new_genres(session, messenger):
     _onboard(session, messenger)
     handle_event(session, messenger, ev("message", text="ヘルプ"))
     text = messenger.last_reply[0]["text"]
-    assert "今日の予定" in text and "仮想通貨" in text and "話題" in text
+    assert "今日の予定" in text and "仮想通貨" in text and "ロボティクス" in text
     assert "見出しのみ" not in text  # 小ニュースにも要約が付いた
 
 
