@@ -51,7 +51,9 @@ DELETE_BATCH = 500
 def state_files(db: Path) -> dict[str, Path]:
     """kv のキー → Python が読むファイル。watch.state_path / trends の seen_models / publish_feed と同じ場所。"""
     d = db.resolve().parent
-    files = {"watch_state": d / "watch_state.json", "seen_models": d / "seen_models.json"}
+    files = {"watch_state": d / "watch_state.json", "seen_models": d / "seen_models.json",
+             # Mac(scripts/push_jp_schedule.py)が書く日本の決算。クラウドは読むだけ(中身が同じなら push しない)
+             "jp_schedule": d / "jp_schedule.json"}
     # 公開フィードは XNEWS_FEED_DIR を明示したときだけ扱う(未設定だと Mac の本番の publish_state.json を指すため)
     feed = os.environ.get("XNEWS_FEED_DIR")
     if feed:

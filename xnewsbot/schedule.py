@@ -1075,19 +1075,74 @@ def _safe(job: tuple[str, object]) -> list[dict]:
         return []
 
 
-def fetch(now: datetime | None = None) -> dict:
+def _jp_dump(items: list[dict]) -> list[dict]:
+    """日本の決算の内部表現 → JSON にできる形(at・day を ISO 文字列に。キーの無い項目には足さない)。"""
+    return [{**it, **{k: it[k].isoformat() for k in ("at", "day") if it.get(k)}} for it in items]
+
+
+def _jp_load(items: list[dict]) -> list[dict]:
+    """_jp_dump の逆。JSON から読んだ項目を live 取得と同じ内部表現(at=JST の datetime、day=date)に戻す。"""
+    out = []
+    for it in items:
+        it = dict(it)
+        if it.get("at"):
+            it["at"] = datetime.fromisoformat(it["at"]).astimezone(JST)
+        if it.get("day"):
+            it["day"] = date.fromisoformat(it["day"])
+        out.append(it)
+    return out
+
+
+def _jp_dates(now: datetime | None) -> tuple[datetime, date, date]:
+    if now is None:
+        now = datetime.now(JST)
+    now = now.replace(tzinfo=JST) if now.tzinfo is None else now.astimezone(JST)
+    d = now.date()
+    return now, d, prev_weekday(d)
+
+
+def fetch_jp(now: datetime | None = None) -> dict:
+    """日本の注目決算と決算サプライズ(日本)だけを取る。株探・IRBANK はクラウドの IP を弾くので、
+    Mac(scripts/push_jp_schedule.py)で取って D1 経由でクラウドの fetch(jp=...) に渡す。
+    失敗した側は None(空で取れた [] と区別する)。値は JSON にできる形(_jp_dump)。"""
+    now, d, p = _jp_dates(now)
+    _kabutan_deadline[0] = time.monotonic() + KABUTAN_BUDGET
+
+    def run(name: str, fn) -> list[dict] | None:
+        try:
+            return _jp_dump(fn())
+        except Exception as e:
+            print(f"  予定: {name} 取得失敗のため省略 ({type(e).__name__}: {e})", file=sys.stderr)
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_n = pool.submit(run, "株探・IRBANK(日本の注目決算)", lambda: _jp_notable(d))
+        f_s = pool.submit(run, "決算サプライズ(日本)", lambda: _jp_surprise_job(d, p))
+        notable, surprises = f_n.result(), f_s.result()
+    return {"date": d.isoformat(), "fetched_at": datetime.now(JST).isoformat(timespec="seconds"),
+            "notable": notable, "surprises": surprises}
+
+
+def fetch(now: datetime | None = None, jp: dict | None = None) -> dict:
     """{"schedule": now〜翌朝8時の予定, "results": 直近24時間に出た指標の結果,
     "surprises": 前営業日の決算への市場の反応}。
 
     now の既定は現在の JST(収集は配信の45分前 07:15 JST に走る)。tz の無い now は JST とみなす。
     取得元は並列に1回ずつ読む(どれかが遅くても全体は最も遅い1つ分で済む)。
     株探へのアクセスは複数のジョブにまたがるが、_kabutan_get が全体で直列にする。
+    jp(fetch_jp の結果)が同じ日付なら、None でない方(注目決算/サプライズ)は live で取らずにそれを使う。
     """
-    if now is None:
-        now = datetime.now(JST)
-    now = now.replace(tzinfo=JST) if now.tzinfo is None else now.astimezone(JST)
-    d = now.date()
-    p = prev_weekday(d)
+    now, d, p = _jp_dates(now)
+    pre_notable = pre_surprise = None
+    if jp and jp.get("date") == d.isoformat():
+        if jp.get("notable") is not None:
+            pre_notable = _jp_load(jp["notable"])
+        if jp.get("surprises") is not None:
+            pre_surprise = _jp_load(jp["surprises"])
+        if pre_notable is not None or pre_surprise is not None:
+            print(f"  予定: 日本の決算(注目{'○' if pre_notable is not None else '×'}"
+                  f"/サプライズ{'○' if pre_surprise is not None else '×'})は Mac で取得した分を使用 "
+                  f"({jp.get('fetched_at')})", file=sys.stderr)
     _kabutan_deadline[0] = time.monotonic() + KABUTAN_BUDGET
     jobs: list[tuple[str, object]] = [
         # 前日〜翌日の3日分(前日分は results 用、翌日分は翌朝8時までの予定用)
@@ -1097,10 +1152,12 @@ def fetch(now: datetime | None = None) -> dict:
         ("日銀", lambda: boj_events(parse_boj(_need(BOJ_URL)))),
         # 米国決算は配信日と同じ日付(米東部の当日)。日本時間の夜〜翌朝に出る。
         ("Nasdaq(米国の注目決算)", lambda: parse_nasdaq(_need_nasdaq(NASDAQ_URL.format(d=d)), d)),
-        ("株探・IRBANK(日本の注目決算)", lambda: _jp_notable(d)),
+        ("株探・IRBANK(日本の注目決算)",
+         (lambda: pre_notable) if pre_notable is not None else (lambda: _jp_notable(d))),
     ]
     surprise_jobs: list[tuple[str, object]] = [
-        ("決算サプライズ(日本)", lambda: _jp_surprise_job(d, p)),
+        ("決算サプライズ(日本)",
+         (lambda: pre_surprise) if pre_surprise is not None else (lambda: _jp_surprise_job(d, p))),
         ("決算サプライズ(米国)", lambda: _us_surprise_job(p)),
     ]
     with ThreadPoolExecutor(max_workers=len(jobs) + len(surprise_jobs)) as pool:

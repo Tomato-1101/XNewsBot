@@ -338,6 +338,20 @@ def _recaps(genres: list[str], day: date) -> dict[str, list[dict]]:
     return out
 
 
+def _jp_schedule() -> dict | None:
+    """Mac が取った日本の決算(D1 の kv jp_schedule → d1sync が DB の横に書く jp_schedule.json)。
+    無い・読めない・壊れているときは None(schedule.fetch が live で取る)。配信を止めないよう例外は全部握る。"""
+    try:
+        path = Path(get_settings().db_path).resolve().parent / "jp_schedule.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception as e:
+        print(f"  今日の予定: jp_schedule.json を読めず live で取得 ({type(e).__name__}: {e})", file=sys.stderr)
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _preferences() -> dict[str, list[dict]]:
     """読者の評価(興味あり/興味なし)を raw の `preferences` 用に集計する(xnewsbot/feedback.py)。DB は読むだけ。
     読めなくても収集は続ける(好みなしでキュレーションするだけ)。"""
@@ -530,7 +544,8 @@ def cmd_collect(args) -> None:
     print(f"  市況: {len(mkt)} 件", file=sys.stderr)
     # 今日の予定(次の配信まで)と直近24時間の指標の結果。取れなくても配信は続ける(空で渡す)。
     try:
-        sched = schedule.fetch()
+        jp = _jp_schedule()
+        sched = schedule.fetch(jp=jp) if jp else schedule.fetch()
     except Exception as e:
         print(f"  今日の予定: 取得失敗のため省略 ({type(e).__name__}: {e})", file=sys.stderr)
         sched = {"schedule": [], "results": [], "surprises": []}

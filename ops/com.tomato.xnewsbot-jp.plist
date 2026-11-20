@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XNewsBot 日本の決算(注目決算・決算サプライズ)を Mac で取って D1 に渡す。~/Library/LaunchAgents/ に配置する。
+
+  朝の配信はクラウド(GitHub Actions、07:25 JST に収集開始)だが、株探(AWS WAF)と IRBANK(CloudFront)は
+  データセンターの IP を弾くので、この2つだけ家庭回線の Mac で取り、D1 の kv jp_schedule に書く。
+  クラウドは日付が配信日と同じときだけそれを使う。Mac が寝ていた日はその2つが出ないだけで配信は止まらない。
+
+  管理:
+    起動  : launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tomato.xnewsbot-jp.plist
+    停止  : launchctl bootout  gui/$(id -u)/com.tomato.xnewsbot-jp
+    手動実行: launchctl kickstart -k gui/$(id -u)/com.tomato.xnewsbot-jp
+    状態  : launchctl list | grep xnewsbot-jp
+    ログ  : ~/Library/Logs/xnewsbot-jp.log
+  ※ plist を変更したら bootout → bootstrap で入れ直す(kickstart では反映されない)。
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.tomato.xnewsbot-jp</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/tomato/Project/XNewsBot/.venv/bin/python</string>
+        <string>scripts/push_jp_schedule.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/tomato/Project/XNewsBot</string>
+
+    <!-- wrangler と node は /opt/homebrew/bin(2026-11-20 command -v で確認) -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>7</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-jp.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/tomato/Library/Logs/xnewsbot-jp.log</string>
+</dict>
+</plist>
