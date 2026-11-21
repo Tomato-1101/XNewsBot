@@ -262,6 +262,33 @@ context_file = "aixone.md"
 note = "AIx ONE(本人が関わる学生×経営者の AI コミュニティ事業)の競合の動き。探す語・競合名・事業の説明は公開しないので、非公開リポ xnewsbot-cloud の private/ に置き、配信時だけ読み込む(XNEWS_PRIVATE_DIR)。2026-11-20 追加。"
 
 [[genre]]
+key = "ミーム"
+note = "日本か世界で大バズしているネットミーム(誰でも名前を言えば分かる規模のものだけ)。2026-11-21 追加(本人の依頼)。"
+dedupe_days = 14
+# ミームは語で探しにくいので、いいねの多い投稿そのもの(x_queries)が主。語のクエリはミームの話題そのものを拾う補助。
+min_faves = 5000
+min_faves_en = 30000
+keywords = ["ネットミーム", "ミーム", "構文", "流行ってる", "バズってる", "大喜利", "インターネット老人会"]
+keywords_en = ["meme", "memes", "viral trend", "internet trend"]
+x_queries = [
+  { query = "lang:ja min_faves:30000 -filter:replies", max = 40, min_faves = 30000 },
+  { query = "lang:en min_faves:150000 -filter:replies", max = 30, min_faves = 150000 },
+]
+exclude = ["プレゼント企画", "フォロー&RT", "フォロー＆RT", "フォローとRT", "抽選で", "応募方法", "#PR", "ガチャ",
+  # 「ミーム」の語で一致する仮想通貨・株の話(ミームコイン・ミーム株)はミームの流行ではない
+  "ミームコイン", "ミーム株", "meme coin", "memecoin", "meme stock"]
+exclude_accounts = [
+  "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
+  "unusual_whales", "Polymarket", "Kalshi",
+]
+trend_sources = ["yahoo_realtime"]
+news_max = 30
+feeds = [
+  { url = "https://knowyourmeme.com/news.rss", name = "Know Your Meme" },
+  { url = "https://knowyourmeme.com/newsfeed.rss", name = "Know Your Meme" },
+]
+
+[[genre]]
 key = "監視アカウント"
 label = "監視アカウント"
 watch = true
