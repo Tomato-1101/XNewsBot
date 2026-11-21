@@ -263,16 +263,19 @@ note = "AIx ONE(本人が関わる学生×経営者の AI コミュニティ事�
 
 [[genre]]
 key = "ミーム"
-note = "日本か世界で大バズしているネットミーム(誰でも名前を言えば分かる規模のものだけ)。2026-11-21 追加(本人の依頼)。"
+note = "日本と海外でいま流行っているネットミーム(大バズでなくてよい。ちいかわ等のキャラのネタも)。2026-11-21 追加・同日改訂(本人の依頼)。"
 dedupe_days = 14
-# ミームは語で探しにくいので、いいねの多い投稿そのもの(x_queries)が主。語のクエリはミームの話題そのものを拾う補助。
+# 毎日は新しく流行り出したものだけ、月曜は流行っているもの全部(curate_prompt のミームの節)。
+weekly_recap = "mon"
+# 主な取得元は meme_search(claude がウェブで流行りの一覧を作り、ミームごとに X で裏付け。xnewsbot/memes.py)。
+# いいねの多い投稿(x_queries)・語のクエリ・KYM・Yahoo 急上昇語は、一覧に漏れた新しいものを拾う補助。
 min_faves = 5000
 min_faves_en = 30000
 keywords = ["ネットミーム", "ミーム", "構文", "流行ってる", "バズってる", "大喜利", "インターネット老人会"]
 keywords_en = ["meme", "memes", "viral trend", "internet trend"]
 x_queries = [
-  { query = "lang:ja min_faves:30000 -filter:replies", max = 40, min_faves = 30000 },
-  { query = "lang:en min_faves:150000 -filter:replies", max = 30, min_faves = 150000 },
+  { query = "lang:ja min_faves:10000 -filter:replies", max = 40, min_faves = 10000 },
+  { query = "lang:en min_faves:50000 -filter:replies", max = 30, min_faves = 50000 },
 ]
 exclude = ["プレゼント企画", "フォロー&RT", "フォロー＆RT", "フォローとRT", "抽選で", "応募方法", "#PR", "ガチャ",
   # 「ミーム」の語で一致する仮想通貨・株の話(ミームコイン・ミーム株)はミームの流行ではない
@@ -281,8 +284,8 @@ exclude_accounts = [
   "WhaleNewsDaily", "DeepLeaksHQ", "MarioNawfal", "AutismCapital", "WatcherGuru",
   "unusual_whales", "Polymarket", "Kalshi",
 ]
-trend_sources = ["yahoo_realtime"]
-news_max = 30
+trend_sources = ["meme_search", "yahoo_realtime"]
+news_max = 40
 feeds = [
   { url = "https://knowyourmeme.com/news.rss", name = "Know Your Meme" },
   { url = "https://knowyourmeme.com/newsfeed.rss", name = "Know Your Meme" },

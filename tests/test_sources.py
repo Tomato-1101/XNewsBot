@@ -880,3 +880,13 @@ def test_dump_raw_roundtrips_genre_context_and_recaps():
     assert back["genre_context"] == raw["genre_context"] and back["recaps"] == raw["recaps"]
     assert back["genres"] == {"競合": [{"i": 0, "text": "a"}]}
     assert max(len(line) for line in text.splitlines()) < 2000
+
+
+def test_drop_delivered_keeps_meme_search_on_recap_day(monkeypatch, session):
+    monday, friday = date(2026, 11, 23), date(2026, 11, 20)
+    _add_digest(session, friday - timedelta(days=1), "ミーム", [("前", "https://x/m")])
+    _use_session(monkeypatch, session)
+    for day, kept in ((monday, ["https://x/m"]), (friday, [])):
+        cands = {"ミーム": [{"url": "https://x/m", "trend": {"source": "meme_search"}}, {"url": "https://x/m"}]}
+        pl._drop_delivered(cands, day)
+        assert [c["url"] for c in cands["ミーム"]] == kept       # 月曜は調査の候補だけ残す

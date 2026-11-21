@@ -602,6 +602,12 @@ def alphaxiv_hot(hours: float | None = 24) -> list[dict]:
     return fresh[:ALPHAXIV_MAX]
 
 
+def _memes():
+    # memes は xclient・explain を読み込むので、使うときだけ読む(他の取得元のテストを軽く保つ)
+    from . import memes
+    return memes
+
+
 def _safe(name: str, fn):
     def run(hours: float | None = 24) -> list[dict]:
         try:
@@ -620,6 +626,8 @@ SOURCES = {
     "openrouter_models": _safe("OpenRouter 新規モデル", openrouter_models),
     "hf_models": _safe("Hugging Face 新規モデル", hf_models),
     "alphaxiv_hot": _safe("alphaXiv Hot 論文", alphaxiv_hot),
+    "meme_search": _safe("ミームの調査", lambda hours=None: _memes().candidates(hours)),
 }
 # 候補の上限(news_max)より先に全件入れる取得元。新モデルの登録一覧は1日数件〜十数件で、深い順位も落としたくない。
-PINNED = {"openrouter_models", "hf_models"}
+# ミームの一覧も件数が少なく(最大20)、上限で RSS より先に削られないよう全件入れる。
+PINNED = {"openrouter_models", "hf_models", "meme_search"}

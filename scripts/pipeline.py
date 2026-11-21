@@ -297,7 +297,10 @@ def _drop_delivered(cands_by_genre: dict[str, list[dict]], day: date) -> None:
         except Exception as e:
             print(f"  {g}: 配信済みの記事を読めず除外なしで続行 ({type(e).__name__}: {e})", file=sys.stderr)
             continue
-        fresh = [c for c in cands if c.get("url") not in seen]
+        # ミームの調査は月曜(週のまとめの日)に流行っているもの全部を出すので、その日は配信済みでも残す
+        keep = is_recap_day(g, day)
+        fresh = [c for c in cands if c.get("url") not in seen
+                 or (keep and (c.get("trend") or {}).get("source") == "meme_search")]
         print(f"  {g}: 配信済み(直近{days}日)の候補を {len(cands) - len(fresh)} 件除外", file=sys.stderr)
         cands_by_genre[g] = fresh
 

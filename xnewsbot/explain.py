@@ -240,7 +240,7 @@ def claude_env() -> dict[str, str]:
     return {k: os.environ[k] for k in CLAUDE_ENV_KEYS if k in os.environ}
 
 
-def run_claude(prompt: str) -> str:
+def run_claude(prompt: str, timeout: int = TIMEOUT) -> str:
     """claude を実行して標準出力を返す。失敗・時間切れは ExplainError。"""
     # cwd は実行ごとの空ディレクトリ(.env のあるリポジトリ直下で動かさない)
     work = tempfile.mkdtemp(prefix="xnews_explain_")
@@ -252,10 +252,10 @@ def run_claude(prompt: str) -> str:
         except OSError as e:
             raise ExplainError(f"claude を起動できませんでした: {e}") from e
         try:
-            out, err = proc.communicate(timeout=TIMEOUT)
+            out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill(proc)
-            raise ExplainError(f"時間切れ({TIMEOUT}秒)") from None
+            raise ExplainError(f"時間切れ({timeout}秒)") from None
         if proc.returncode != 0:
             tail = ((err or "") + (out or "")).strip()[-300:]
             raise ExplainError(f"claude が異常終了しました(exit={proc.returncode}) {tail}".strip())

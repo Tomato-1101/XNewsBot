@@ -220,8 +220,12 @@ def test_sources_failure_returns_empty_with_one_line(monkeypatch, capsys):
     def boom(url, timeout):
         raise TimeoutError("down")
     monkeypatch.setattr(trends, "_get_json", boom)    # 新モデル2取得元(JSON API)も実ネットに出さない
+
+    def no_claude(today=None):
+        raise TimeoutError("down")
+    monkeypatch.setattr(trends._memes(), "search_list", no_claude)   # ミームの調査も claude・X を呼ばない
     assert all(fn(24) == [] for fn in trends.SOURCES.values())
     _serve(monkeypatch, b"<rss><broken")
     assert trends.SOURCES["google_trends"](24) == [] and trends.SOURCES["hatena"](24) == []
     err = capsys.readouterr().err.strip().splitlines()
-    assert len(err) == 8 and all(line.strip().startswith("話題:") for line in err)
+    assert len(err) == 9 and all(line.strip().startswith("話題:") for line in err)
